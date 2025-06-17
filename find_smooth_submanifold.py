@@ -45,7 +45,7 @@ def generate_basis(points: jnp.ndarray) -> jnp.ndarray:
 @jit 
 def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
     norms = jnp.linalg.norm(coeffs, axis=1, keepdims=True)
-    coeffs_normalized = coeffs / norm
+    coeffs_normalized = coeffs / norms
     return coeffs_normalized
 
 @jit
