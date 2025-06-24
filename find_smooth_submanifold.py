@@ -3,11 +3,112 @@ import jax.numpy as jnp
 from jax import grad, jit, vmap
 import optax
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Union
 from functools import partial
+from collections import defaultdict
 
 # Enable 64-bit precision for complex numbers
 #jax.config.update("jax_enable_x64", True)
+def combine_to_complex_equations(labels, coeffs):
+    """
+    Convert equations from Re/Im basis to zi*zjbar basis using:
+    Im(zi*zjbar) = (zi*zjbar - zj*zibar)/(2i)
+    Re(zi*zjbar) = (zi*zjbar + zj*zibar)/2
+    
+    Parameters:
+    labels: array of strings like 'Im(z0*z1bar)', 'Re(z0*z1bar)'
+    coeffs: 3x25 array of coefficients
+    
+    Returns:
+    List of 3 strings representing the equations in terms of zi*zjbar
+    """
+    equations = []
+    
+    for eq_idx in range(coeffs.shape[0]):
+        # Dictionary to store coefficients for each zi*zjbar term
+        terms = defaultdict(complex)
+        
+        # Process each label and its coefficient
+        for label_idx, label in enumerate(labels):
+            coeff = coeffs[eq_idx, label_idx]
+            
+            # Skip if coefficient is very small
+            if abs(coeff) < 1e-10:
+                continue
+            
+            # Extract the zi and zj indices
+            if label.startswith('Im(') and label.endswith(')'):
+                # Extract 'zi*zjbar' from 'Im(zi*zjbar)'
+                inner = label[3:-1]  # e.g., 'z0*z1bar'
+                parts = inner.split('*')
+                zi = parts[0]  # e.g., 'z0'
+                zj = parts[1].replace('bar', '')  # e.g., 'z1'
+                
+                # Im(zi*zjbar) = (zi*zjbar - zj*zibar)/(2i)
+                # Coefficient for zi*zjbar: coeff/(2i) = -coeff*i/2
+                # Coefficient for zj*zibar: -coeff/(2i) = coeff*i/2
+                
+                terms[f"{zi}*{zj}bar"] += complex(0, -coeff/2)  # -i*coeff/2
+                terms[f"{zj}*{zi}bar"] += complex(0, coeff/2)   # i*coeff/2
+                
+            elif label.startswith('Re(') and label.endswith(')'):
+                # Extract 'zi*zjbar' from 'Re(zi*zjbar)'
+                inner = label[3:-1]  # e.g., 'z0*z1bar'
+                parts = inner.split('*')
+                zi = parts[0]  # e.g., 'z0'
+                zj = parts[1].replace('bar', '')  # e.g., 'z1'
+                
+                # Re(zi*zjbar) = (zi*zjbar + zj*zibar)/2
+                # Coefficient for both zi*zjbar and zj*zibar: coeff/2
+                
+                terms[f"{zi}*{zj}bar"] += complex(coeff/2, 0)
+                terms[f"{zj}*{zi}bar"] += complex(coeff/2, 0)
+        
+        # Build the equation string
+        equation_parts = []
+        for term in sorted(terms.keys()):
+            coeff_complex = terms[term]
+            
+            # Skip if coefficient is essentially zero
+            if abs(coeff_complex) < 1e-10:
+                continue
+            
+            # Format the complex coefficient
+            real_part = coeff_complex.real
+            imag_part = coeff_complex.imag
+            
+            if abs(imag_part) < 1e-10:
+                # Only real part
+                coeff_str = f"{real_part:.6f}"
+            elif abs(real_part) < 1e-10:
+                # Only imaginary part
+                if abs(imag_part - 1) < 1e-10:
+                    coeff_str = "i"
+                elif abs(imag_part + 1) < 1e-10:
+                    coeff_str = "-i"
+                else:
+                    coeff_str = f"{imag_part:.6f}i"
+            else:
+                # Both real and imaginary parts
+                if imag_part >= 0:
+                    coeff_str = f"({real_part:.6f}+{imag_part:.6f}i)"
+                else:
+                    coeff_str = f"({real_part:.6f}{imag_part:.6f}i)"
+            
+            # Add to equation
+            if equation_parts:
+                if coeff_str.startswith('-'):
+                    equation_parts.append(f" {coeff_str}*{term}")
+                else:
+                    equation_parts.append(f" + {coeff_str}*{term}")
+            else:
+                equation_parts.append(f"{coeff_str}*{term}")
+        
+        equation = "".join(equation_parts) + " = 0"
+        equations.append(equation)
+    
+    return equations
+
 
 @jit
 def generate_basis(points: jnp.ndarray) -> jnp.ndarray:
@@ -78,38 +179,26 @@ def compute_linear_independence_penalty(coeffs: jnp.ndarray) -> float:
     gram = coeffs @ coeffs.T
     
     # Regularized log determinant to avoid numerical issues
-    det = jnp.linalg.det(gram + 1e-8 * jnp.eye(3))
+    det = jnp.linalg.det(gram)
     
     # Return negative log of absolute determinant (minimize this = maximize determinant)
-    return -jnp.log(jnp.abs(det) + 1e-10)
+    return -jnp.log10(jnp.abs(det) + 1e-10)
+
 
 @partial(jit, static_argnames=['k', 'lambda_reg'])
 def loss_function(coeffs: jnp.ndarray, basis: jnp.ndarray, 
                   k: int = 10, lambda_reg: float = 1.0) -> float:
-    # Evaluate equations at all points
-    eq_values = evaluate_equations(coeffs, basis)
-    
-    # Inline k_smallest_sum logic
-    eq_squared = jnp.sum(eq_values**2, axis=1)
-    sorted_values = jnp.sort(eq_squared)
-    intersect_loss = jnp.sum(sorted_values[:k])
-    
-    # Add linear independence penalty
-    independence_penalty = compute_linear_independence_penalty(coeffs)
-    
-    # Total loss
-    return intersect_loss + lambda_reg * independence_penalty
 
-@partial(jit, static_argnames=['k', 'lambda_reg'])
-def loss_function(coeffs: jnp.ndarray, basis: jnp.ndarray, 
-                  k: int = 10, lambda_reg: float = 1.0) -> float:
+    # d is the order of the polynomial
+    d = 1
     # Evaluate equations at all points
+    coeffs = normalize_coeffs(coeffs)
     eq_values = evaluate_equations(coeffs, basis)
     
     # Inline k_smallest_sum logic
-    eq_squared = jnp.sum(eq_values**2, axis=1)
-    sorted_values = jnp.sort(eq_squared)
-    intersect_loss = jnp.sum(sorted_values[:k])
+    eq_error = jnp.sqrt(jnp.sum(eq_values**(2/d), axis=1))
+    sorted_values = jnp.sort(eq_error)
+    intersect_loss = jnp.mean(sorted_values[:k])
     
     # Add linear independence penalty
     independence_penalty = compute_linear_independence_penalty(coeffs)
@@ -119,7 +208,7 @@ def loss_function(coeffs: jnp.ndarray, basis: jnp.ndarray,
 
 
 @partial(jit, static_argnames=['k'])
-def loss_function_array(coeffs: jnp.ndarray, basis: jnp.ndarray, 
+def loss_function_aray(coeffs: jnp.ndarray, basis: jnp.ndarray, 
                   k: int = 10) -> jnp.ndarray:
     # Evaluate equations at all points
     eq_values = evaluate_equations(coeffs, basis)
@@ -150,9 +239,11 @@ def get_basis_labels():
     return labels
 
 def optimize_equations(points: jnp.ndarray, 
+                      init_coeffs: Union[jnp.ndarray, None] = None,
                       learning_rate: float = 0.01,
                       num_steps: int = 5000,
-                      lambda_reg: float = 1.0,
+                      num_min_set: int = 500,
+                      lambda_reg: float = 0.1,
                       seed: int = 42) -> Tuple[jnp.ndarray, list]:
     """
     Optimize coefficients for three equations.
@@ -173,24 +264,31 @@ def optimize_equations(points: jnp.ndarray,
     
     # Initialize coefficients with focus on imaginary cross terms
     key = jax.random.PRNGKey(seed)
+
+    labels = np.array(get_basis_labels())
+   
+    if init_coeffs is None: 
+        # Start with random initialization
+        coeffs = jax.random.normal(key, (3, 25)) * 0.1
+        coeffs = normalize_coeffs(coeffs) 
+        # Add larger weights to imaginary cross terms (first 10 coefficients)
+        # These are Im(zi*zjbar) for i < j
+        #key, subkey = jax.random.split(key)
+        #coeffs = coeffs.at[:, :10].add(jax.random.normal(subkey, (3, 10)) * 0.5)
     
-    # Start with random initialization
-    coeffs = jax.random.normal(key, (3, 25)) * 0.1
-    
-    # Add larger weights to imaginary cross terms (first 10 coefficients)
-    # These are Im(zi*zjbar) for i < j
-    key, subkey = jax.random.split(key)
-    coeffs = coeffs.at[:, :10].add(jax.random.normal(subkey, (3, 10)) * 0.5)
+    else:
+        coeffs = init_coeffs
     
     # Setup optimizer with gradient clipping for stability
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
-        optax.adam(learning_rate)
+        optax.sgd(learning_rate)
     )
     opt_state = optimizer.init(coeffs)
     
     # Create loss and gradient functions
-    loss_fn = lambda c: loss_function(c, basis, lambda_reg)
+    #loss_fn = lambda c: 1/loss_function(c, basis, k=num_min_set, lambda_reg=0) + lambda_reg * compute_linear_independence_penalty(coeffs)
+    loss_fn = lambda c: loss_function(c, basis, k=num_min_set, lambda_reg=lambda_reg)
     grad_fn = jit(grad(loss_fn))
     
     # Optimization loop
@@ -199,22 +297,39 @@ def optimize_equations(points: jnp.ndarray,
         loss_val = loss_fn(coeffs)
         losses.append(float(loss_val))
         
-        if step % 500 == 0:
-            print(f"Step {step}, Loss: {loss_val:.6f}")
+        if step % 10 == 0:
+            independence_loss = lambda_reg * compute_linear_independence_penalty(coeffs)
+            print(f"Step {step}, Loss: {loss_val:.6f}, Independence Loss: {independence_loss:.6f}")
+
+            equations = combine_to_complex_equations(labels, coeffs)
+            
+            # Print the equations
+            for i, eq in enumerate(equations):
+                print(f"Equation {i+1}:")
+                print(eq)
+                print()
         
         # Compute gradients and update
         grads = grad_fn(coeffs)
         updates, opt_state = optimizer.update(grads, opt_state)
         coeffs = optax.apply_updates(coeffs, updates)
-    
+   
+    coeffs = normalize_coeffs(coeffs) 
+
     return coeffs, losses
 
-def find_satisfying_points(coeffs: jnp.ndarray, points: jnp.ndarray, tolerance: float = 1e-6) -> jnp.ndarray:
-    """Find indices of points that satisfy all three equations."""
-    basis = generate_basis(points)
+
+def find_satisfying_points(coeffs: jnp.ndarray, basis: jnp.ndarray, 
+                           k: int = 10) -> jnp.ndarray:
+    # Evaluate equations at all points
     eq_values = evaluate_equations(coeffs, basis)
+    
+    # Inline k_smallest_sum logic
     eq_squared = jnp.sum(eq_values**2, axis=1)
-    return jnp.where(eq_squared < tolerance)[0]
+    sorted_values = jnp.sort(eq_squared)
+    sorted_values_k = sorted_values[k]
+    return jnp.where(eq_squared < sorted_values_k)[0]
+    
 
 def analyze_solution(coeffs: jnp.ndarray, points: jnp.ndarray) -> None:
     """
