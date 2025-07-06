@@ -1,5 +1,7 @@
 import jax
 import jax.numpy as jnp
+from get_restriction import *
+from typing import Callable
 
 # --- Core Calculation ---
 
@@ -96,6 +98,7 @@ def compute_fubini_study_metric(
     )
     return vmapped_computer(points_Z, patch_index, epsilon)
 
+
 def compute_kahler_form(
     points_Z: jnp.ndarray,
     patch_index: int = 0,
@@ -120,6 +123,119 @@ def compute_kahler_form(
         _compute_kahler_for_single_point, in_axes=(0, None, None)
     )
     return vmapped_computer(points_Z, patch_index, epsilon)
+
+def compute_kahler_form_restricted(points: jnp.ndarray, restriction: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1,))
+    kahler_form = jit_compute_kahler_form(points, constant_coord)
+    kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
+    return kahler_form_restricted
+
+def compute_lagrangian_condition_fitness(kahler_form_restricted: jnp.ndarray, k: int=10):
+    frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
+    # Pick the smallest 90% to avoid numerical issues
+    sorted_norms = jnp.sort(frobenius_norms)
+    norms_cut = sorted_norms[:int(len(sorted_norms)*0.9)]
+    kahler_form_loss = jnp.mean(norms_cut)
+    fitness = jnp.exp(-k*kahler_form_loss)
+    return fitness
+
+def get_Omega_coord(min_idx):
+    # Choose the rest three coordinates to form the basis
+    coord_lookup_table = jnp.array([
+        [1, 2, 3],
+        [0, 2, 3],
+        [0, 1, 3],
+        [0, 1, 2]
+    ])
+    return coord_lookup_table[min_idx]
+
+
+def compute_holomorphic_form(points_complex: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Compute the holomorphic 3-form from given points 
+
+    Args:
+        points: An (N, 5) complex array 
+    Return:
+        An (N,) array containing the component of the holomorphic 3-from
+        Omega = 1 / (5 * z_i)**4 dz_1 ^ ... dz_{i-1} ^ dz_{i+1} ... ^ dz_4
+        where the index i is chosen so that the norm of Omega is the smallest
+
+        An (N,) array containing the index i
+        An (N, 3) array containing the three coordinates in the basis
+    """
+
+    Omega = 1 / (5*points_complex[:, 1:])**4
+    Omega_min_indices = jnp.argmin(jnp.abs(Omega), axis=1)
+    Omega = Omega[jnp.arange(Omega.shape[0]), Omega_min_indices]
+    Omega_coord = jax.vmap(get_Omega_coord)(Omega_min_indices)
+
+    return Omega, Omega_min_indices, Omega_coord
+
+
+def compute_holomorphic_form_restricted(points_complex: jnp.ndarray, restriction: jnp.ndarray, phase_only: bool):
+
+    Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form(points_complex)
+    Omega_restriction = compute_Omega_restriction(restriction, Omega_coord)
+    if phase_only:
+        phase_Omega = -4*jnp.angle(points_complex[jnp.arange(points_complex.shape[0]), Omega_min_indices+1])
+        phase_restriction = jnp.angle(Omega_restriction)
+        phase = phase_Omega + phase_restriction
+        phase = phase % jnp.pi
+        return phase
+    else:
+        Omega_restricted = Omega * Omega_restriction
+        return Omega_restricted
+
+
+def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp.float32:
+    """
+    Calculates fitness based on the concentration of angles.
+
+    Args:
+        angles: A jnp.array of angles in the range [0, pi].
+        n_bins: The number of bins to use for the histogram.
+
+    Returns:
+        A scalar fitness value. High fitness means high concentration.
+    """
+    # Create a histogram to approximate the distribution
+    counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, jnp.pi))
+
+    # Calculate the probability distribution
+    probs = counts / jnp.sum(counts)
+
+    # Calculate Shannon entropy
+    # Add a small epsilon to avoid log(0) for empty bins
+    epsilon = 1e-9
+    entropy = -jnp.sum(probs * jnp.log(probs + epsilon))
+
+    # Calculate the maximum possible entropy (for a uniform distribution)
+    max_entropy = jnp.log(n_bins)
+
+    fitness = max_entropy - entropy
+    #fitness = 1 - entropy / max_entropy 
+    # For RP^3 the max fitness is around 2.37.
+    # With a perturbation of 0.001 the fitness is around 0.788
+
+    return fitness
+
+
+def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, jacobian_func: Callable) -> jnp.float32:
+    jacobian_func_batched = jax.vmap(jacobian_func, in_axes=0)
+    jacobian = jacobian_func_batched(min_set_real)
+    restriction = jax.vmap(get_restriction, in_axes=0)(jacobian)
+
+    min_set = min_set_real[:, :5] + 1j*min_set_real[:, 5:]
+    kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=0)
+    lagrangian_fitness = compute_lagrangian_condition_fitness(kahler_form_restricted, k=10)
+
+    phases = compute_holomorphic_form_restricted(min_set, restriction, phase_only=True)
+    special_fitness = compute_special_condition_fitness(phases, n_bins=int(jnp.sqrt(min_set.shape[0])))
+   
+    combined_fitness = lagrangian_fitness * special_fitness 
+
+    return combined_fitness
 
 
 # --- Example Usage ---
