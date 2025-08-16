@@ -165,6 +165,16 @@ def reconstruct_hermitian_matrices(coeffs_array: jnp.array) -> jnp.array:
     # Apply the vectorized function to the entire batch of coefficients
     return reconstruct_batch(coeffs_array)
 
+def format_array_with_commas(arr):
+    if not isinstance(arr, jnp.ndarray):
+        return str(arr)
+    
+    if arr.ndim == 1:
+        return f"[{', '.join(map(str, arr.tolist()))}]"
+    
+    formatted_rows = [format_array_with_commas(row) for row in arr]
+    return f"[{',\n'.join(formatted_rows)}]"
+
 
 def generate_basis_single_point(point: jnp.ndarray) -> jnp.ndarray:
     """

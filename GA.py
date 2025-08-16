@@ -9,7 +9,7 @@ import os
 import argparse
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs
+from helper import canonicalize_coeffs, format_array_with_commas
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 
@@ -25,7 +25,7 @@ CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_see
 POPULATION_SIZE = 400      # Size of the population.
 GENOTYPE_SHAPE = (3, 25)   # Shape of a single individual's genotype.
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 317   # Total number of generations to run.
+NUM_GENERATIONS = 3   # Total number of generations to run.
 TOURNAMENT_SIZE = 3       # Number of individuals selected for a tournament.
 
 # Crossover and Mutation Parameters
@@ -339,6 +339,9 @@ if __name__ == '__main__':
             print(f"\nFound new niche representative with fitness: {fitness:.5f}")
             print("Coefficients for this niche:")
             print(individual)
+            print("Array form ready to copy:")
+            print(format_array_with_commas(individual))
+            print("Complex equations:")
             print(combine_to_complex_equations(labels, individual)) 
 
     print(f"\nFound {len(niche_representatives)} distinct niches in the final population.")
