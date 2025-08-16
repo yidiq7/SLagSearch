@@ -3,9 +3,13 @@ from typing import Optional, List
 import jax
 import jax.numpy as jnp
 import itertools
+from functools import partial
+from helper import evaluate_equations_single_point
 
-def get_restriction_symbolic(constant_coord: int = 0, ignored_coord: Optional[List[int]] = None):
-
+def get_restriction_symbolic(constant_coord: int = 0, ignored_coord: Optional[List[int]] = None, psi: complex = 0):
+    """
+    Not currently in use. 
+    """
     # --- Validation and Default Value ---
     # The index is after taking out the constant coordinate
     if ignored_coord is None:
@@ -23,7 +27,7 @@ def get_restriction_symbolic(constant_coord: int = 0, ignored_coord: Optional[Li
 
     z0, z1, z2, z3, z4 = sp.symbols('z0, z1, z2, z3, z4')
     Z = [z0,z1,z2,z3,z4]
-    f = z0**5 + z1**5 + z2**5 + z3**5 + z4**5
+    f = z0**5 + z1**5 + z2**5 + z3**5 + z4**5 + psi*z0*z1*z2*z3*z4
 
     X = sp.symbols('x0:5', real=True)
     Y = sp.symbols('y0:5', real=True)
@@ -121,11 +125,13 @@ def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray
     jacobian_scaled = jacobian / scaling_factors
     return jnp.linalg.det(jacobian_scaled)
 
-def get_jacobian_symbolic(constant_coord: int = 0):
-
+def get_jacobian_symbolic(constant_coord: int = 0, psi: complex = 0):
+    """
+    Not currently in use.
+    """ 
     z0, z1, z2, z3, z4 = sp.symbols('z0, z1, z2, z3, z4')
     Z = [z0,z1,z2,z3,z4]
-    f = z0**5 + z1**5 + z2**5 + z3**5 + z4**5
+    f = z0**5 + z1**5 + z2**5 + z3**5 + z4**5 + psi*z0*z1*z2*z3*z4
 
     X = sp.symbols('x0:5', real=True)
     Y = sp.symbols('y0:5', real=True)
@@ -169,7 +175,66 @@ def get_jacobian_symbolic(constant_coord: int = 0):
 
     eq_jacobian = sp.Matrix(eq_list).jacobian(XY_affine)
     return eq_jacobian
- 
+
+@partial(jax.jit, static_argnames=('constant_coord',))
+def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
+    """
+    Computes the 5x8 Jacobian of the full system (Quintic + 3 custom equations)
+    with respect to the 8 active affine real coordinates.
+
+    Args:
+        p_10d: A single point, shape (10,). The first 5 elements are x-coords, the next 5 are y-coords.
+        coeffs: The coefficient matrix for one individual, shape (3, 25).
+        constant_coord: The index of the z-coordinate held constant (0 to 4).
+
+    Returns:
+        The Jacobian matrix, shape (5, 8).
+    """
+
+#    # This is the function we will differentiate. It evaluates all 5 equations.
+#    def evaluate_all_five_equations(point_10d: jnp.ndarray, coefficients: jnp.ndarray) -> jnp.ndarray:
+#        # --- Equation 1 & 2: Fermat Quintic ---
+#        # Convert 10 real coordinates to 5 complex coordinates
+#        z = point_10d[:5] + 1j * point_10d[5:]
+#        # Evaluate the quintic polynomial
+#        f = jnp.sum(z**5) + psi * jnp.prod()
+#        cy_real = f.real
+#        cy_imag = f.imag
+#
+#        # --- Equation 3, 4, & 5: Custom Equations ---
+#        # Helper to compute the 25 basis functions at a single point.
+#        x = point_10d[:5]
+#        y = point_10d[5:]
+#        imag_indices_i, imag_indices_j = jnp.triu_indices(5, 1)
+#        imag_basis = y[imag_indices_i] * x[imag_indices_j] - x[imag_indices_i] * y[imag_indices_j]
+#        real_indices_i, real_indices_j = jnp.triu_indices(5)
+#        real_basis = x[real_indices_i] * x[real_indices_j] + y[real_indices_i] * y[real_indices_j]
+#        basis_values = jnp.concatenate([imag_basis, real_basis])
+#        
+#        # Evaluate the 3 custom equations
+#        eq1, eq2, eq3 = jnp.dot(coefficients, basis_values)
+#
+#        # Return all 5 equations as a single vector
+#        return jnp.array([cy_real, cy_imag, eq1, eq2, eq3])
+
+    # Use jax.jacobian to automatically compute the derivative.
+    # argnums=0 means "differentiate with respect to the first argument (point_10d)".
+    # This gives the full 5x10 jacobian (5 equations, 10 real coordinates).
+    #full_jacobian = jax.jacobian(evaluate_all_five_equations, argnums=0)(p_10d, coeffs)
+    full_jacobian = jax.jacobian(evaluate_equations_single_point, argnums=0)(p_10d, coeffs, psi)
+
+    # Now, select the 8 columns corresponding to the active affine coordinates.
+    # The dropped coordinates are x_k and y_k, where k = constant_coord.
+    # Their indices in the 10D vector are `constant_coord` and `constant_coord + 5`.
+    active_indices = jnp.concatenate([
+                         jnp.arange(0, constant_coord),
+                         jnp.arange(constant_coord + 1, constant_coord + 5),
+                         jnp.arange(constant_coord + 6, 10)
+                     ])
+    # Select the correct columns from the full jacobian
+    affine_jacobian = full_jacobian[:, active_indices]
+    
+    return affine_jacobian 
 
 # Pre-compute all 56 combinations of 5 column indices from 0 to 7.
 # This array is static and will not be recomputed during JAX transformations (like vmap).
@@ -177,7 +242,7 @@ all_column_indices_range = jnp.arange(8)
 combinations_list = list(itertools.combinations(all_column_indices_range.tolist(), 5))
 ALL_COMBINATIONS = jnp.array(combinations_list, dtype=jnp.int32) # Shape (56, 5)
 
-def get_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
+def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
     """
     Processes a 5x8 JAX array according to the specified steps:
     1. Finds the combination of 5 columns that forms a 5x5 submatrix

@@ -1,7 +1,8 @@
 import jax
 import jax.numpy as jnp
-from get_restriction import *
-from typing import Callable
+from get_restriction import compute_jacobian, compute_restriction, compute_Omega_restriction
+from functools import partial
+import math
 
 # --- Core Calculation ---
 
@@ -44,8 +45,8 @@ def _assemble_metric_tensor(g_complex: jnp.ndarray) -> jnp.ndarray:
     g_real = jnp.real(g_complex)
     g_imag = jnp.imag(g_complex)
     # The real metric G is a block matrix: G = [[ R, -I ], [ I,  R ]]
-    top_block = jnp.concatenate([g_real, -g_imag], axis=1)
-    bottom_block = jnp.concatenate([g_imag, g_real], axis=1)
+    top_block = jnp.concatenate([g_real, g_imag], axis=1)
+    bottom_block = jnp.concatenate([-g_imag, g_real], axis=1)
     return jnp.concatenate([top_block, bottom_block], axis=0)
 
 def _assemble_kahler_form(g_complex: jnp.ndarray) -> jnp.ndarray:
@@ -53,8 +54,8 @@ def _assemble_kahler_form(g_complex: jnp.ndarray) -> jnp.ndarray:
     g_real = jnp.real(g_complex)
     g_imag = jnp.imag(g_complex)
     # The Kähler form Omega = G*J, which results in: Omega = [[-I, -R], [R, -I]]
-    top_block = jnp.concatenate([-g_imag, -g_real], axis=1)
-    bottom_block = jnp.concatenate([g_real, -g_imag], axis=1)
+    top_block = jnp.concatenate([-g_imag, g_real], axis=1)
+    bottom_block = jnp.concatenate([-g_real, -g_imag], axis=1)
     return jnp.concatenate([top_block, bottom_block], axis=0)
 
 # --- Vmapped Single-Point Computers ---
@@ -132,9 +133,10 @@ def compute_kahler_form_restricted(points: jnp.ndarray, restriction: jnp.ndarray
 
 def compute_lagrangian_condition_fitness(kahler_form_restricted: jnp.ndarray, k: int=10):
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
-    # Pick the smallest 90% to avoid numerical issues
+    # Pick the smallest 80% otherwise the mean will be dominated by the points with large errors
+    # We want to make the smallest errors close to 0
     sorted_norms = jnp.sort(frobenius_norms)
-    norms_cut = sorted_norms[:int(len(sorted_norms)*0.9)]
+    norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.8)]
     kahler_form_loss = jnp.mean(norms_cut)
     fitness = jnp.exp(-k*kahler_form_loss)
     return fitness
@@ -181,13 +183,13 @@ def compute_holomorphic_form_restricted(points_complex: jnp.ndarray, restriction
         phase_Omega = -4*jnp.angle(points_complex[jnp.arange(points_complex.shape[0]), Omega_min_indices+1])
         phase_restriction = jnp.angle(Omega_restriction)
         phase = phase_Omega + phase_restriction
-        phase = phase % jnp.pi
+        phase = phase % (2*jnp.pi)
         return phase
     else:
         Omega_restricted = Omega * Omega_restriction
         return Omega_restricted
 
-
+@partial(jax.jit, static_argnames=('n_bins',))
 def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp.float32:
     """
     Calculates fitness based on the concentration of angles.
@@ -200,6 +202,7 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
         A scalar fitness value. High fitness means high concentration.
     """
     # Create a histogram to approximate the distribution
+    phases = phases % jnp.pi
     counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, jnp.pi))
 
     # Calculate the probability distribution
@@ -213,29 +216,36 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
     # Calculate the maximum possible entropy (for a uniform distribution)
     max_entropy = jnp.log(n_bins)
 
-    fitness = max_entropy - entropy
-    #fitness = 1 - entropy / max_entropy 
+    #fitness = max_entropy - entropy
+    fitness = 1 - entropy / max_entropy 
     # For RP^3 the max fitness is around 2.37.
     # With a perturbation of 0.001 the fitness is around 0.788
 
     return fitness
 
+vmap_compute_jacobian = jax.vmap(compute_jacobian, in_axes=(0, None, None, None))
+vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
-def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, jacobian_func: Callable) -> jnp.float32:
-    jacobian_func_batched = jax.vmap(jacobian_func, in_axes=0)
-    jacobian = jacobian_func_batched(min_set_real)
-    restriction = jax.vmap(get_restriction, in_axes=0)(jacobian)
+def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int=0, debug_mode: bool=False) -> jnp.float32:
+    jacobians = vmap_compute_jacobian(min_set_real, coeffs, psi, constant_coord)
+    restriction = vmap_compute_restriction(jacobians)
 
     min_set = min_set_real[:, :5] + 1j*min_set_real[:, 5:]
-    kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=0)
+    kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord)
     lagrangian_fitness = compute_lagrangian_condition_fitness(kahler_form_restricted, k=10)
 
     phases = compute_holomorphic_form_restricted(min_set, restriction, phase_only=True)
-    special_fitness = compute_special_condition_fitness(phases, n_bins=int(jnp.sqrt(min_set.shape[0])))
+    n_bins_val = 100
+    special_fitness = compute_special_condition_fitness(phases, n_bins=n_bins_val)
    
+    #combined_fitness = lagrangian_fitness
     combined_fitness = lagrangian_fitness * special_fitness 
+    #combined_fitness = jnp.where(lagrangian_fitness > 0.98 , 1 + special_fitness, lagrangian_fitness)
 
-    return combined_fitness
+    if debug_mode:
+        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, phases
+    else:
+        return combined_fitness
 
 
 # --- Example Usage ---

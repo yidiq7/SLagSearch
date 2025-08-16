@@ -3,9 +3,11 @@ import jax.numpy as jnp
 from jax import grad, jit, vmap
 import optax
 import numpy as np
-from typing import Tuple, Union, Callable
+from typing import Tuple, Union, Optional
 from functools import partial
 from collections import defaultdict
+from get_restriction import compute_jacobian
+from helper import evaluate_equations_single_point
 
 # Enable 64-bit precision for complex numbers
 #jax.config.update("jax_enable_x64", True)
@@ -150,8 +152,9 @@ def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
     # normalization since they are only counted once instead of twice compared to
     # the upper triangular terms.
     zzbar_indices = jnp.array([10, 15, 19, 22, 24])
-    coeffs = coeffs.at[:,zzbar_indices].divide(jnp.sqrt(2.0))
-    norms = jnp.linalg.norm(coeffs, axis=1, keepdims=True)
+    weights = jnp.ones((3, 25))
+    weights = weights.at[:,zzbar_indices].divide(jnp.sqrt(2.0))
+    norms = jnp.linalg.norm(weights*coeffs, axis=1, keepdims=True)
     coeffs_normalized = coeffs / norms
     return coeffs_normalized
 
@@ -339,53 +342,12 @@ def find_satisfying_points(coeffs: jnp.ndarray, basis: jnp.ndarray,
 
 # ------------------------------------------------------------------------------
 # New loss function
-
-def generate_basis_single_point(point: jnp.ndarray) -> jnp.ndarray:
-    """
-    Generate basis functions from points on Fermat quintic.
-
-    Args:
-        points: (5,) complex array of points on the quintic
-
-    Returns:
-        basis: (25,) real array of basis functions
-               First 10 are Im(zi*zjbar) for i<j, next 15 are Re(zi*zjbar) for i<=j
-    """
-
-    # Create all pairwise products zi * zj_bar using broadcasting
-    # Shape: (5, 5)
-    zi = point[:, None]  # (5, 1)
-    zj_bar = jnp.conj(point[None, :])  # (1, 5)
-    products = zi * zj_bar  # (5, 5)
-
-    # Extract upper triangular indices for imaginary parts (i < j)
-    # This gives us 10 unique imaginary parts
-    triu_indices_imag = jnp.triu_indices(5, k=1)
-    imag_basis = jnp.imag(products[triu_indices_imag[0], triu_indices_imag[1]])  # (10,)
-
-    # Extract upper triangular indices including diagonal for real parts (i <= j)
-    # This gives us 15 unique real parts
-    triu_indices_real = jnp.triu_indices(5, k=0)
-    real_basis = jnp.real(products[ triu_indices_real[0], triu_indices_real[1]])  # (15,)
-
-    # Concatenate to form complete basis
-    return jnp.concatenate([imag_basis, real_basis])  # (25,)
-
-def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray) -> jnp.ndarray:
-    """Evaluate the five equations. The input points are real."""
-    point_complex = point[:5] + 1j * point[5:]
-    basis = generate_basis_single_point(point_complex)
-    eqs_vec = coeffs @ basis # (3,)
-    cy = jnp.sum(point_complex**5)
-    eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 
-    return eqs_evaluated
-
 def approx_distance_newton_step(
-    p_10d: jnp.ndarray, coeffs: jnp.ndarray, jacobian_func: Callable, constant_coord: int
+    p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int
 ) -> float:
     """Raw single-item function for computing the norm of a Newton step."""
-    f_vec = evaluate_equations_single_point(p_10d, coeffs)
-    J = jacobian_func(p_10d)
+    f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
+    J = compute_jacobian(p_10d, coeffs, psi, constant_coord)
     JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
     w = jnp.linalg.solve(JJT, -f_vec)
     delta_p_active = J.T @ w
@@ -393,7 +355,7 @@ def approx_distance_newton_step(
 
 
 def refine_point_iterative(
-    p_10d_initial: jnp.ndarray, coeffs: jnp.ndarray, jacobian_func: Callable, constant_coord: int, n_steps: int
+    p_10d_initial: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int, n_steps: int
 ) -> jnp.ndarray:
     """Raw single-item function for refining a point."""
     active_indices = jnp.concatenate([
@@ -403,8 +365,8 @@ def refine_point_iterative(
                      ])
 
     def body_fn(i, p_10d):
-        f_vec = evaluate_equations_single_point(p_10d, coeffs)
-        J = jacobian_func(p_10d)
+        f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
+        J = compute_jacobian(p_10d, coeffs, psi, constant_coord)
         JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
@@ -414,69 +376,49 @@ def refine_point_iterative(
     return jax.lax.fori_loop(0, n_steps, body_fn, p_10d_initial)
 
 
-def compute_distances_batched(points: np.ndarray, coeffs: jnp.ndarray, jacobian_func: Callable, batch_size: int = 100000, constant_coord: int = 0) -> jnp.ndarray:
+def compute_distances_batched(points: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
     """ Compute the distances of the input points to the intersection"""
 
-    num_points = points.shape[0]
-    num_batches = (num_points + batch_size - 1) // batch_size
+    dist_partial = partial(approx_distance_newton_step, coeffs=coeffs, psi=psi, constant_coord=constant_coord)
 
-    # --- Create efficient batched functions that use your provided jacobian_func ---
-    # We use partial to "bake in" the jacobian_func for the calls inside vmap.
-    dist_partial = partial(approx_distance_newton_step, coeffs=coeffs, jacobian_func=jacobian_func, constant_coord=constant_coord)
-
-    compute_distances = jax.jit(jax.vmap(dist_partial))
-    # ---
-
-    all_distances = None
-
-    for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, num_points)
-        batch_10d = jnp.array(points[start_idx:end_idx])
-
-        distances = compute_distances(batch_10d)
-        if all_distances is None:
-            all_distances = distances
-        else:
-            all_distances = np.concatenate([all_distances, distances])
+    all_distances  = jax.jit(jax.vmap(dist_partial))(points)
 
     return all_distances
 
 
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'debug_mode'))
 def filter_and_refine(
-    points: np.ndarray,
+    points: jnp.ndarray,
     coeffs: jnp.ndarray,
-    jacobian_func: Callable,
+    psi: Optional[jnp.ndarray] = None,
     k: int = 10000,
-    batch_size: int = 100000,
     n_refine_steps: int = 20,
-    constant_coord: int = 0
+    constant_coord: int = 0,
+    debug_mode: bool = False
 ) -> jnp.ndarray:
     """
     Filters a large set of 10D points to find the k best, then refines them.
     """
 
-    refine_partial = partial(refine_point_iterative, coeffs=coeffs, jacobian_func=jacobian_func, constant_coord=constant_coord, n_steps=n_refine_steps)
-    refine_batch = jax.jit(jax.vmap(refine_partial))
+    if psi is None:
+        psi = jnp.complex64(0) 
 
-    all_distances = compute_distances_batched(points, coeffs, jacobian_func, batch_size=batch_size, constant_coord=constant_coord)
+    refine_partial = partial(refine_point_iterative, coeffs=coeffs, psi=psi, constant_coord=constant_coord, n_steps=n_refine_steps)
+    refine_batch = jax.vmap(refine_partial)
 
-    best_2k_indices = np.argsort(all_distances)[:2*k]
+    all_distances = compute_distances_batched(points, coeffs, psi, constant_coord=constant_coord)
+
+    best_2k_indices = jnp.argsort(all_distances)[:2*k]
     top_2k_points = points[best_2k_indices]
 
-    best_k_indices = np.argsort(all_distances)[:k]
-    top_k_points = points[best_k_indices]
 
-    print(f"\nFound {k} best candidates. Refining them with {n_refine_steps} Newton steps...")
-
-    distance_initial = compute_distances_batched(top_k_points, coeffs, jacobian_func, batch_size=k, constant_coord=constant_coord)
     refined_points_10d = refine_batch(jnp.array(top_2k_points))
-    distance_refined = compute_distances_batched(refined_points_10d, coeffs, jacobian_func, batch_size=k, constant_coord=constant_coord)
+    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, constant_coord=constant_coord)
 
-    best_indices = np.argsort(distance_refined)[:k]
+    best_indices = jnp.argsort(distance_refined)[:k]
     top_k_distances = distance_refined[best_indices]
     top_k_points = refined_points_10d[best_indices]
-    print(f"Refinement complete. Initial Distance range: {np.min(distance_initial)} ~ {np.max(distance_initial)}, Mean: {np.mean(distance_initial)}")
-    print(f"Refined Distance range: {np.min(top_k_distances)} ~ {np.max(top_k_distances)}, Mean: {np.mean(top_k_distances)}")
-
-    return top_k_points
+    if debug_mode:
+        return top_k_points, top_k_distances
+    else:
+        return top_k_points
