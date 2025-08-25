@@ -268,7 +268,7 @@ st = time.time()
 #min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=3000, n_refine_steps=5, constant_coord=0, debug_mode=True)
 min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=10000, n_refine_steps=newton_refine_steps, constant_coord=0, debug_mode=True)
 #min_set_real = filter_and_refine(points_real, coeffs, jacobian_func, psi, k=3000, n_refine_steps=5, constant_coord=0)
-total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, phases = compute_combined_fitness(min_set_real, coeffs, psi, debug_mode=True)
+total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, phases = compute_combined_fitness(min_set_real, coeffs, psi, debug_mode=True)
 print('total_fitness: ', total_fitness)
 print('lagrangian_fitness: ', lagrangian_fitness)
 print('special_fitness: ', special_fitness)
@@ -295,7 +295,7 @@ values, indices = jax.lax.top_k(norms_cut, 20)
 
 #for i in range(50):
 print('Point:', min_set[indices])
-print('kahler_form_restricted: ', kahler_form_restricted[indices])
+print('kahler_form_restricted: ', kahler_form_restricted_normalized[indices])
 
 
 phase_tolerance = 1e-3

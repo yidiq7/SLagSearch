@@ -131,15 +131,27 @@ def compute_kahler_form_restricted(points: jnp.ndarray, restriction: jnp.ndarray
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
     return kahler_form_restricted
 
-def compute_lagrangian_condition_fitness(kahler_form_restricted: jnp.ndarray, k: int=10):
+
+def compute_kahler_form_unrestricted(points: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1,))
+    kahler_form = jit_compute_kahler_form(points, constant_coord)
+    return kahler_form
+
+
+def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray, k: int=10):
+    kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restriction, restriction)
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
+    normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
+    norms_normalized = frobenius_norms / normalization_factor  
     # Pick the smallest 80% otherwise the mean will be dominated by the points with large errors
     # We want to make the smallest errors close to 0
-    sorted_norms = jnp.sort(frobenius_norms)
-    norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.8)]
-    kahler_form_loss = jnp.mean(norms_cut)
+    # sorted_norms = jnp.sort(frobenius_norms)
+    # norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.8)]
+    # kahler_form_loss = jnp.mean(norms_cut)
+    kahler_form_loss = jnp.mean(norms_normalized)
     fitness = jnp.exp(-k*kahler_form_loss)
     return fitness
+
 
 def get_Omega_coord(min_idx):
     # Choose the rest three coordinates to form the basis
@@ -231,8 +243,8 @@ def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi
     restriction = vmap_compute_restriction(jacobians)
 
     min_set = min_set_real[:, :5] + 1j*min_set_real[:, 5:]
-    kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord)
-    lagrangian_fitness = compute_lagrangian_condition_fitness(kahler_form_restricted, k=10)
+    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
+    lagrangian_fitness = compute_lagrangian_condition_fitness(kahler_form_unrestricted, restriction, k=10)
 
     phases = compute_holomorphic_form_restricted(min_set, restriction, phase_only=True)
     n_bins_val = 100
@@ -243,7 +255,10 @@ def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi
     #combined_fitness = jnp.where(lagrangian_fitness > 0.98 , 1 + special_fitness, lagrangian_fitness)
 
     if debug_mode:
-        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, phases
+        kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord)
+        normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
+        kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
+        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, phases
     else:
         return combined_fitness
 
