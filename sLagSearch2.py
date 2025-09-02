@@ -283,7 +283,7 @@ print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, 
 with open("min_set_psi1000000.pkl", "wb") as f:
     pickle.dump(min_set, f)
 
-frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
+frobenius_norms = jnp.linalg.norm(kahler_form_restricted_normalized, axis=(1, 2))
 # Pick the smallest 90% to avoid numerical issues
 sorted_norms = jnp.sort(frobenius_norms)
 norms_cut = sorted_norms[:int(sorted_norms.shape[0]*1.0)]
