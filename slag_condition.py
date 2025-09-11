@@ -3,10 +3,12 @@ import jax.numpy as jnp
 from get_restriction import compute_jacobian, compute_restriction, compute_Omega_restriction
 from functools import partial
 import math
+from itertools import combinations_with_replacement
+from collections import Counter
 
 # --- Core Calculation ---
 
-def _calculate_complex_metric(z: jnp.ndarray, patch_index: int) -> jnp.ndarray:
+def calculate_complex_metric_old(z: jnp.ndarray, patch_index: int) -> jnp.ndarray:
     """
     Calculates the complex components g_ab_bar of the Fubini-Study metric.
 
@@ -38,6 +40,170 @@ def _calculate_complex_metric(z: jnp.ndarray, patch_index: int) -> jnp.ndarray:
     g_complex = (identity * norm_sq_zeta - outer_prod) / (norm_sq_zeta**2)
     return g_complex
 
+def calculate_complex_metric_FS(z: jnp.ndarray, patch_index: int) -> jnp.ndarray:
+    """
+    Calculates the complex components g_ab_bar of the Fubini-Study metric
+    by differentiating the Kähler potential.
+
+    This is the fundamental quantity from which both the metric tensor and the
+    Kähler form can be derived. It follows the standard definition:
+    g_{a,b_bar} = d_a d_b_bar K
+    where K is the Kähler potential, K = log(1 + |zeta|^2).
+
+    This implementation uses JAX's automatic differentiation to compute the
+    second derivatives of K, rather than using the closed-form solution.
+
+    Args:
+        z: A (5,) array of complex numbers (homogeneous coordinates).
+        patch_index: The index for the affine patch.
+
+    Returns:
+        A (4, 4) complex array for the Hermitian metric g_ab_bar.
+    """
+    # The coordinate for the patch denominator
+    z_patch = z[patch_index]
+
+    # Inhomogeneous coordinates (zeta) are the other 4 coordinates divided by z_patch
+    zeta = jnp.delete(z, patch_index)
+
+    def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
+        """
+        Defines the Kähler potential for the Fubini-Study metric.
+        K = log(1 + |zeta|^2) = log(1 + sum(zeta * conj(zeta)))
+        """
+        # We treat zeta and its conjugate as independent variables for differentiation.
+        norm_sq = 1.0 + jnp.sum(zeta_coords * zeta_bar_coords)
+        return jnp.log(norm_sq)
+
+    metric_func = jax.jacfwd(jax.grad(kahler_potential, argnums=0, holomorphic=True), argnums=1, holomorphic=True)
+
+    # Evaluate the metric function at the given coordinates
+    g_complex = metric_func(zeta, jnp.conj(zeta))
+    return g_complex
+
+def generate_quintic_exponents(num_vars: int = 5, degree: int = 4) -> jnp.ndarray:
+    """
+    Generates the exponents for all unique monomials for a polynomial.
+
+    For a quintic polynomial in 5 variables, this will produce a (126, 5) array,
+    where each row is the set of exponents for one monomial term.
+    (e.g., [5,0,0,0,0], [4,1,0,0,0], etc.)
+
+    Args:
+        num_vars: The number of variables in the polynomial (e.g., 5).
+        degree: The degree of the polynomial (e.g., 5).
+
+    Returns:
+        A jax.numpy array of shape (N, num_vars) where N is the number of
+        unique monomials.
+    """
+    exponents = []
+    # Generates all combinations of variable indices for a given degree
+    for combo in combinations_with_replacement(range(num_vars), degree):
+        # Counts occurrences of each variable index to get the powers
+        count = Counter(combo)
+        exponent_tuple = tuple(count.get(i, 0) for i in range(num_vars))
+        exponents.append(exponent_tuple)
+
+    exponents.sort(key=max)
+    return jnp.array(exponents, dtype=jnp.int32)
+
+def _create_coefficient_mapping(exponents: jnp.ndarray):
+    """
+    Creates a mapping from the 126 monomials to the 7 unique coefficient types.
+    """
+    # Get the canonical form of each exponent by sorting it descending.
+    # Ex: [1,2,1,1,0] -> (2,1,1,1,0)
+    sorted_exponents = [tuple(sorted(exp.tolist(), reverse=True)) for exp in exponents]
+
+    # Find the set of unique canonical forms and sort them to create a stable order.
+    # This determines the order for the 7-element input coefficient vector.
+    # The key sorts first by highest power, then lexicographically.
+    canonical_forms = sorted(list(set(sorted_exponents)), key=lambda x: (x[0], x))
+
+    # Create a map from the canonical form to its index (0-6)
+    form_to_index = {form: i for i, form in enumerate(canonical_forms)}
+
+    # For each of the 126 monomials, find the index of its canonical form.
+    # This array will be used to "gather" coefficients.
+    mapping_indices = jnp.array([form_to_index[se] for se in sorted_exponents])
+    return jnp.array(canonical_forms, dtype=jnp.int32), mapping_indices
+
+# --- Pre-compute constants at module load time for maximum performance ---
+
+# (7, 5) array of the unique, sorted exponent structures.
+# (126,) array of indices (0-6) mapping each monomial to its canonical form.
+_QUINTIC_EXPONENTS = generate_quintic_exponents(num_vars=5, degree=4)
+_CANONICAL_EXPONENT_FORMS, _COEFF_MAPPING_INDICES = _create_coefficient_mapping(_QUINTIC_EXPONENTS)
+
+
+def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray:
+    """
+    Calculates the complex metric g_ab_bar from a quintic polynomial Kähler potential
+    with symmetrized coefficients.
+
+    Args:
+        z: A (5,) array of complex homogeneous coordinates.
+        patch_index: The index for the affine patch.
+        
+    Returns:
+        A (4, 4) complex array for the Hermitian metric g_ab_bar.
+    """
+    """
+        unique_coeffs: A (7,) array of unique complex coefficients. The order
+                   corresponds to the canonical exponent forms, which can be
+                   inspected by printing `_CANONICAL_EXPONENT_FORMS`. The order is:
+                   [0]: (1,1,1,1,1)
+                   [1]: (2,1,1,1,0)
+                   [2]: (2,2,1,0,0)
+                   [3]: (3,1,1,0,0)
+                   [4]: (3,2,0,0,0)
+                   [5]: (4,1,0,0,0)
+                   [6]: (5,0,0,0,0)
+    """
+
+    #unique_coeffs = jnp.array([-4.79909*240, -75.298664*12, -83.726102*8, -103.669506*8, -39.049639*12, -33.852379*12, 1.0*(-180)])
+    unique_coeffs = jnp.array([2.214272*48, 14.010661*8, 2.3827940*24, 9.073280*12, 1.0*48])
+    # Expand the 7 unique coefficients into the full 126-coefficient array.
+    # This is a highly efficient gather operation in JAX.
+    full_coeffs = unique_coeffs[_COEFF_MAPPING_INDICES]
+
+    # Inhomogeneous coordinates (zeta)
+    z_patch = z[patch_index]
+    zeta = jnp.delete(z, patch_index) / z_patch
+
+    def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
+        """
+        Defines K = log(sum_i gamma_i |m_i|^2).
+        This function is structured to be compatible with jax.grad on complex vars.
+        """
+        # Re-homogenize both the holomorphic and anti-holomorphic coordinates
+        full_coords = jnp.insert(zeta_coords, patch_index, 1.0)
+        full_coords_bar = jnp.insert(zeta_bar_coords, patch_index, 1.0)
+
+        # Vectorize the monomial calculation over all 126 exponent sets.
+        vmap_mono = jax.vmap(lambda exp, base: jnp.prod(base ** exp), in_axes=(0, None))
+        
+        # Calculate all 126 monomial values m_i(zeta)
+        monomial_values = vmap_mono(_QUINTIC_EXPONENTS, full_coords)
+        
+        # Calculate all 126 anti-monomial values m_i(zeta_bar)
+        monomial_values_bar = vmap_mono(_QUINTIC_EXPONENTS, full_coords_bar)
+        
+        # Calculate the real potential sum_i gamma_i * m_i * m_i_bar
+        # jnp.real is used for type stability, although the product is already real.
+        potential_sum = jnp.sum(full_coeffs * monomial_values * monomial_values_bar)
+        
+        return jnp.log(potential_sum)
+
+    # The differentiation logic remains the same, computing d/d(zeta) d/d(zeta_bar) K
+    metric_func = jax.jacfwd(jax.grad(kahler_potential, argnums=0, holomorphic=True), argnums=1, holomorphic=True)
+    
+    # Evaluate the metric function at the given coordinates
+    g_complex = metric_func(zeta, jnp.conj(zeta))
+    
+    return g_complex
+
 # --- Assembly Helpers ---
 
 def _assemble_metric_tensor(g_complex: jnp.ndarray) -> jnp.ndarray:
@@ -65,7 +231,7 @@ def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, epsilon: 
     return jax.lax.cond(
         jnp.abs(z[patch_index]) < epsilon,
         lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-        lambda: _assemble_metric_tensor(_calculate_complex_metric(z, patch_index))
+        lambda: _assemble_metric_tensor(calculate_complex_metric_k4(z, patch_index))
     )
 
 def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, epsilon: float) -> jnp.ndarray:
@@ -73,7 +239,7 @@ def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, epsilon: 
     return jax.lax.cond(
         jnp.abs(z[patch_index]) < epsilon,
         lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-        lambda: _assemble_kahler_form(_calculate_complex_metric(z, patch_index))
+        lambda: _assemble_kahler_form(calculate_complex_metric_k4(z, patch_index))
     )
 
 # --- Public API Functions ---
@@ -179,7 +345,7 @@ def compute_holomorphic_form(points_complex: jnp.ndarray) -> tuple[jnp.ndarray, 
         An (N, 3) array containing the three coordinates in the basis
     """
 
-    Omega = 1 / (5*points_complex[:, 1:])**4
+    Omega = 1 / (5*(points_complex[:, 1:])**4)
     Omega_min_indices = jnp.argmin(jnp.abs(Omega), axis=1)
     Omega = Omega[jnp.arange(Omega.shape[0]), Omega_min_indices]
     Omega_coord = jax.vmap(get_Omega_coord)(Omega_min_indices)
@@ -258,7 +424,9 @@ def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi
         kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord)
         normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
         kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
-        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, phases
+        # Test
+        kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
+        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_unrestricted_normalized, restriction, phases
     else:
         return combined_fitness
 
