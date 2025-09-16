@@ -309,12 +309,11 @@ def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, 
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
     norms_normalized = frobenius_norms / normalization_factor  
-    # Pick the smallest 80% otherwise the mean will be dominated by the points with large errors
-    # We want to make the smallest errors close to 0
-    # sorted_norms = jnp.sort(frobenius_norms)
-    # norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.8)]
-    # kahler_form_loss = jnp.mean(norms_cut)
-    kahler_form_loss = jnp.mean(norms_normalized)
+    # Remove the potential blow-up
+    sorted_norms = jnp.sort(norms_normalized)
+    norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.99)]
+    kahler_form_loss = jnp.mean(norms_cut)
+    #kahler_form_loss = jnp.mean(norms_normalized)
     fitness = jnp.exp(-k*kahler_form_loss)
     return fitness
 
@@ -425,8 +424,9 @@ def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi
         normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
         kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
         # Test
-        kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
-        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_unrestricted_normalized, restriction, phases
+        #kahler_form_restricted_normalized = kahler_form_restricted 
+        #kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
+        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restriction, phases
     else:
         return combined_fitness
 
