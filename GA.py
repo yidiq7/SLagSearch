@@ -7,6 +7,8 @@ import pickle
 import time
 import os
 import argparse
+import glob
+import re
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
 from helper import canonicalize_coeffs, format_array_with_commas
@@ -23,31 +25,30 @@ PSI = 0
 CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
 # GA Parameters
-POPULATION_SIZE = 400      # Size of the population.
-GENOTYPE_SHAPE = (3, 25)   # Shape of a single individual's genotype.
+POPULATION_SIZE = 400
+GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 400   # Total number of generations to run.
-TOURNAMENT_SIZE = 3       # Number of individuals selected for a tournament.
+NUM_GENERATIONS = 1000
+TOURNAMENT_SIZE = 5
 
 # Crossover and Mutation Parameters
-CROSSOVER_RATE = 0.9       # Probability of performing crossover.
-MUTATION_RATE = 1.5 / NUM_GENES # Probability of mutating a single gene.
-ETA_CROSSOVER = 15.0       # Distribution index for Simulated Binary Crossover (SBX).
-ETA_MUTATION = 20.0        # Distribution index for Polynomial Mutation.
+CROSSOVER_RATE = 0.9
+MUTATION_RATE = 1.5 / NUM_GENES
+ETA_CROSSOVER = 15.0
+ETA_MUTATION = 20.0
 
-# Niching Parameters
-SIGMA_SHARE = 0.25         # The radius of a niche.
-ALPHA_SHARE = 1.0          # Shape parameter for the sharing function.
+# --- NEW: Speciation Parameters ---
+SPECIATION_THRESHOLD = 2.5 # Max distance to be in the same species (replaces SIGMA_SHARE)
+STAGNATION_THRESHOLD = 10  # Generations a species can go without improvement before being removed.
+SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
-# This is the key parameter to control memory usage.
-# It's the largest number of individuals you can evaluate at once without an OOM error.
-# Tune this based on your GPU's VRAM (e.g., 4, 8, 16, 32).
 FITNESS_MINI_BATCH_SIZE = 50
-LOG_INTERVAL = 1         # How often to print progress (in generations).
+LOG_INTERVAL = 1
 
-CHECKPOINT_DIR = 'checkpoints'
-CHECKPOINT_INTERVAL = 100  # Save progress every 100 generations
+# Checkpointing
+CHECKPOINT_DIR = 'checkpoints_species'
+CHECKPOINT_INTERVAL = 100
 
 MINSET_SIZE = 10000
 NEWTON_STEPS = 40
@@ -55,63 +56,68 @@ NEWTON_STEPS = 40
 # JAX PRNG Key
 key = jax.random.PRNGKey(42)
 
-
 # -----------------------------------------------------------------------------
-# 2. CORE EVALUATION FUNCTIONS (FITNESS, NORMALIZATION, REFINEMENT)
+# 2. CORE EVALUATION FUNCTIONS (UNCHANGED)
 # -----------------------------------------------------------------------------
-# --- Combined Fitness Evaluation for a Single Individual ---
-
 @partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord'))
 def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.ndarray, psi: jnp.ndarray, k: int, n_refine_steps: int, constant_coord: int = 0) -> jnp.float32:
-    """
-    This function chains the refinement and fitness calculation for one individual.
-    It is this entire unit that will be batched using vmap.
-    """
     min_set_real = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord)
     fitness = compute_combined_fitness(min_set_real, coeffs, psi, constant_coord)
     return fitness
 
-
 # -----------------------------------------------------------------------------
-# 3. NICHING IMPLEMENTATION (FITNESS SHARING)
+# 3. SPECIES MANAGEMENT & NICHING (REFACTORED)
 # -----------------------------------------------------------------------------
-
 @jit
 def calculate_distance(ind1, ind2):
-    """Calculates Euclidean distance between two flattened individuals."""
     return jnp.linalg.norm(ind1.ravel() - ind2.ravel())
 
-@partial(jit, static_argnames=('sigma', 'alpha'))
-def sharing_function(distance, sigma, alpha):
-    """Calculates the sharing value based on distance."""
-    return jnp.maximum(0, 1 - (distance / sigma)**alpha)
+# --- NEW: Species Class ---
+class Species:
+    _id_counter = 0
+    def __init__(self, representative):
+        self.id = Species._id_counter
+        Species._id_counter += 1
+        self.representative = representative
+        self.members = []
+        self.fitness_values = []
+        self.best_fitness = -jnp.inf
+        self.generations_since_improvement = 0
 
-@partial(jit, static_argnames=('sigma', 'alpha'))
-def get_shared_fitness(population, raw_fitness, sigma, alpha):
-    """Adjusts raw fitness scores based on niche counts."""
-    dist_matrix = vmap(lambda ind1: vmap(lambda ind2: calculate_distance(ind1, ind2))(population))(population)
-    sharing_matrix = sharing_function(dist_matrix, sigma, alpha)
-    niche_counts = jnp.sum(sharing_matrix, axis=1)
-    niche_counts = jnp.maximum(niche_counts, 1.0)
-    shared_fitness = raw_fitness / niche_counts
-    return shared_fitness
+    def add_member(self, individual, fitness):
+        self.members.append(individual)
+        self.fitness_values.append(fitness)
 
+    def update_stagnation(self):
+        current_max_fitness = jnp.max(jnp.array(self.fitness_values)) if self.members else -jnp.inf
+        if current_max_fitness > self.best_fitness:
+            self.best_fitness = current_max_fitness
+            self.generations_since_improvement = 0
+        else:
+            self.generations_since_improvement += 1
+
+    def clear_members(self):
+        self.members = []
+        self.fitness_values = []
+
+    def __repr__(self):
+        return f"Species(id={self.id}, members={len(self.members)}, best_fitness={self.best_fitness:.4f}, stagnated_for={self.generations_since_improvement})"
 
 # -----------------------------------------------------------------------------
-# 4. GENETIC ALGORITHM OPERATORS
+# 4. GENETIC ALGORITHM OPERATORS (REFACTORED FOR SPECIES)
 # -----------------------------------------------------------------------------
-
 @partial(jit, static_argnames=('k',))
 def tournament_selection(key, population, fitness, k):
-    """Selects an individual using tournament selection."""
-    indices = jax.random.randint(key, (k,), 0, POPULATION_SIZE)
+    num_individuals = population.shape[0]
+    indices = jax.random.randint(key, (k,), 0, num_individuals)
     participants_fitness = fitness[indices]
     winner_index_in_tournament = jnp.argmax(participants_fitness)
     return population[indices[winner_index_in_tournament]]
 
+# SBX Crossover and Polynomial Mutation remain the same as they operate on individuals.
+# I'm including them here for completeness but they are unchanged from your original code.
 @partial(jit, static_argnames=('eta',))
 def sbx_crossover(key, parent1, parent2, eta):
-    """Simulated Binary Crossover (SBX) for two individuals."""
     u = jax.random.uniform(key, shape=parent1.shape)
     beta = jnp.where(u <= 0.5, (2 * u)**(1 / (eta + 1)), (1 / (2 * (1 - u)))**(1 / (eta + 1)))
     offspring1 = 0.5 * ((1 + beta) * parent1 + (1 - beta) * parent2)
@@ -122,7 +128,6 @@ def sbx_crossover(key, parent1, parent2, eta):
 
 @partial(jit, static_argnames=('prob_mut', 'eta'))
 def polynomial_mutation(key, individual, prob_mut, eta):
-    """Applies polynomial mutation to an individual."""
     key1, key2 = jax.random.split(key)
     u = jax.random.uniform(key1, shape=individual.shape)
     do_mutation = jax.random.uniform(key2, shape=individual.shape) < prob_mut
@@ -130,98 +135,140 @@ def polynomial_mutation(key, individual, prob_mut, eta):
     mutated_individual = jnp.where(do_mutation, individual + delta, individual)
     return jnp.clip(mutated_individual, -1.0, 1.0)
 
-
-# -----------------------------------------------------------------------------
-# 5. MAIN GA LOOP
-# -----------------------------------------------------------------------------
-
-@jax.jit
-def ga_step(key, population, fitness):
-    """Performs one full generation of the Genetic Algorithm."""
-    next_pop = jnp.empty_like(population)
-    shared_fitness = get_shared_fitness(population, fitness, SIGMA_SHARE, ALPHA_SHARE)
-    keys = jax.random.split(key, POPULATION_SIZE // 2 + 1)
-
-    def evolution_loop_body(i, state):
-        current_pop, loop_keys = state
-        selection_key1, selection_key2, crossover_key, mutation_key1, mutation_key2 = jax.random.split(loop_keys[i], 5)
-        
-        parent1 = tournament_selection(selection_key1, population, shared_fitness, TOURNAMENT_SIZE)
-        parent2 = tournament_selection(selection_key2, population, shared_fitness, TOURNAMENT_SIZE)
-        
-        do_crossover = jax.random.uniform(crossover_key) < CROSSOVER_RATE
-        offspring1, offspring2 = sbx_crossover(crossover_key, parent1, parent2, ETA_CROSSOVER)
-        child1 = jax.lax.cond(do_crossover, lambda: offspring1, lambda: parent1)
-        child2 = jax.lax.cond(do_crossover, lambda: offspring2, lambda: parent2)
-        
-        mutated_child1 = polynomial_mutation(mutation_key1, child1, MUTATION_RATE, ETA_MUTATION)
-        mutated_child2 = polynomial_mutation(mutation_key2, child2, MUTATION_RATE, ETA_MUTATION)
-        
-        normalized_child1 = normalize_coeffs(canonicalize_coeffs(mutated_child1))
-        normalized_child2 = normalize_coeffs(canonicalize_coeffs(mutated_child2))
-        
-        new_pop = current_pop.at[2*i].set(normalized_child1)
-        new_pop = new_pop.at[2*i+1].set(normalized_child2)
-        return (new_pop, loop_keys)
-
-    final_pop, _ = jax.lax.fori_loop(0, POPULATION_SIZE // 2, evolution_loop_body, (next_pop, keys))
+@partial(jit, static_argnames=('max_offspring', 'k_tournament', 'p_mut', 'eta_cross', 'eta_mut'))
+def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tournament, p_mut, eta_cross, eta_mut):
+    """Generates a fixed-size batch of offspring and we slice from it later."""
     
-    if POPULATION_SIZE% 2 == 1:
-        last_key = keys[-1]
-        selection_key, mutation_key = jax.random.split(last_key)
-        parent = tournament_selection(selection_key, population, shared_fitness, TOURNAMENT_SIZE)
-        mutated_parent = polynomial_mutation(mutation_key, parent, MUTATION_RATE, ETA_MUTATION)
-        normalized_parent = normalize_coeffs(canonicalize_coeffs(mutated_parent))
-        final_pop = final_pop.at[-1].set(normalized_parent)
+    # Create 4 master keys, one for each stochastic operation.
+    key_p1, key_p2, key_cross, key_mut = jax.random.split(key, 4)
 
-    return final_pop
+    # Split each master key into a batch of size max_offspring
+    p1_keys = jax.random.split(key_p1, max_offspring)
+    p2_keys = jax.random.split(key_p2, max_offspring)
+    cross_keys = jax.random.split(key_cross, max_offspring)
+    mut_keys = jax.random.split(key_mut, max_offspring)
+
+    # VMAP to perform batched tournament selection
+    select_fn = partial(tournament_selection, population=members, fitness=fitness, k=k_tournament)
+    parent1_batch = vmap(select_fn)(p1_keys)
+    parent2_batch = vmap(select_fn)(p2_keys)
+
+    # VMAP to perform batched crossover
+    crossover_fn = partial(sbx_crossover, eta=eta_cross)
+    offspring1_batch, offspring2_batch = vmap(crossover_fn)(cross_keys, parent1_batch, parent2_batch)
+    
+    # Decide which children to keep based on crossover rate
+    crossover_mask = vmap(jax.random.uniform)(cross_keys).reshape(-1, 1, 1) < CROSSOVER_RATE
+    child_batch = jnp.where(crossover_mask, offspring1_batch, parent1_batch)
+
+    # VMAP to perform batched mutation
+    mutation_fn = partial(polynomial_mutation, prob_mut=p_mut, eta=eta_mut)
+    mutated_batch = vmap(mutation_fn)(mut_keys, child_batch)
+
+    # VMAP to normalize the final batch
+    normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
+    
+    return normalized_batch
 
 
-# -----------------------------------------------------------------------------
-# 6. EXECUTION
+def reproduce_within_species(key, species, num_offspring):
+    """Generates offspring by calling a padded, JIT-compiled function."""
+    if num_offspring <= 0:
+        return []
+
+    members_arr = jnp.array(species.members)
+    fitness_arr = jnp.array(species.fitness_values)
+    num_members = members_arr.shape[0]
+
+    # Elitism is handled here
+    elite_offspring = []
+    if SPECIES_ELITISM > 0 and num_members > 0:
+        num_elites = min(SPECIES_ELITISM, num_offspring)
+        elite_indices = jnp.argsort(fitness_arr)[-num_elites:]
+        elite_offspring = [members_arr[i] for i in elite_indices]
+        
+    offspring_to_generate = num_offspring - len(elite_offspring)
+    if offspring_to_generate <= 0:
+        return elite_offspring
+
+    # --- PADDING AND SLICING LOGIC ---
+    MAX_OFFSPRING_PER_SPECIES = 64 
+
+    if num_members < 2:
+        # This part is already efficient enough for the tiny species edge case
+        mutation_fn = partial(polynomial_mutation, prob_mut=MUTATION_RATE, eta=ETA_MUTATION)
+        padded_offspring = vmap(mutation_fn, in_axes=(0, 0))(
+            jax.random.split(key, offspring_to_generate), 
+            jnp.tile(members_arr, (offspring_to_generate, 1, 1))
+        )
+    else:
+        # --- NEW PADDING LOGIC TO ENSURE FIXED SHAPES ---
+        # A species cannot be larger than the total population.
+        MAX_SPECIES_SIZE = POPULATION_SIZE 
+
+        # Pad members array to the fixed size.
+        padding_size = MAX_SPECIES_SIZE - num_members
+        # We can just pad with the first member, as their fitness will be -inf.
+        padded_members = jnp.concatenate([
+            members_arr,
+            jnp.tile(members_arr[0:1], (padding_size, 1, 1))
+        ])
+
+        # Pad fitness array with -inf so padded members are never selected.
+        padded_fitness = jnp.concatenate([
+            fitness_arr,
+            jnp.full(padding_size, -jnp.inf)
+        ])
+        
+        # Now, call the JIT function with fixed-shape arrays.
+        # This will only be compiled ONCE.
+        padded_offspring = generate_padded_offspring_batch(
+            key, padded_members, padded_fitness, MAX_OFFSPRING_PER_SPECIES,
+            TOURNAMENT_SIZE, MUTATION_RATE, ETA_CROSSOVER, ETA_MUTATION
+        )
+    
+    # Slice to get the exact number of offspring we need.
+    new_offspring = padded_offspring[:offspring_to_generate]
+    
+    final_offspring = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(new_offspring)
+
+    return elite_offspring + list(final_offspring)
+
+
+# 5. MAIN GA LOOP (WITH FULL CHECKPOINTING)
 # -----------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    # ---  Argument Parsing for Checkpoint Control ---
-    parser = argparse.ArgumentParser(description="Run a Genetic Algorithm with advanced checkpointing.")
+    parser = argparse.ArgumentParser(description="Run a Speciation-based Genetic Algorithm.")
     parser.add_argument(
-        '--load_checkpoint',
-        type=str,
-        nargs='?',
-        const='latest',
-        default=None,
-        help="Load a checkpoint. Use 'latest' to load the most recent, or provide a specific filename. No argument starts a fresh run."
+        '--load_checkpoint', type=str, nargs='?', const='latest', default=None,
+        help="Load a checkpoint. Use 'latest' to load the most recent, or provide a filename."
     )
     args = parser.parse_args()
 
-    print("--- GA with Niching and Batched Fitness Evaluation in JAX ---")
-    print(f"Population Size: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}")
-    print(f"Fitness Mini-Batch Size: {FITNESS_MINI_BATCH_SIZE}")
+    print("--- Speciation-based GA in JAX ---")
+    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Speciation Threshold: {SPECIATION_THRESHOLD}")
 
     # --- Load points ---
     with open(CYPOINTSFILE, 'rb') as f:
-        pts_5mil_patch0 = pickle.load(f)
+        points_real = np.asarray(pickle.load(f))
+    points_real = np.concatenate([np.real(points_real), np.imag(points_real)], axis=1)
+    points_real = jax.device_put(jnp.asarray(points_real))
 
-    pts_5mil_patch0 = np.asarray(pts_5mil_patch0)
-    points_real = np.concatenate([np.real(pts_5mil_patch0), np.imag(pts_5mil_patch0)], axis=1)
-    points_real = jnp.asarray(points_real)
-
-
-    # --- Create the vmapped function for batch evaluation ---
+    # --- Create the vmapped fitness function ---
     vmap_fitness_batch = vmap(
         calculate_fitness_for_one_individual,
-        in_axes=(0, None, None, None, None, None), 
-        out_axes=0
+        in_axes=(0, None, None, None, None, None), out_axes=0
     )
-    
-   # ---  Advanced Load from checkpoint or initialize ---
+
+    # --- Load from checkpoint or initialize ---
     start_gen = 0
     population = None
+    species_list = []
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-
+    
     checkpoint_to_load = None
     if args.load_checkpoint == 'latest':
-        # Find the checkpoint with the highest generation number
         checkpoint_files = glob.glob(os.path.join(CHECKPOINT_DIR, 'checkpoint_gen_*.pkl'))
         if checkpoint_files:
             latest_gen = -1
@@ -233,7 +280,6 @@ if __name__ == '__main__':
                         latest_gen = gen_num
                         checkpoint_to_load = f
     elif args.load_checkpoint is not None:
-        # Load a specific file
         checkpoint_to_load = os.path.join(CHECKPOINT_DIR, args.load_checkpoint)
 
     if checkpoint_to_load and os.path.exists(checkpoint_to_load):
@@ -243,71 +289,158 @@ if __name__ == '__main__':
         population = checkpoint['population']
         start_gen = checkpoint['generation'] + 1
         key = checkpoint['key']
+        species_list = checkpoint['species_list']
         population = jnp.asarray(population) # Ensure it's a JAX array
+
+        # IMPORTANT: Reset the species ID counter to avoid collisions
+        if species_list:
+            max_id = max(s.id for s in species_list)
+            Species._id_counter = max_id + 1
+        
     else:
         if args.load_checkpoint:
             print(f"Warning: Checkpoint '{args.load_checkpoint}' not found.")
         print("\nNo valid checkpoint specified. Starting a new run.")
         key, subkey = jax.random.split(key)
         population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
-        print("Normalizing initial population...")
         population = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(population)
-   
+        species_list = []
+    
     print(f"\nStarting evolution from generation {start_gen}...")
     start_time = time.time()
     last_log_time = start_time # Initialize timer for logging intervals
-
+    
+    # --- Main Evolution Loop ---
     for gen in range(start_gen, NUM_GENERATIONS):
-        key, subkey = jax.random.split(key)
-
-        # --- Batched Fitness Evaluation ---
+        # 1. Calculate fitness for the entire population
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
         num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
-
         for i in range(num_batches):
             start_idx = i * FITNESS_MINI_BATCH_SIZE
-            end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
-            population_batch = population[start_idx:end_idx]
-            fitness_batch = vmap_fitness_batch(
-                population_batch, points_real, PSI,
-                MINSET_SIZE, NEWTON_STEPS, 0
-            )
-            all_fitness_scores = all_fitness_scores.at[start_idx:end_idx].set(fitness_batch)
+            end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
+            pop_batch = population[start_idx:end_idx]
+            fitness_batch = vmap_fitness_batch(pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0)
+            # Replace any potential NaN/inf values with 0 before storing them.
+            safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
+            all_fitness_scores = all_fitness_scores.at[start_idx:end_idx].set(safe_fitness_batch)
 
-        # --- Evolve to Next Generation ---
-        population = ga_step(subkey, population, all_fitness_scores)
-        # --- Logging and Timing ---
+        # 2. Speciate the population
+        for s in species_list: s.clear_members()
+        
+        if not species_list: # Handle first generation case
+            new_species = Species(representative=population[0])
+            species_list.append(new_species)
+
+        # Create a matrix of all species representatives
+        representatives = jnp.array([s.representative for s in species_list])
+        
+        # Create a vectorized distance function
+        dist_to_reps = vmap(calculate_distance, in_axes=(None, 0)) # ind vs all reps
+        dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(population, representatives) # all inds vs all reps
+        
+        # Find the closest species index for each individual in one go
+        closest_species_indices = jnp.argmin(dist_matrix, axis=1)
+        
+        # Check for new species
+        min_distances = jnp.min(dist_matrix, axis=1)
+        new_species_mask = min_distances >= SPECIATION_THRESHOLD
+
+        # This part must run on the CPU as it modifies Python objects
+        for i in range(POPULATION_SIZE):
+            if new_species_mask[i]:
+                new_species = Species(representative=population[i])
+                new_species.add_member(population[i], all_fitness_scores[i])
+                species_list.append(new_species)
+            else:
+                species_idx = closest_species_indices[i]
+                species_list[species_idx].add_member(population[i], all_fitness_scores[i])
+
+        # 3. Calculate offspring allocation
+        species_avg_fitness = [jnp.mean(jnp.array(s.fitness_values)) if s.members else 0.0 for s in species_list]
+        adjusted_fitness = jnp.maximum(0, jnp.array(species_avg_fitness))
+        total_adjusted_fitness = jnp.sum(adjusted_fitness)
+
+        next_generation_population = []
+        if total_adjusted_fitness > 0:
+            # Explicitly use jnp for all operations
+            species_avg_fitness_arr = jnp.array(species_avg_fitness)
+            
+            # Perform the allocation calculation using JAX arrays
+            proportions = (species_avg_fitness_arr / total_adjusted_fitness) * POPULATION_SIZE
+            offspring_counts = jnp.round(proportions).astype(int)
+            
+            # Correct rounding errors to ensure the total is exactly POPULATION_SIZE
+            diff = POPULATION_SIZE - jnp.sum(offspring_counts)
+            if diff != 0:
+                idx_to_update = jnp.argmax(species_avg_fitness_arr)
+                offspring_counts = offspring_counts.at[idx_to_update].set(offspring_counts[idx_to_update] + diff)
+
+            for i, s in enumerate(species_list):
+                if s.members:
+                    num_offspring = int(offspring_counts[i])
+                    key, subkey = jax.random.split(key)
+                    offspring = reproduce_within_species(subkey, s, num_offspring)
+                    next_generation_population.extend(offspring)
+
+        # 4. Handle stagnation and create new population
+        for s in species_list: s.update_stagnation()
+        
+        # Prune stale species, but keep at least one
+        species_list = [s for s in species_list if (s.generations_since_improvement < STAGNATION_THRESHOLD or len(species_list) == 1) and s.members]
+        
+        # Ensure population size is maintained
+        if len(next_generation_population) != POPULATION_SIZE:
+             # This can happen due to rounding or empty species. Refill if necessary.
+             current_pop_size = len(next_generation_population)
+             if current_pop_size < POPULATION_SIZE:
+                 key, subkey = jax.random.split(key)
+                 randoms_needed = POPULATION_SIZE - current_pop_size
+                 random_individuals = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
+                 random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
+                 next_generation_population.extend(random_individuals)
+
+        population = jnp.array(next_generation_population[:POPULATION_SIZE])
+        
+        # 5. Logging
         if (gen + 1) % LOG_INTERVAL == 0:
             current_time = time.time()
             duration_for_interval = current_time - last_log_time
             avg_time_per_gen = duration_for_interval / LOG_INTERVAL
-            
+
             max_fitness = jnp.max(all_fitness_scores)
             avg_fitness = jnp.mean(all_fitness_scores)
-            
-            print(f"Generation {gen+1:4d}/{NUM_GENERATIONS} | Max Fitness: {max_fitness:.4f} | Avg Fitness: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
-            
+            print(f"Gen {gen+1:4d}/{NUM_GENERATIONS} | Species: {len(species_list):2d} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
+        
             last_log_time = current_time # Reset timer for the next interval
-
-        # --- Save Named Checkpoint ---
-        if (gen + 1) % CHECKPOINT_INTERVAL == 0:
+        # 6. Checkpointing
+        if (gen + 1) % CHECKPOINT_INTERVAL == 0 and (gen + 1) < NUM_GENERATIONS:
             checkpoint_filename = os.path.join(CHECKPOINT_DIR, f'checkpoint_gen_{gen+1}.pkl')
+            # Prune members from species before saving to reduce file size
+            # The representative and stagnation state is the important part
+            species_to_save = [Species(s.representative) for s in species_list]
+            for i, s in enumerate(species_to_save):
+                s.id = species_list[i].id
+                s.best_fitness = species_list[i].best_fitness
+                s.generations_since_improvement = species_list[i].generations_since_improvement
+
             checkpoint_data = {
                 'population': population,
                 'generation': gen,
-                'key': key
+                'key': key,
+                'species_list': species_to_save
             }
             with open(checkpoint_filename, 'wb') as f:
                 pickle.dump(checkpoint_data, f)
-            print(f"--- Checkpoint saved at generation {gen+1} to {checkpoint_filename} ---")
+            print(f"--- Checkpoint saved to {checkpoint_filename} ---")
 
 
     end_time = time.time()
     print(f"\nEvolution finished in {end_time - start_time:.2f} seconds.")
-
-    # --- Final Analysis ---
+    # --- Final Analysis (Corrected) ---
     print("\n--- Analyzing Final Population ---")
-    # Re-calculate final fitness for analysis
+
+    # 1. Re-calculate fitness for the FINAL population to ensure it's up-to-date.
+    print("Calculating final fitness scores...")
     final_fitness = jnp.zeros(POPULATION_SIZE)
     num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
     for i in range(num_batches):
@@ -317,33 +450,39 @@ if __name__ == '__main__':
         fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0)
         final_fitness = final_fitness.at[start_idx:end_idx].set(fitness_batch)
 
-    sorted_indices = jnp.argsort(final_fitness)[::-1]
-    sorted_population = population[sorted_indices]
-    sorted_fitness = final_fitness[sorted_indices]
+    # 2. Use the correct vectorized speciation to assign members.
+    for s in species_list: s.clear_members()
     
-    print("\nIdentifying distinct solutions (niches)...")
-    labels = get_basis_labels()
-    niche_representatives = []
+    if species_list:
+        representatives = jnp.array([s.representative for s in species_list])
+        
+        dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
+        dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(population, representatives)
+        
+        closest_species_indices = jnp.argmin(dist_matrix, axis=1)
+
+        for i in range(POPULATION_SIZE):
+            species_idx = closest_species_indices[i]
+            # Ensure the species still exists before trying to add a member
+            if species_idx < len(species_list):
+                 species_list[species_idx].add_member(population[i], final_fitness[i])
+
+    # Filter out any species that are now empty after re-assignment
+    final_species_list = [s for s in species_list if s.members]
     
-    for i in range(POPULATION_SIZE):
-        individual = sorted_population[i]
-        fitness = sorted_fitness[i]
-        is_in_existing_niche = False
-        
-        for rep in niche_representatives:
-            if calculate_distance(individual, rep) < SIGMA_SHARE:
-                is_in_existing_niche = True
-                break
-        
-        if not is_in_existing_niche:
-            niche_representatives.append(individual)
-            print(f"\nFound new niche representative with fitness: {fitness:.5f}")
-            print("Coefficients for this niche:")
-            print(individual)
-            print("Array form ready to copy:")
-            print(format_array_with_commas(individual))
-            print("Complex equations:")
-            print(combine_to_complex_equations(labels, individual)) 
+    print(f"\nFound {len(final_species_list)} distinct species with members in the final population.")
+    
+    # Sort the populated species by their best current fitness
+    final_species_list.sort(key=lambda s: jnp.max(jnp.array(s.fitness_values)), reverse=True)
 
-    print(f"\nFound {len(niche_representatives)} distinct niches in the final population.")
-
+    for s in final_species_list:
+        best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
+        best_member = s.members[best_member_idx]
+        best_fitness = s.fitness_values[best_member_idx]
+        
+        print(f"\n--- Species {s.id} (Best Fitness: {best_fitness:.5f}) ---")
+        print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
+        print("Best Member's Coefficients:")
+        print(format_array_with_commas(best_member))
+        print("Complex equations:")
+        print(combine_to_complex_equations(get_basis_labels(), best_member))
