@@ -29,16 +29,27 @@ POPULATION_SIZE = 400
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
 NUM_GENERATIONS = 1000
-TOURNAMENT_SIZE = 5
+
+TRANSITION_GENERATION = 500
+# Exploration Phase Settings
+TOURNEY_SIZE_EXPLORE = 3
+MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
+ETA_MUTATION_EXPLORE = 10.0
+ETA_CROSSOVER_EXPLORE = 5.0
+
+# Exploitation Phase Settings
+TOURNEY_SIZE_EXPLOIT = 7
+MUTATION_RATE_EXPLOIT = 0.5 / NUM_GENES  # Lower rate
+ETA_MUTATION_EXPLOIT = 100.0
+ETA_CROSSOVER_EXPLOIT = 30.0
 
 # Crossover and Mutation Parameters
 CROSSOVER_RATE = 0.9
-MUTATION_RATE = 1.5 / NUM_GENES
-ETA_CROSSOVER = 15.0
-ETA_MUTATION = 20.0
 
-# --- NEW: Speciation Parameters ---
-SPECIATION_THRESHOLD = 2.5 # Max distance to be in the same species (replaces SIGMA_SHARE)
+# --- Speciation Parameters ---
+SPECIATION_THRESHOLD = 1.0 # Max distance to be in the same species (replaces SIGMA_SHARE)
+SPECIES_SHARING_RADIUS = 1.5
+
 STAGNATION_THRESHOLD = 10  # Generations a species can go without improvement before being removed.
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
@@ -57,7 +68,7 @@ NEWTON_STEPS = 40
 key = jax.random.PRNGKey(42)
 
 # -----------------------------------------------------------------------------
-# 2. CORE EVALUATION FUNCTIONS (UNCHANGED)
+# 2. CORE EVALUATION FUNCTIONS
 # -----------------------------------------------------------------------------
 @partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord'))
 def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.ndarray, psi: jnp.ndarray, k: int, n_refine_steps: int, constant_coord: int = 0) -> jnp.float32:
@@ -66,7 +77,7 @@ def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.n
     return fitness
 
 # -----------------------------------------------------------------------------
-# 3. SPECIES MANAGEMENT & NICHING (REFACTORED)
+# 3. SPECIES MANAGEMENT & NICHING 
 # -----------------------------------------------------------------------------
 @jit
 def calculate_distance(ind1, ind2):
@@ -171,7 +182,7 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
     return normalized_batch
 
 
-def reproduce_within_species(key, species, num_offspring):
+def reproduce_within_species(key, species, num_offspring, tournament_size, eta_mutation, eta_crossover, mutation_rate):
     """Generates offspring by calling a padded, JIT-compiled function."""
     if num_offspring <= 0:
         return []
@@ -191,45 +202,33 @@ def reproduce_within_species(key, species, num_offspring):
     if offspring_to_generate <= 0:
         return elite_offspring
 
-    # --- PADDING AND SLICING LOGIC ---
     MAX_OFFSPRING_PER_SPECIES = 64 
 
     if num_members < 2:
-        # This part is already efficient enough for the tiny species edge case
-        mutation_fn = partial(polynomial_mutation, prob_mut=MUTATION_RATE, eta=ETA_MUTATION)
+        mutation_fn = partial(polynomial_mutation, prob_mut=mutation_rate, eta=eta_mutation)
         padded_offspring = vmap(mutation_fn, in_axes=(0, 0))(
             jax.random.split(key, offspring_to_generate), 
             jnp.tile(members_arr, (offspring_to_generate, 1, 1))
         )
     else:
-        # --- NEW PADDING LOGIC TO ENSURE FIXED SHAPES ---
-        # A species cannot be larger than the total population.
         MAX_SPECIES_SIZE = POPULATION_SIZE 
-
-        # Pad members array to the fixed size.
         padding_size = MAX_SPECIES_SIZE - num_members
-        # We can just pad with the first member, as their fitness will be -inf.
         padded_members = jnp.concatenate([
             members_arr,
             jnp.tile(members_arr[0:1], (padding_size, 1, 1))
         ])
-
-        # Pad fitness array with -inf so padded members are never selected.
         padded_fitness = jnp.concatenate([
             fitness_arr,
             jnp.full(padding_size, -jnp.inf)
         ])
         
-        # Now, call the JIT function with fixed-shape arrays.
-        # This will only be compiled ONCE.
+        # Pass the dynamic parameters to the JIT-compiled function
         padded_offspring = generate_padded_offspring_batch(
             key, padded_members, padded_fitness, MAX_OFFSPRING_PER_SPECIES,
-            TOURNAMENT_SIZE, MUTATION_RATE, ETA_CROSSOVER, ETA_MUTATION
+            tournament_size, mutation_rate, eta_crossover, eta_mutation
         )
     
-    # Slice to get the exact number of offspring we need.
     new_offspring = padded_offspring[:offspring_to_generate]
-    
     final_offspring = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(new_offspring)
 
     return elite_offspring + list(final_offspring)
@@ -246,8 +245,10 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
-    print("--- Speciation-based GA in JAX ---")
+    print("--- Speciation-based GA with Adaptive Schedule ---")
     print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Speciation Threshold: {SPECIATION_THRESHOLD}")
+    print(f"Switching to exploitation mode at generation {TRANSITION_GENERATION}")
+
 
     # --- Load points ---
     with open(CYPOINTSFILE, 'rb') as f:
@@ -312,6 +313,19 @@ if __name__ == '__main__':
     
     # --- Main Evolution Loop ---
     for gen in range(start_gen, NUM_GENERATIONS):
+        
+        # --- Set parameters based on the current generation ---
+        if gen < TRANSITION_GENERATION:
+            current_tourney_size = TOURNEY_SIZE_EXPLORE
+            current_eta_mutation = ETA_MUTATION_EXPLORE
+            current_eta_crossover = ETA_CROSSOVER_EXPLORE
+            current_mutation_rate = MUTATION_RATE_EXPLORE
+        else:
+            current_tourney_size = TOURNEY_SIZE_EXPLOIT
+            current_eta_mutation = ETA_MUTATION_EXPLOIT
+            current_eta_crossover = ETA_CROSSOVER_EXPLOIT
+            current_mutation_rate = MUTATION_RATE_EXPLOIT
+            
         # 1. Calculate fitness for the entire population
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
         num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
@@ -356,30 +370,51 @@ if __name__ == '__main__':
                 species_list[species_idx].add_member(population[i], all_fitness_scores[i])
 
         # 3. Calculate offspring allocation
-        species_avg_fitness = [jnp.mean(jnp.array(s.fitness_values)) if s.members else 0.0 for s in species_list]
-        adjusted_fitness = jnp.maximum(0, jnp.array(species_avg_fitness))
-        total_adjusted_fitness = jnp.sum(adjusted_fitness)
+        # --- NEW: Species-Level Fitness Sharing ---
+        
+        # Step 1: Calculate the raw average fitness for each species
+        raw_avg_fitness = jnp.array([jnp.mean(jnp.array(s.fitness_values)) if s.members else 0.0 for s in species_list])
+        
+        # Step 2: Calculate distances between all species representatives
+        # We already have the 'representatives' array from the speciation step.
+        dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
+        species_dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(representatives, representatives)
 
+        # Step 3: Calculate niche crowding for each species
+        # A species is "crowded" by another if the distance is < the sharing radius.
+        # We get a boolean matrix of shape (num_species, num_species).
+        sharing_matrix = species_dist_matrix < SPECIES_SHARING_RADIUS
+        
+        # The niche count is the sum of True values in each row.
+        niche_counts = jnp.sum(sharing_matrix, axis=1)
+        # Ensure niche_count is at least 1 to avoid division by zero.
+        niche_counts = jnp.maximum(1.0, niche_counts)
+
+        # Step 4: Adjust fitness by dividing by the crowding count.
+        # This heavily penalizes species that are in crowded regions.
+        adjusted_fitness = raw_avg_fitness / niche_counts
+        
+        final_adjusted_fitness = jnp.maximum(0, adjusted_fitness) # Clamp for safety
+        total_adjusted_fitness = jnp.sum(final_adjusted_fitness)
+        
         next_generation_population = []
         if total_adjusted_fitness > 0:
-            # Explicitly use jnp for all operations
-            species_avg_fitness_arr = jnp.array(species_avg_fitness)
-            
-            # Perform the allocation calculation using JAX arrays
-            proportions = (species_avg_fitness_arr / total_adjusted_fitness) * POPULATION_SIZE
+            proportions = (final_adjusted_fitness / total_adjusted_fitness) * POPULATION_SIZE
             offspring_counts = jnp.round(proportions).astype(int)
-            
-            # Correct rounding errors to ensure the total is exactly POPULATION_SIZE
             diff = POPULATION_SIZE - jnp.sum(offspring_counts)
             if diff != 0:
-                idx_to_update = jnp.argmax(species_avg_fitness_arr)
+                idx_to_update = jnp.argmax(final_adjusted_fitness)
                 offspring_counts = offspring_counts.at[idx_to_update].set(offspring_counts[idx_to_update] + diff)
-
+            
+            # The reproduction loop now uses the adaptive parameters
             for i, s in enumerate(species_list):
                 if s.members:
                     num_offspring = int(offspring_counts[i])
                     key, subkey = jax.random.split(key)
-                    offspring = reproduce_within_species(subkey, s, num_offspring)
+                    offspring = reproduce_within_species(
+                        subkey, s, num_offspring,
+                        current_tourney_size, current_eta_mutation, current_eta_crossover, current_mutation_rate
+                    )
                     next_generation_population.extend(offspring)
 
         # 4. Handle stagnation and create new population
