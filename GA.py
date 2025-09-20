@@ -17,15 +17,16 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 # 1. HYPERPARAMETERS
 # -----------------------------------------------------------------------------
 # Moduli of the quintic
-PSI = 1000000
-CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
-#CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
+#PSI = 1000000
+#CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
+PSI = 0
+CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
 # GA Parameters
 POPULATION_SIZE = 400      # Size of the population.
 GENOTYPE_SHAPE = (3, 25)   # Shape of a single individual's genotype.
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 3   # Total number of generations to run.
+NUM_GENERATIONS = 400   # Total number of generations to run.
 TOURNAMENT_SIZE = 3       # Number of individuals selected for a tournament.
 
 # Crossover and Mutation Parameters
