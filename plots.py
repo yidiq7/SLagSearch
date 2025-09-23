@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import os
+import pickle
 import matplotlib.pyplot as plt
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import compute_combined_fitness
@@ -16,22 +17,19 @@ def make_fitness_plots(
     n_refine_steps: int = 100,
     constant_coord: int = 0,
     compare_with_random: bool = False,
-    suffix: Optional[str] = None
-    ):
+    parent_folder: Optional[str] = 'plots_slag',
+    ) -> None:
 
-    os.makedirs('plots_slag', exist_ok=True)
-    kahler_form_path = 'plots_slag/Kahler_form_loss_histogram.png'
-    phase_path = 'plots_slag/circular_phase_histogram.png'
-    if suffix is not None:
-        kahler_form_path = f"{kahler_form_path}{suffix}"
-        phase_path = f"{phase_path}{suffix}"
+    # Create the folder for the plots 
+    os.makedirs(parent_folder, exist_ok=True)
 
+    # Compute the norms and phases 
     min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord, debug_mode=True)
     total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, debug_mode=True)
 
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
 
-
+    # Fitness plot
     if not compare_with_random:
         # Plot the Kahler form loss
         plt.figure(figsize=(10, 6))
@@ -41,7 +39,7 @@ def make_fitness_plots(
         plt.title('Distribution of the norm of the Kahler form')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig('plots_slag/Kahler_form_loss_histogram.png')
+        plt.savefig(os.path.join(parent_folder, f'Kahler_form_loss_histogram.png'))
         plt.close()
 
         # Plot the phase of Omega
@@ -80,9 +78,8 @@ def make_fitness_plots(
 
         ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
         ax.legend(bbox_to_anchor=(1.1, 1.05))
-
-        plt.savefig('plots_slag/circular_phase_histogram.png', bbox_inches='tight')
-
+        plt.savefig(os.path.join(parent_folder, f'circular_phase_histogram.png'), bbox_inches='tight')
+        plt.close()
 
      # The option to plot both slag and random manifold in one plot for comparison
     elif compare_with_random:
@@ -106,7 +103,7 @@ def make_fitness_plots(
         plt.title('Distribution of the norm of the Kahler form')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(kahler_form_path)
+        plt.savefig(os.path.join(parent_folder, f'Kahler_form_loss_histogram.png'))
         plt.close()
 
 
@@ -155,6 +152,69 @@ def make_fitness_plots(
         ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
         ax.legend(bbox_to_anchor=(1.1, 1.05))
 
-        plt.savefig(phase_path, bbox_inches='tight')
+        plt.savefig(os.path.join(parent_folder, f'circular_phase_histogram.png'), bbox_inches='tight')
+
+    make_scatter_plots(min_set_real, parent_folder)
+    save_min_set(min_set_real, parent_folder)
+
+def make_scatter_plots(min_set_real: jnp.ndarray, parent_folder: str):
+
+    min_set_x1 = min_set_real[:, 1]
+    min_set_x2 = min_set_real[:, 2]
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(min_set_x2, min_set_x1, alpha=1.0, color='black', edgecolor='black',s=0.2)
+    plt.title('Scatter Plot of z1 real vs z2 real')
+    plt.xlabel('z2 real')
+    plt.ylabel('z1 real')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    output_filename = os.path.join(parent_folder, 'scatter_plot_z1rz2r.png')
+    plt.savefig(output_filename, dpi=300)
+    plt.close()
+
+    min_set_x1 = min_set_real[:, 3]
+    min_set_x2 = min_set_real[:, 4]
+
+    plt.figure(figsize=(10, 6)) 
+    plt.scatter(min_set_x2, min_set_x1, alpha=1.0, color='black', edgecolor='black',s=0.2)
+    plt.title('Scatter Plot of z3 real vs z4 real')
+    plt.xlabel('z4 real')
+    plt.ylabel('z3 real')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    output_filename = os.path.join(parent_folder, 'scatter_plot_z3rz4r.png')
+    plt.savefig(output_filename, dpi=300)
+    plt.close()
 
 
+    min_set_x1 = min_set_real[:, 6]
+    min_set_x2 = min_set_real[:, 7]
+
+    plt.figure(figsize=(10, 6)) 
+    plt.scatter(min_set_x2, min_set_x1, alpha=1.0, color='black', edgecolor='black',s=0.2)
+    plt.title('Scatter Plot of z1 img vs z2 imag')
+    plt.xlabel('z2 imag')
+    plt.ylabel('z1 imag')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    output_filename = os.path.join(parent_folder, 'scatter_plot_z1iz2i.png')
+    plt.savefig(output_filename, dpi=300)
+    plt.close()
+
+
+    min_set_x1 = min_set_real[:, 8]
+    min_set_x2 = min_set_real[:, 9]
+
+    plt.figure(figsize=(10, 6)) 
+    plt.scatter(min_set_x2, min_set_x1, alpha=1.0, color='black', edgecolor='black',s=0.2)
+    plt.title('Scatter Plot of z3 img vs z4 imag')
+    plt.xlabel('z4 imag')
+    plt.ylabel('z3 imag')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    output_filename = os.path.join(parent_folder, 'scatter_plot_z3iz4i.png')
+    plt.savefig(output_filename, dpi=300)
+    plt.close()
+
+
+def save_min_set(min_set_real: jnp.ndarray, parent_folder: str) -> None:
+    min_set = min_set_real[:,:5]+min_set_real[:,5:]*1j
+    with open(os.path.join(parent_folder, "min_set.pkl"), "wb") as f:
+        pickle.dump(min_set, f) 

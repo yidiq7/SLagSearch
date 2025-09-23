@@ -18,6 +18,9 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 # -----------------------------------------------------------------------------
 # 1. HYPERPARAMETERS
 # -----------------------------------------------------------------------------
+# job_jd on slurm
+job_id = sys.argv[1]
+
 # Moduli of the quintic
 #PSI = 1000000
 #CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
@@ -25,12 +28,12 @@ PSI = 0
 CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
 # GA Parameters
-POPULATION_SIZE = 400
+POPULATION_SIZE = 600
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 1000
+NUM_GENERATIONS = 600
 
-TRANSITION_GENERATION = 500
+TRANSITION_GENERATION = 200
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
@@ -47,10 +50,10 @@ ETA_CROSSOVER_EXPLOIT = 30.0
 CROSSOVER_RATE = 0.9
 
 # --- Speciation Parameters ---
-SPECIATION_THRESHOLD = 1.0 # Max distance to be in the same species (replaces SIGMA_SHARE)
-SPECIES_SHARING_RADIUS = 1.5
+SPECIATION_THRESHOLD = 2.7 # Max distance to be in the same species (replaces SIGMA_SHARE)
+SPECIES_SHARING_RADIUS = 2.9
 
-STAGNATION_THRESHOLD = 10  # Generations a species can go without improvement before being removed.
+STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
@@ -58,7 +61,7 @@ FITNESS_MINI_BATCH_SIZE = 50
 LOG_INTERVAL = 1
 
 # Checkpointing
-CHECKPOINT_DIR = 'checkpoints_species'
+CHECKPOINT_DIR = 'checkpoints_' + job_id
 CHECKPOINT_INTERVAL = 100
 
 MINSET_SIZE = 10000
@@ -377,6 +380,7 @@ if __name__ == '__main__':
         
         # Step 2: Calculate distances between all species representatives
         # We already have the 'representatives' array from the speciation step.
+        representatives = jnp.array([s.representative for s in species_list])
         dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
         species_dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(representatives, representatives)
 
@@ -471,7 +475,9 @@ if __name__ == '__main__':
 
     end_time = time.time()
     print(f"\nEvolution finished in {end_time - start_time:.2f} seconds.")
-    # --- Final Analysis (Corrected) ---
+
+
+    # --- Final Analysis ---
     print("\n--- Analyzing Final Population ---")
 
     # 1. Re-calculate fitness for the FINAL population to ensure it's up-to-date.
@@ -510,6 +516,7 @@ if __name__ == '__main__':
     # Sort the populated species by their best current fitness
     final_species_list.sort(key=lambda s: jnp.max(jnp.array(s.fitness_values)), reverse=True)
 
+    rank = 1
     for s in final_species_list:
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
         best_member = s.members[best_member_idx]
@@ -521,3 +528,7 @@ if __name__ == '__main__':
         print(format_array_with_commas(best_member))
         print("Complex equations:")
         print(combine_to_complex_equations(get_basis_labels(), best_member))
+
+        parent_folder = os.path.join('plots_slag_' + job_id, f'plots_slag_{job_id}_{rank}_id{s.id}')
+        make_fitness_plots(points_real, coeffs_slag, psi, k=100000, n_refine_steps=100, constant_coord=0, compare_with_random=False, parent_folder=parent_folder)
+        rank += 1
