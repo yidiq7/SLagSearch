@@ -5,7 +5,8 @@ import os
 import matplotlib.pyplot as plt
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs 
+from helper import canonicalize_coeffs
+from typing import Optional
 
 def make_fitness_plots(
     points_real: jnp.ndarray,
@@ -14,15 +15,22 @@ def make_fitness_plots(
     k: int = 100000,
     n_refine_steps: int = 100,
     constant_coord: int = 0,
-    compare_with_random: bool = False
+    compare_with_random: bool = False,
+    suffix: Optional[str] = None
     ):
+
+    os.makedirs('plots_slag', exist_ok=True)
+    kahler_form_path = 'plots_slag/Kahler_form_loss_histogram.png'
+    phase_path = 'plots_slag/circular_phase_histogram.png'
+    if suffix is not None:
+        kahler_form_path = f"{kahler_form_path}{suffix}"
+        phase_path = f"{phase_path}{suffix}"
 
     min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord, debug_mode=True)
     total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, debug_mode=True)
 
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
 
-    os.makedirs('plots_slag', exist_ok=True)
 
     if not compare_with_random:
         # Plot the Kahler form loss
@@ -98,7 +106,7 @@ def make_fitness_plots(
         plt.title('Distribution of the norm of the Kahler form')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig('plots_slag/Kahler_form_loss_histogram.png')
+        plt.savefig(kahler_form_path)
         plt.close()
 
 
@@ -147,6 +155,6 @@ def make_fitness_plots(
         ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
         ax.legend(bbox_to_anchor=(1.1, 1.05))
 
-        plt.savefig('plots_slag/circular_phase_histogram.png', bbox_inches='tight')
+        plt.savefig(phase_path, bbox_inches='tight')
 
 
