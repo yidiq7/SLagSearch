@@ -9,6 +9,7 @@ import os
 import argparse
 import glob
 import re
+import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
 from helper import canonicalize_coeffs, format_array_with_commas
