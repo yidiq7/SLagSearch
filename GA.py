@@ -19,9 +19,6 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 # -----------------------------------------------------------------------------
 # 1. HYPERPARAMETERS
 # -----------------------------------------------------------------------------
-# job_jd on slurm
-job_id = sys.argv[1]
-
 # Moduli of the quintic
 #PSI = 1000000
 #CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
@@ -62,7 +59,7 @@ FITNESS_MINI_BATCH_SIZE = 50
 LOG_INTERVAL = 1
 
 # Checkpointing
-CHECKPOINT_DIR = 'checkpoints_' + job_id
+CHECKPOINT_DIR = 'checkpoints'
 CHECKPOINT_INTERVAL = 100
 
 MINSET_SIZE = 10000
@@ -247,8 +244,11 @@ if __name__ == '__main__':
         '--load_checkpoint', type=str, nargs='?', const='latest', default=None,
         help="Load a checkpoint. Use 'latest' to load the most recent, or provide a filename."
     )
+    parser.add_argument(
+        '--job_id', type=str, nargs='?', const='0', default='0',
+        help="Provide a label, e.g. slurm job id, for the current run."
+    )
     args = parser.parse_args()
-
     print("--- Speciation-based GA with Adaptive Schedule ---")
     print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Speciation Threshold: {SPECIATION_THRESHOLD}")
     print(f"Switching to exploitation mode at generation {TRANSITION_GENERATION}")
@@ -530,6 +530,6 @@ if __name__ == '__main__':
         print("Complex equations:")
         print(combine_to_complex_equations(get_basis_labels(), best_member))
 
-        parent_folder = os.path.join('plots_slag_' + job_id, f'plots_slag_{job_id}_{rank}_id{s.id}')
+        parent_folder = os.path.join(f'plots_slag_{args.job_id}', f'plots_slag_{args.job_id}_{rank}_id{s.id}')
         make_fitness_plots(points_real, coeffs_slag, psi, k=100000, n_refine_steps=100, constant_coord=0, compare_with_random=False, parent_folder=parent_folder)
         rank += 1
