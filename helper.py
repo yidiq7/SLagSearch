@@ -217,5 +217,3 @@ def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi
     eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 
     return eqs_evaluated
 
-
-

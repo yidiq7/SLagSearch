@@ -8,7 +8,8 @@ import numpy as np
 import time
 import timeit
 import os
-from helper import canonicalize_coeffs, reconstruct_hermitian_matrices
+from helper import canonicalize_coeffs, reconstruct_hermitian_matrices 
+from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 #with open('/projects/ruehlehet/yidi/sLag/data/50mil_patch0_3.pkl', 'rb') as f:
@@ -44,6 +45,11 @@ coeffs_slag = jnp.asarray(
 [0.0, 0.0, 0.03048308752477169, 0.1852244883775711, -0.27931755781173706, -0.06105261668562889, 0.2803786098957062, -0.01595057174563408, -0.18775609135627747, 0.03837759047746658, 0.47273513674736023, 0.11163882166147232, 0.27645039558410645, -0.0899028480052948, -0.27430257201194763, 0.06555411219596863, 0.35781916975975037, 0.289055734872818, 0.24346698820590973, 0.399347722530365, 0.2510291039943695, 0.17802351713180542, 0.0566691979765892, 0.15977565944194794, 0.13326498866081238]]
 )
 
+coeffs_slag = jnp.asarray(
+[[0.07272491604089737, 0.0, 0.0, 0.27245956659317017, -0.21544215083122253, -0.0150639358907938, 0.006941088009625673, -0.05952056869864464, -0.11522070318460464, 0.1082194522023201, -0.4030500650405884, 0.1985977292060852, -0.05453534424304962, 0.5176426768302917, -0.14801909029483795, -0.18147946894168854, -0.15030352771282196, 0.2268330454826355, -0.37355533242225647, -0.2846696972846985, 0.04526626691222191, 0.1978115290403366, 0.23642085492610931, 0.27395880222320557, 0.18439121544361115],
+[0.0, 0.08116753399372101, 0.0, -0.09328625351190567, -0.12949444353580475, -0.014066913165152073, -0.12480830401182175, -0.12414730340242386, 0.021355323493480682, -0.10323863476514816, -0.510585606098175, -0.019393224269151688, -0.1906709522008896, 0.05006222054362297, -0.04669026657938957, -0.08872123062610626, 0.13415402173995972, 0.16600024700164795, -0.14179162681102753, -0.051376886665821075, 0.06428615748882294, 0.08406409621238708, -0.7487298250198364, -0.5420639514923096, -0.441876620054245],
+[0.0, 0.0, 0.07868935167789459, 0.3838801085948944, 0.1965467631816864, 0.18677745759487152, 0.12499016523361206, 0.35462847352027893, 0.032680001109838486, -0.03006080351769924, 0.34410354495048523, -0.17502839863300323, 0.09112966805696487, -0.09721937775611877, -0.03934714198112488, 0.06775455176830292, 0.00024095414846669883, -0.06807757169008255, 0.12621398270130157, 0.1945124864578247, -0.1482265442609787, -0.09458618611097336, 0.8852499723434448, 0.19263499975204468, 0.193865105509758]]
+)
 
 perturbation_order = 0.05
 
@@ -75,108 +81,5 @@ coeffs_RP3 = normalize_coeffs(coeffs_RP3)
 
 print('H: ', reconstruct_hermitian_matrices(coeffs_slag))
 
-# Compute the average distance for random coeffs:
-min_set_real, distances = filter_and_refine(points_real, coeffs_slag, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, debug_mode=True)
-total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_new2, restriction_new2, phases_new2 = compute_combined_fitness(min_set_real, coeffs_slag, psi, debug_mode=True)
-
-min_set_real, distances = filter_and_refine(points_real, coeffs_random, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, debug_mode=True)
-total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_random, restriction_random, phases_random = compute_combined_fitness(min_set_real, coeffs_random, psi, debug_mode=True)
-
-'''
-min_set_real, distances = filter_and_refine(points_real, coeffs_RP3, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, debug_mode=True)
-total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_RP3, phases_RP3= compute_combined_fitness(min_set_real, coeffs_RP3, psi, debug_mode=True)
-
-idx_rp3 = jnp.where(jnp.abs(phases_RP3 < 0.1) | (jnp.abs(phases_RP3 - 2*jnp.pi) < 0.1))
-'''
-frobenius_norms_new2 = jnp.linalg.norm(kahler_form_restricted_new2, axis=(1, 2))
-frobenius_norms_random = jnp.linalg.norm(kahler_form_restricted_random, axis=(1, 2))
-#frobenius_norms_RP3 = jnp.linalg.norm(kahler_form_restricted_RP3, axis=(1, 2))[idx_rp3]
-#sorted_norms = jnp.sort(frobenius_norms_RP3)
-#norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.8)]
-
-os.makedirs('plots_slag', exist_ok=True)
-
-plt.figure(figsize=(10, 6))
-plt.hist(frobenius_norms_new2, bins=200, alpha=0.7, label='Potential sLag', color='skyblue', density=True)
-print('max norm:', jnp.max(frobenius_norms_new2))
-plt.hist(frobenius_norms_random, bins=200, alpha=0.7, label='Random intersection', color='orange', density=True)
-#plt.hist(norms_cut, bins=200, alpha=0.7, label='RP^3 with perturbation', color='#4CAF50', density=True)
-plt.xlim(0, 1.5)
-plt.ylim(0, 300)
-plt.xlabel('Frobenius norm')
-plt.ylabel('Counts')
-plt.title('Distribution of the norm of the Kahler form')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.6)
-plt.savefig('plots_slag/Kahler_form_loss_histogram.png')
-plt.close()
-'''
-plt.figure(figsize=(10, 6))
-plt.hist(phases_random, bins=200, alpha=0.7, label='Random intersection', color='orange', density=True)
-plt.hist(phases_new2, bins=200, alpha=0.7, label='Potential sLag', color='skyblue', density=True)
-plt.xlim(0, 6.28)
-plt.xlabel('Phase')
-plt.ylabel('Counts')
-plt.title('Distribution of the phases of the holomorphic 3-form')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.6)
-plt.savefig('plots_slag/phase_histogram_new2.png')
-plt.close()
-'''
-
-number_of_bins = 1000
-# Create the sub-plot with a polar projection
-fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
-
-# Define the width of each bar
-width = 2 * np.pi / number_of_bins
-
-# --- Calculate counts first to determine the baseline ---
-counts_A, bin_edges_A = np.histogram(phases_new2, bins=number_of_bins, range=(0, 2 * np.pi))
-angles_A = bin_edges_A[:-1]
-
-counts_B, bin_edges_B = np.histogram(phases_random, bins=number_of_bins, range=(0, 2 * np.pi))
-angles_B = bin_edges_B[:-1]
-
-#counts_C, bin_edges_C = np.histogram(phases_RP3[idx_rp3], bins=number_of_bins, range=(0, 2 * np.pi))
-#angles_C = bin_edges_C[:-1]
-
-peak_index = np.argmax(counts_A)
-peak_angle = angles_A[peak_index]
-
-# --- FIX 3: Set baseline dynamically to half the max peak height ---
-max_count = counts_A.max()
-baseline_radius = max_count / 2
-
-# Plot the bars with the new baseline
-ax.bar(angles_A, counts_A, width=width, alpha=0.7, color='skyblue', label='Potential sLag', bottom=baseline_radius)
-ax.bar(angles_B, counts_B, width=width, alpha=0.7, color='orange', label='Random intersection', bottom=baseline_radius)
-#ax.bar(angles_C, counts_C, width=width, alpha=0.7, color='#4CAF50', label='RP^3 with perturbation', bottom=baseline_radius)
-outer_limit = baseline_radius + max_count * 1.05
-
-#ax.plot([peak_angle, peak_angle + np.pi], [outer_limit, outer_limit], 'navy', linewidth=0.5, alpha=0.6, linestyle='--')
-
-# --- Format the plot ---
-ax.set_theta_zero_location('E')
-ax.set_theta_direction(1)
-
-# --- FIX 2: Set angle labels to RADIANS ---
-ax.set_xticks([0, np.pi/2, np.pi, 3*np.pi/2])
-ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=12)
-
-# --- FIX 1: Set a less dense, non-obtrusive grid ---
-# Set radial grid lines at 75% and 100% of the max height
-radial_grid_values = [baseline_radius + max_count * 0.25, baseline_radius + max_count * 0.5, baseline_radius + max_count*0.75]
-ax.set_rgrids(radial_grid_values, angle=22.5)
-ax.set_yticklabels([]) # Hide the number labels on the grid
-ax.grid(True, linestyle='--', alpha=0.6) # Keep grid but make it faint
-
-# Adjust the plot's outer limit to fit the data perfectly
-ax.set_rlim(0, baseline_radius + max_count * 1.05)
-
-
-ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
-ax.legend(bbox_to_anchor=(1.1, 1.05))
-
-plt.savefig('plots_slag/circular_phase_histogram.png', bbox_inches='tight')
-
+#make_fitness_plots(points_real, coeffs_slag, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, compare_with_random=True)
+make_fitness_plots(points_real, coeffs_slag, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, compare_with_random=False)
