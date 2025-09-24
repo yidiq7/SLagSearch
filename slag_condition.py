@@ -226,7 +226,7 @@ def _assemble_kahler_form(g_complex: jnp.ndarray) -> jnp.ndarray:
 
 # --- Vmapped Single-Point Computers ---
 
-def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, epsilon: float) -> jnp.ndarray:
+def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, metric: str, epsilon: float) -> jnp.ndarray:
     """Computes the Fubini-Study metric tensor G for a single point."""
     return jax.lax.cond(
         jnp.abs(z[patch_index]) < epsilon,
@@ -234,13 +234,25 @@ def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, epsilon: 
         lambda: _assemble_metric_tensor(calculate_complex_metric_k4(z, patch_index))
     )
 
-def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, epsilon: float) -> jnp.ndarray:
+def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, metric: str, epsilon: float) -> jnp.ndarray:
     """Computes the Fubini-Study Kähler form Omega for a single point."""
-    return jax.lax.cond(
-        jnp.abs(z[patch_index]) < epsilon,
-        lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-        lambda: _assemble_kahler_form(calculate_complex_metric_k4(z, patch_index))
-    )
+    # Fubini-Study metric
+    if metric == 'FS':
+        return jax.lax.cond(
+            jnp.abs(z[patch_index]) < epsilon,
+            lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
+            lambda: _assemble_kahler_form(calculate_complex_metric_FS(z, patch_index))
+        )
+    # k = 4 Ricci-flat metric
+    elif metric == 'k4':
+        return jax.lax.cond(
+            jnp.abs(z[patch_index]) < epsilon,
+            lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
+            lambda: _assemble_kahler_form(calculate_complex_metric_k4(z, patch_index))
+        )
+    else:
+       raise ValueError(f"Unsupported metric: '{metric}'. Options are 'FS' or 'k4'.") 
+
 
 # --- Public API Functions ---
 
@@ -269,6 +281,7 @@ def compute_fubini_study_metric(
 def compute_kahler_form(
     points_Z: jnp.ndarray,
     patch_index: int = 0,
+    metric: str = 'FS',
     epsilon: float = 1e-8
 ) -> jnp.ndarray:
     """
@@ -287,20 +300,20 @@ def compute_kahler_form(
         matrix `Omega` of the Kähler form.
     """
     vmapped_computer = jax.vmap(
-        _compute_kahler_for_single_point, in_axes=(0, None, None)
+        _compute_kahler_for_single_point, in_axes=(0, None, None, None)
     )
-    return vmapped_computer(points_Z, patch_index, epsilon)
+    return vmapped_computer(points_Z, patch_index, metric, epsilon)
 
-def compute_kahler_form_restricted(points: jnp.ndarray, restriction: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1,))
-    kahler_form = jit_compute_kahler_form(points, constant_coord)
+def compute_kahler_form_restricted(points: jnp.ndarray, restriction: jnp.ndarray, constant_coord: int = 0, metric: str = 'FS') -> jnp.ndarray:
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1, 2))
+    kahler_form = jit_compute_kahler_form(points, constant_coord, metric)
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
     return kahler_form_restricted
 
 
-def compute_kahler_form_unrestricted(points: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1,))
-    kahler_form = jit_compute_kahler_form(points, constant_coord)
+def compute_kahler_form_unrestricted(points: jnp.ndarray, constant_coord: int = 0, metric: str = 'FS') -> jnp.ndarray:
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1, 2))
+    kahler_form = jit_compute_kahler_form(points, constant_coord, metric)
     return kahler_form
 
 
@@ -363,6 +376,9 @@ def compute_holomorphic_form_restricted(points_complex: jnp.ndarray, restriction
         phase = phase % (2*jnp.pi)
         return phase
     else:
+        print("Warning: There is a scaling factor in Omega_restriction, "
+            "which does not affect the phase but the actual Omega might be wrong. "
+            "Don't use this until further checking.")
         Omega_restricted = Omega * Omega_restriction
         return Omega_restricted
 
@@ -403,24 +419,24 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
 vmap_compute_jacobian = jax.vmap(compute_jacobian, in_axes=(0, None, None, None))
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
-def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int=0, debug_mode: bool=False) -> jnp.float32:
+def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int=0, metric: str='FS', debug_mode: bool=False) -> jnp.float32:
     jacobians = vmap_compute_jacobian(min_set_real, coeffs, psi, constant_coord)
     restriction = vmap_compute_restriction(jacobians)
 
     min_set = min_set_real[:, :5] + 1j*min_set_real[:, 5:]
-    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
+    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord, metric=metric)
     lagrangian_fitness = compute_lagrangian_condition_fitness(kahler_form_unrestricted, restriction, k=10)
 
     phases = compute_holomorphic_form_restricted(min_set, restriction, phase_only=True)
     n_bins_val = 100
     special_fitness = compute_special_condition_fitness(phases, n_bins=n_bins_val)
    
-    #combined_fitness = lagrangian_fitness
+    #combined_fitness = special_fitness
     combined_fitness = lagrangian_fitness * special_fitness 
     #combined_fitness = jnp.where(lagrangian_fitness > 0.98 , 1 + special_fitness, lagrangian_fitness)
 
     if debug_mode:
-        kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord)
+        kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord, metric=metric)
         normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
         kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
         # Test

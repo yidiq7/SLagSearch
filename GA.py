@@ -26,11 +26,17 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 PSI = 0
 CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
+# Metric used when compute the kahler form
+# Options are 1. FS - Fubini-Study metric
+#             2. k4 - Ricci-flat metric with k = 4 in Donaldson's construction
+METRIC = 'FS'
+#METRIC = 'k4'
+
 # GA Parameters
-POPULATION_SIZE = 50
+POPULATION_SIZE = 600
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 2
+NUM_GENERATIONS = 600
 
 TRANSITION_GENERATION = 200
 # Exploration Phase Settings
@@ -49,8 +55,8 @@ ETA_CROSSOVER_EXPLOIT = 30.0
 CROSSOVER_RATE = 0.9
 
 # --- Speciation Parameters ---
-SPECIATION_THRESHOLD = 2.7 # Max distance to be in the same species (replaces SIGMA_SHARE)
-SPECIES_SHARING_RADIUS = 2.9
+SPECIATION_THRESHOLD = 2.5 # Max distance to be in the same species (replaces SIGMA_SHARE)
+SPECIES_SHARING_RADIUS = 2.7
 
 STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
@@ -72,10 +78,10 @@ key = jax.random.PRNGKey(42)
 # -----------------------------------------------------------------------------
 # 2. CORE EVALUATION FUNCTIONS
 # -----------------------------------------------------------------------------
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord'))
-def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.ndarray, psi: jnp.ndarray, k: int, n_refine_steps: int, constant_coord: int = 0) -> jnp.float32:
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'metric'))
+def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.ndarray, psi: jnp.ndarray, k: int, n_refine_steps: int, constant_coord: int = 0, metric: str = 'FS') -> jnp.float32:
     min_set_real = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord)
-    fitness = compute_combined_fitness(min_set_real, coeffs, psi, constant_coord)
+    fitness = compute_combined_fitness(min_set_real, coeffs, psi, constant_coord, metric)
     return fitness
 
 # -----------------------------------------------------------------------------
@@ -264,7 +270,7 @@ if __name__ == '__main__':
     # --- Create the vmapped fitness function ---
     vmap_fitness_batch = vmap(
         calculate_fitness_for_one_individual,
-        in_axes=(0, None, None, None, None, None), out_axes=0
+        in_axes=(0, None, None, None, None, None, None), out_axes=0
     )
 
     # --- Load from checkpoint or initialize ---
@@ -338,7 +344,7 @@ if __name__ == '__main__':
             start_idx = i * FITNESS_MINI_BATCH_SIZE
             end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
             pop_batch = population[start_idx:end_idx]
-            fitness_batch = vmap_fitness_batch(pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0)
+            fitness_batch = vmap_fitness_batch(pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0, METRIC)
             # Replace any potential NaN/inf values with 0 before storing them.
             safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
             all_fitness_scores = all_fitness_scores.at[start_idx:end_idx].set(safe_fitness_batch)
@@ -373,6 +379,14 @@ if __name__ == '__main__':
             else:
                 species_idx = closest_species_indices[i]
                 species_list[species_idx].add_member(population[i], all_fitness_scores[i])
+
+        # --- Update representatives to prevent drift ---
+        for s in species_list:
+            if s.members:
+                # Find the best member of the current generation
+                best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
+                # Update the representative to this new best member
+                s.representative = s.members[best_member_idx]
 
         # 3. Calculate offspring allocation
         # --- NEW: Species-Level Fitness Sharing ---
@@ -490,7 +504,7 @@ if __name__ == '__main__':
         start_idx = i * FITNESS_MINI_BATCH_SIZE
         end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
         population_batch = population[start_idx:end_idx]
-        fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0)
+        fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0, METRIC)
         final_fitness = final_fitness.at[start_idx:end_idx].set(fitness_batch)
 
     # 2. Use the correct vectorized speciation to assign members.
@@ -532,5 +546,5 @@ if __name__ == '__main__':
         print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(f'plots_slag_{args.job_id}', f'plots_slag_{args.job_id}_{rank}_id{s.id}')
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, constant_coord=0, compare_with_random=False, parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, constant_coord=0, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
         rank += 1
