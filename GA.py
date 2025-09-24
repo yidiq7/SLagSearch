@@ -13,6 +13,7 @@ import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
 from helper import canonicalize_coeffs, format_array_with_commas
+from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 
@@ -26,10 +27,10 @@ PSI = 0
 CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
 # GA Parameters
-POPULATION_SIZE = 600
+POPULATION_SIZE = 50
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 600
+NUM_GENERATIONS = 2
 
 TRANSITION_GENERATION = 200
 # Exploration Phase Settings
@@ -531,5 +532,5 @@ if __name__ == '__main__':
         print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(f'plots_slag_{args.job_id}', f'plots_slag_{args.job_id}_{rank}_id{s.id}')
-        make_fitness_plots(points_real, coeffs_slag, psi, k=100000, n_refine_steps=100, constant_coord=0, compare_with_random=False, parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, constant_coord=0, compare_with_random=False, parent_folder=parent_folder)
         rank += 1

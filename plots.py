@@ -28,7 +28,7 @@ def make_fitness_plots(
     total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, debug_mode=True)
 
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
-
+    print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
     # Fitness plot
     if not compare_with_random:
         # Plot the Kahler form loss
