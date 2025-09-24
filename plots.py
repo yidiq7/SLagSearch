@@ -6,7 +6,8 @@ import pickle
 import matplotlib.pyplot as plt
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs from typing import Optional
+from helper import canonicalize_coeffs 
+from typing import Optional
 
 def make_fitness_plots(
     points_real: jnp.ndarray,
