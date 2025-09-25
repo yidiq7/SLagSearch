@@ -244,7 +244,7 @@ def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, metric: s
             lambda: _assemble_kahler_form(calculate_complex_metric_FS(z, patch_index))
         )
     # k = 4 Ricci-flat metric
-    elif metric == 'k4':
+    elif metric == 'k4_fermat':
         return jax.lax.cond(
             jnp.abs(z[patch_index]) < epsilon,
             lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),

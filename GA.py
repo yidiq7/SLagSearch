@@ -28,17 +28,17 @@ CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
 # Metric used when compute the kahler form
 # Options are 1. FS - Fubini-Study metric
-#             2. k4 - Ricci-flat metric with k = 4 in Donaldson's construction
-METRIC = 'FS'
-#METRIC = 'k4'
+#             2. k4_fermat - Ricci-flat metric with k = 4 in Donaldson's construction. Fermat only.
+#METRIC = 'FS'
+METRIC = 'k4_fermat'
 
 # GA Parameters
 POPULATION_SIZE = 600
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 600
+NUM_GENERATIONS = 1500
 
-TRANSITION_GENERATION = 200
+TRANSITION_GENERATION = 500
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
