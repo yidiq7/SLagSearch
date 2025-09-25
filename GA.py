@@ -36,29 +36,29 @@ METRIC = 'k4_fermat'
 POPULATION_SIZE = 600
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 1500
+NUM_GENERATIONS = 3000
 
-TRANSITION_GENERATION = 500
+TRANSITION_GENERATION = 1500
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
 ETA_MUTATION_EXPLORE = 10.0
 ETA_CROSSOVER_EXPLORE = 5.0
+SPECIATION_THRESHOLD_EXPLORE = 3.0
+SPECIES_SHARING_RADIUS_EXPLORE = 3.2
 
 # Exploitation Phase Settings
 TOURNEY_SIZE_EXPLOIT = 7
 MUTATION_RATE_EXPLOIT = 0.5 / NUM_GENES  # Lower rate
 ETA_MUTATION_EXPLOIT = 100.0
 ETA_CROSSOVER_EXPLOIT = 30.0
+SPECIATION_THRESHOLD_EXPLOIT = 1.5 
+SPECIES_SHARING_RADIUS_EXPLOIT = 1.7
 
 # Crossover and Mutation Parameters
 CROSSOVER_RATE = 0.9
 
-# --- Speciation Parameters ---
-SPECIATION_THRESHOLD = 2.5 # Max distance to be in the same species (replaces SIGMA_SHARE)
-SPECIES_SHARING_RADIUS = 2.7
-
-STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
+STAGNATION_THRESHOLD = 40  # Generations a species can go without improvement before being removed.
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
@@ -66,7 +66,7 @@ FITNESS_MINI_BATCH_SIZE = 50
 LOG_INTERVAL = 1
 
 # Checkpointing
-CHECKPOINT_DIR = 'checkpoints'
+CHECKPOINT_DIR = 'checkpoints_3k'
 CHECKPOINT_INTERVAL = 100
 
 MINSET_SIZE = 10000
@@ -257,7 +257,7 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
     print("--- Speciation-based GA with Adaptive Schedule ---")
-    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Speciation Threshold: {SPECIATION_THRESHOLD}")
+    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Exploration Speciation Threshold: {SPECIATION_THRESHOLD_EXPLORE}, Exploitation Speciation Threshold: {SPECIATION_THRESHOLD_EXPLOIT}")
     print(f"Switching to exploitation mode at generation {TRANSITION_GENERATION}")
 
 
@@ -331,11 +331,16 @@ if __name__ == '__main__':
             current_eta_mutation = ETA_MUTATION_EXPLORE
             current_eta_crossover = ETA_CROSSOVER_EXPLORE
             current_mutation_rate = MUTATION_RATE_EXPLORE
+            current_speciation_threshold = SPECIATION_THRESHOLD_EXPLORE
+            current_species_sharing_radius = SPECIES_SHARING_RADIUS_EXPLORE
+            
         else:
             current_tourney_size = TOURNEY_SIZE_EXPLOIT
             current_eta_mutation = ETA_MUTATION_EXPLOIT
             current_eta_crossover = ETA_CROSSOVER_EXPLOIT
             current_mutation_rate = MUTATION_RATE_EXPLOIT
+            current_speciation_threshold = SPECIATION_THRESHOLD_EXPLOIT
+            current_species_sharing_radius = SPECIES_SHARING_RADIUS_EXPLOIT
             
         # 1. Calculate fitness for the entire population
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
@@ -368,7 +373,7 @@ if __name__ == '__main__':
         
         # Check for new species
         min_distances = jnp.min(dist_matrix, axis=1)
-        new_species_mask = min_distances >= SPECIATION_THRESHOLD
+        new_species_mask = min_distances >=  current_speciation_threshold
 
         # This part must run on the CPU as it modifies Python objects
         for i in range(POPULATION_SIZE):
@@ -403,7 +408,7 @@ if __name__ == '__main__':
         # Step 3: Calculate niche crowding for each species
         # A species is "crowded" by another if the distance is < the sharing radius.
         # We get a boolean matrix of shape (num_species, num_species).
-        sharing_matrix = species_dist_matrix < SPECIES_SHARING_RADIUS
+        sharing_matrix = species_dist_matrix < current_species_sharing_radius
         
         # The niche count is the sum of True values in each row.
         niche_counts = jnp.sum(sharing_matrix, axis=1)
