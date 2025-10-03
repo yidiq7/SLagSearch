@@ -33,19 +33,19 @@ CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 METRIC = 'k4_fermat'
 
 # GA Parameters
-POPULATION_SIZE = 600
+POPULATION_SIZE = 800
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 3000
+NUM_GENERATIONS = 10
 
-TRANSITION_GENERATION = 1500
+TRANSITION_GENERATION = 500
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
 ETA_MUTATION_EXPLORE = 10.0
 ETA_CROSSOVER_EXPLORE = 5.0
-SPECIATION_THRESHOLD_EXPLORE = 3.0
-SPECIES_SHARING_RADIUS_EXPLORE = 3.2
+SPECIATION_THRESHOLD_EXPLORE = 2.5
+SPECIES_SHARING_RADIUS_EXPLORE = 2.7
 
 # Exploitation Phase Settings
 TOURNEY_SIZE_EXPLOIT = 7
@@ -58,7 +58,7 @@ SPECIES_SHARING_RADIUS_EXPLOIT = 1.7
 # Crossover and Mutation Parameters
 CROSSOVER_RATE = 0.9
 
-STAGNATION_THRESHOLD = 40  # Generations a species can go without improvement before being removed.
+STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
@@ -69,19 +69,27 @@ LOG_INTERVAL = 1
 CHECKPOINT_DIR = 'checkpoints_3k'
 CHECKPOINT_INTERVAL = 100
 
-MINSET_SIZE = 10000
-NEWTON_STEPS = 40
+MINSET_SIZE = 100000
+NEWTON_STEPS = 100
+#MINSET_SIZE = 10000
+#NEWTON_STEPS = 40
 
 # JAX PRNG Key
-key = jax.random.PRNGKey(42)
+key = jax.random.PRNGKey(1234)
 
 # -----------------------------------------------------------------------------
 # 2. CORE EVALUATION FUNCTIONS
 # -----------------------------------------------------------------------------
 @partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'metric'))
 def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.ndarray, psi: jnp.ndarray, k: int, n_refine_steps: int, constant_coord: int = 0, metric: str = 'FS') -> jnp.float32:
-    min_set_real = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord)
-    fitness = compute_combined_fitness(min_set_real, coeffs, psi, constant_coord, metric)
+    min_set_real, _, newton_check_pass = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord, filter_newton=True)
+    fitness = jax.lax.cond(
+        newton_check_pass,
+        lambda points: compute_combined_fitness(min_set_real, coeffs, psi, constant_coord, metric),
+        lambda points: jnp.float32(0.0),
+        min_set_real
+    )
+
     return fitness
 
 # -----------------------------------------------------------------------------
@@ -542,7 +550,7 @@ if __name__ == '__main__':
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
         best_member = s.members[best_member_idx]
         best_fitness = s.fitness_values[best_member_idx]
-        
+
         print(f"\n--- Species {s.id} (Best Fitness: {best_fitness:.5f}) ---")
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")

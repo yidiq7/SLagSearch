@@ -386,8 +386,164 @@ def compute_distances_batched(points: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp
     return all_distances
 
 
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'debug_mode'))
+@partial(jax.jit, static_argnames=('constant_coord',))
+def _project_forces_to_tangent_space(
+    points: jnp.ndarray,
+    forces: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    constant_coord: int
+) -> jnp.ndarray:
+    """
+    Projects a batch of 10D force vectors onto the tangent spaces at each point.
+    This is a helper function for the repulsion algorithm.
+    """
+    # 1. Get Jacobians for all points in the batch using vmap
+    batch_jacobian_fn = jax.vmap(compute_jacobian, in_axes=(0, None, None, None))
+    jacobians = batch_jacobian_fn(points, coeffs, psi, constant_coord)  # Shape: (k, 5, 8)
+
+    # 2. Extract the 8 active components from the 10D force vectors
+    active_indices = jnp.concatenate([
+        jnp.arange(0, constant_coord),
+        jnp.arange(constant_coord + 1, 5),
+        jnp.arange(5, constant_coord + 5),
+        jnp.arange(constant_coord + 6, 10)
+    ])
+    forces_active = forces[:, active_indices]  # Shape: (k, 8)
+
+    # 3. Project forces onto the tangent space (v_tangent = v - v_normal)
+    # --- FIX STARTS HERE ---
+    # The original string 'kmi,km->ki' had a label mismatch.
+    # This corrected string 'kmi,ki->km' correctly performs the batch multiplication
+    # of the Jacobians (k, 5, 8) with forces_active (k, 8).
+    J_forces_active = jnp.einsum('kmi,ki->km', jacobians, forces_active)  # Shape: (k, 5)
+    # --- FIX ENDS HERE ---
+    
+    JJT = jnp.einsum('kmi,kni->kmn', jacobians, jacobians) + 1e-6 * jnp.eye(5)
+
+    w = jnp.linalg.solve(JJT, J_forces_active[..., None]).squeeze(axis=-1)
+    # This calculation for the normal component is correct.
+    forces_normal_active = jnp.einsum('kmi,km->ki', jacobians, w)  # Shape: (k, 8)
+    forces_tangent_active = forces_active - forces_normal_active
+
+    # 4. Embed the 8D tangent forces back into 10D vectors
+    return jnp.zeros_like(forces).at[:, active_indices].set(forces_tangent_active)
+
+
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'filter_newton', 'n_repulsion_steps'))
 def filter_and_refine(
+    points: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: Optional[jnp.ndarray] = None,
+    k: int = 10000,
+    n_refine_steps: int = 20,
+    constant_coord: int = 0,
+    filter_newton: bool = False,
+    # --- New parameters for repulsion ---
+    n_repulsion_steps: int = 20,
+    repulsion_strength: Optional[float] = None,
+    repulsion_radius: Optional[float] = None
+) -> jnp.ndarray:
+    """
+    Filters points, refines them onto the manifold, then applies a repulsion
+    algorithm to ensure a uniform distribution.
+    Setting n_repulsion_steps=0 recovers the original behavior.
+
+    filter_newton: If set to true, if the initial point cloud still has significant 
+                        mean distance to ther intersection after Newton's method, then skip 
+                        repulsion phase and return a flag. Or if the mean distance is large 
+                        after the repulsion, also return a flag.
+                          
+    """
+
+    # --- STEP 1: Initial Seeding ---
+    
+    refine_fn = partial(refine_point_iterative, coeffs=coeffs, psi=psi, constant_coord=constant_coord, n_steps=n_refine_steps)
+    refine_batch = jax.vmap(refine_fn)
+
+    all_distances = compute_distances_batched(points, coeffs, psi, constant_coord=constant_coord)
+    best_2k_indices = jnp.argsort(all_distances)[:2*k]
+    top_2k_points = points[best_2k_indices]
+
+    refined_points_10d = refine_batch(top_2k_points)
+    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, constant_coord=constant_coord)
+
+    best_indices = jnp.argsort(distance_refined)[:k]
+    top_k_points = refined_points_10d[best_indices]
+
+    initial_newton_check = True
+    if filter_newton:
+        mean_distance = jnp.nan_to_num(jnp.mean(distance_refined[best_indices])) 
+        initial_newton_check = (mean_distance <= 1e-4) & (mean_distance > 1e-16)
+
+    max_extent = jnp.max(top_k_points, axis=0)
+    min_extent = jnp.min(top_k_points, axis=0)
+    R_scale = jnp.linalg.norm(max_extent - min_extent) / 2
+    R_scale = jnp.maximum(R_scale, 1e-6)
+    #jax.debug.print('R_scale: {}', R_scale)
+
+    # --- STEP 2: Repulsion Loop for Uniform Distribution ---
+    if repulsion_radius is None:
+        repulsion_radius = R_scale / jnp.cbrt(k)
+    if repulsion_strength is None:
+        repulsion_strength = 0.3 * R_scale
+
+    if psi is None:
+        psi = jnp.complex64(0)
+
+    # Since now the points are much closer to the manifold,
+    # it would probably takes less refine steps.  
+    reproject_fn = partial(refine_point_iterative, coeffs=coeffs, psi=psi, constant_coord=constant_coord, n_steps=10)
+    batch_reproject = jax.vmap(reproject_fn)
+
+    def repulsion_body_fn(i, points_state):
+        # a. Calculate pairwise differences and distances squared
+        diffs = points_state[:, None, :] - points_state[None, :, :]  # Shape: (k, k, 10)
+        dists_sq = jnp.sum(diffs**2, axis=-1)  # Shape: (k, k)
+
+        # b. Calculate repulsion force (inverse law: F proportional to 1/r)
+        # Add epsilon to avoid division by zero; mask self-interaction later.
+        inv_dist_sq = 1.0 / (dists_sq + 1e-9)
+        forces = diffs * inv_dist_sq[..., None]
+
+        # c. Apply repulsion radius and mask out self-interaction
+        mask = (dists_sq < repulsion_radius**2) & (dists_sq > 1e-9)
+        net_force = jnp.sum(forces * mask[..., None], axis=1) # Shape: (k, 10)
+        
+        # d. Project forces onto the manifold's tangent space
+        tangent_force = _project_forces_to_tangent_space(points_state, net_force, coeffs, psi, constant_coord)
+        
+        # e. Update positions with a normalized step for stability
+        tangent_norm = jnp.linalg.norm(tangent_force, axis=1, keepdims=True)
+        unit_tangent_force = jnp.nan_to_num(tangent_force / (tangent_norm + 1e-9))
+        moved_points = points_state + repulsion_strength * unit_tangent_force
+        
+        # f. Re-project points back onto the manifold
+        return batch_reproject(moved_points)
+
+    # Run the repulsion loop. `lax.cond` handles the n_repulsion_steps=0 case efficiently.
+    final_points = jax.lax.cond(
+        (n_repulsion_steps > 0) & (initial_newton_check),
+        lambda p: jax.lax.fori_loop(0, n_repulsion_steps, repulsion_body_fn, p),
+        lambda p: p,
+        top_k_points
+    )
+
+    final_distances = compute_distances_batched(final_points, coeffs, psi, constant_coord=constant_coord)
+
+    repulsion_newton_check = True
+    if filter_newton:
+        mean_distance = jnp.nan_to_num(jnp.mean(final_distances)) 
+        repulsion_newton_check = (mean_distance <= 1e-4) & (mean_distance > 1e-16)
+
+    newton_check_pass = initial_newton_check & repulsion_newton_check
+
+    return final_points, final_distances, newton_check_pass
+
+
+
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'debug_mode'))
+def filter_and_refine_old(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
     psi: Optional[jnp.ndarray] = None,
@@ -409,16 +565,23 @@ def filter_and_refine(
     all_distances = compute_distances_batched(points, coeffs, psi, constant_coord=constant_coord)
 
     best_2k_indices = jnp.argsort(all_distances)[:2*k]
+    #best_2k_indices = jnp.argsort(all_distances)[:k]
     top_2k_points = points[best_2k_indices]
 
 
     refined_points_10d = refine_batch(jnp.array(top_2k_points))
     distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, constant_coord=constant_coord)
 
-    best_indices = jnp.argsort(distance_refined)[:k]
+    best_indices = jnp.argsort(distance_refined)[:int(1.9*k)]
     top_k_distances = distance_refined[best_indices]
     top_k_points = refined_points_10d[best_indices]
     if debug_mode:
         return top_k_points, top_k_distances
     else:
         return top_k_points
+
+
+
+
+
+
