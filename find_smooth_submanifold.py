@@ -158,78 +158,6 @@ def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
     coeffs_normalized = coeffs / norms
     return coeffs_normalized
 
-@jit
-def evaluate_equations(coeffs: jnp.ndarray, basis: jnp.ndarray) -> jnp.ndarray:
-    """
-    Evaluate three equations at all points.
-    
-    Args:
-        coeffs: (3, 25) array of coefficients for three equations
-        basis: (N, 25) array of basis functions
-        
-    Returns:
-        values: (N, 3) array of equation values at each point
-    """
-    return basis @ coeffs.T  # More efficient than jnp.dot
-
-@jit
-def compute_linear_independence_penalty(coeffs: jnp.ndarray) -> float:
-    """
-    Compute penalty for linear dependence of equations.
-    Uses the determinant of the Gram matrix.
-    
-    Args:
-        coeffs: (3, 25) array of coefficients
-        
-    Returns:
-        penalty: scalar penalty (higher when equations are more dependent)
-    """
-    # Compute Gram matrix
-    gram = coeffs @ coeffs.T
-    
-    # Regularized log determinant to avoid numerical issues
-    det = jnp.linalg.det(gram)
-    
-    # Return negative log of absolute determinant (minimize this = maximize determinant)
-    return -jnp.log10(jnp.abs(det) + 1e-10)
-
-
-@partial(jit, static_argnames=['k', 'lambda_reg'])
-def loss_function(coeffs: jnp.ndarray, basis: jnp.ndarray, 
-                  k: int = 10, lambda_reg: float = 1.0) -> float:
-
-    # d is the order of the polynomial
-    d = 1
-    # Evaluate equations at all points
-    coeffs = normalize_coeffs(coeffs)
-    eq_values = evaluate_equations(coeffs, basis)
-    
-    # Inline k_smallest_sum logic
-    eq_error = jnp.sqrt(jnp.sum(eq_values**(2/d), axis=1))
-    sorted_values = jnp.sort(eq_error)
-    intersect_loss = jnp.mean(sorted_values[:k])
-    
-    # Add linear independence penalty
-    independence_penalty = compute_linear_independence_penalty(coeffs)
-    
-    # Total loss
-    return intersect_loss + lambda_reg * independence_penalty
-
-
-@partial(jit, static_argnames=['k'])
-def loss_function_aray(coeffs: jnp.ndarray, basis: jnp.ndarray, 
-                  k: int = 10) -> jnp.ndarray:
-    # Evaluate equations at all points
-    eq_values = evaluate_equations(coeffs, basis)
-    
-    # Inline k_smallest_sum logic
-    eq_squared = jnp.sum(eq_values**2, axis=1)
-    sorted_values = jnp.sort(eq_squared)
-    intersect_loss = sorted_values[:k]
-    
-    # Total loss
-    return intersect_loss
-
 
 def get_basis_labels():
     """Get human-readable labels for basis functions."""
@@ -246,98 +174,6 @@ def get_basis_labels():
             labels.append(f"Re(z{i}*z{j}bar)")
     
     return labels
-
-def optimize_equations(points: jnp.ndarray, 
-                      init_coeffs: Union[jnp.ndarray, None] = None,
-                      learning_rate: float = 0.01,
-                      num_steps: int = 5000,
-                      num_min_set: int = 500,
-                      lambda_reg: float = 0.1,
-                      seed: int = 42) -> Tuple[jnp.ndarray, list]:
-    """
-    Optimize coefficients for three equations.
-    
-    Args:
-        points: (N, 5) complex array of points on Fermat quintic
-        learning_rate: optimizer learning rate
-        num_steps: number of optimization steps
-        lambda_reg: regularization weight for linear independence
-        seed: random seed
-        
-    Returns:
-        coeffs: (3, 25) optimized coefficients
-        losses: list of loss values during optimization
-    """
-    # Generate basis functions
-    basis = generate_basis(points)
-    
-    # Initialize coefficients with focus on imaginary cross terms
-    key = jax.random.PRNGKey(seed)
-
-    labels = np.array(get_basis_labels())
-   
-    if init_coeffs is None: 
-        # Start with random initialization
-        coeffs = jax.random.normal(key, (3, 25)) * 0.1
-        coeffs = normalize_coeffs(coeffs) 
-        # Add larger weights to imaginary cross terms (first 10 coefficients)
-        # These are Im(zi*zjbar) for i < j
-        #key, subkey = jax.random.split(key)
-        #coeffs = coeffs.at[:, :10].add(jax.random.normal(subkey, (3, 10)) * 0.5)
-    
-    else:
-        coeffs = init_coeffs
-    
-    # Setup optimizer with gradient clipping for stability
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.sgd(learning_rate)
-    )
-    opt_state = optimizer.init(coeffs)
-    
-    # Create loss and gradient functions
-    #loss_fn = lambda c: 1/loss_function(c, basis, k=num_min_set, lambda_reg=0) + lambda_reg * compute_linear_independence_penalty(coeffs)
-    loss_fn = lambda c: loss_function(c, basis, k=num_min_set, lambda_reg=lambda_reg)
-    grad_fn = jit(grad(loss_fn))
-    
-    # Optimization loop
-    losses = []
-    for step in range(num_steps):
-        loss_val = loss_fn(coeffs)
-        losses.append(float(loss_val))
-        
-        if step % 10 == 0:
-            independence_loss = lambda_reg * compute_linear_independence_penalty(coeffs)
-            print(f"Step {step}, Loss: {loss_val:.6f}, Independence Loss: {independence_loss:.6f}")
-
-            equations = combine_to_complex_equations(labels, coeffs)
-            
-            # Print the equations
-            for i, eq in enumerate(equations):
-                print(f"Equation {i+1}:")
-                print(eq)
-                print()
-        
-        # Compute gradients and update
-        grads = grad_fn(coeffs)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        coeffs = optax.apply_updates(coeffs, updates)
-   
-    coeffs = normalize_coeffs(coeffs) 
-
-    return coeffs, losses
-
-
-def find_satisfying_points(coeffs: jnp.ndarray, basis: jnp.ndarray, 
-                           k: int = 10) -> jnp.ndarray:
-    # Evaluate equations at all points
-    eq_values = evaluate_equations(coeffs, basis)
-    
-    # Inline k_smallest_sum logic
-    eq_squared = jnp.sum(eq_values**2, axis=1)
-    sorted_values = jnp.sort(eq_squared)
-    sorted_values_k = sorted_values[k]
-    return jnp.where(eq_squared < sorted_values_k)[0]
 
 
 # ------------------------------------------------------------------------------
@@ -579,9 +415,4 @@ def filter_and_refine_old(
         return top_k_points, top_k_distances
     else:
         return top_k_points
-
-
-
-
-
 
