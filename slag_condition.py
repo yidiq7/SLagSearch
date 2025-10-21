@@ -254,29 +254,6 @@ def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, metric: s
        raise ValueError(f"Unsupported metric: '{metric}'. Options are 'FS' or 'k4'.") 
 
 
-# --- Public API Functions ---
-
-def compute_fubini_study_metric(
-    points_Z: jnp.ndarray,
-    patch_index: int = 0,
-    epsilon: float = 1e-8
-) -> jnp.ndarray:
-    """
-    Computes the Fubini-Study metric tensor G for points in CP^4.
-
-    Args:
-        points_Z: An (N, 5) array of complex numbers (homogeneous coordinates).
-        patch_index: The index of the homogeneous coordinate to use for the affine patch.
-        epsilon: A small number to avoid division by zero.
-
-    Returns:
-        An (N, 8, 8) array of real numbers. Each 8x8 matrix is the metric tensor `G`.
-    """
-    vmapped_computer = jax.vmap(
-        _compute_metric_for_single_point, in_axes=(0, None, None)
-    )
-    return vmapped_computer(points_Z, patch_index, epsilon)
-
 
 def compute_kahler_form(
     points_Z: jnp.ndarray,
@@ -445,30 +422,3 @@ def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi
         return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restriction, phases
     else:
         return combined_fitness
-
-
-# --- Example Usage ---
-if __name__ == '__main__':
-    # JIT-compile our functions for performance
-    jit_compute_metric = jax.jit(compute_fubini_study_metric, static_argnums=(1,))
-    jit_compute_kahler = jax.jit(compute_kahler_form, static_argnums=(1,))
-
-    # Example point
-    point = jnp.array([[1.0 + 0.1j, 0.5 - 0.2j, 0.2, 0.1, 0.1j]], dtype=jnp.complex64)
-
-    print("--- Metric Tensor G ---")
-    metric_tensor = jit_compute_metric(point, 0)
-    print("Metric G for the point (rounded):")
-    print(jnp.round(metric_tensor[0], 3))
-    # Verify symmetry: G should be equal to its transpose
-    is_symmetric = jnp.allclose(metric_tensor[0], metric_tensor[0].T)
-    print(f"Is G symmetric? {is_symmetric}")
-
-
-    print("\n--- Kähler Form Omega ---")
-    kahler_matrix = jit_compute_kahler(point, 0)
-    print("Kähler form Omega for the point (rounded):")
-    print(jnp.round(kahler_matrix[0], 3))
-    # Verify antisymmetry: Omega should be equal to the negative of its transpose
-    is_antisymmetric = jnp.allclose(kahler_matrix[0], -kahler_matrix[0].T)
-    print(f"Is Omega antisymmetric? {is_antisymmetric}")
