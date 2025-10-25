@@ -6,99 +6,6 @@ import itertools
 from functools import partial
 from helper import evaluate_equations_single_point
 
-def get_restriction_symbolic(constant_coord: int = 0, ignored_coord: Optional[List[int]] = None, psi: complex = 0):
-    """
-    Not currently in use. 
-    """
-    # --- Validation and Default Value ---
-    # The index is after taking out the constant coordinate
-    if ignored_coord is None:
-        ignored_coord = [3, 4, 5, 6, 7]
-
-    # --- Runtime Validation Logic ---
-    if not isinstance(ignored_coord, list):
-        raise TypeError("ignored_coord must be a list of integers.")
-    if len(ignored_coord) != 5:
-        raise ValueError(f"ignored_coord must contain exactly 5 elements, but got {len(ignored_coord)}.")
-    if len(set(ignored_coord)) != 5:
-        raise ValueError(f"All elements in ignored_coord must be unique. Found duplicates in {ignored_coord}.")
-    if not all(isinstance(i, int) and 0 <= i <= 7 for i in ignored_coord):
-        raise ValueError("All elements in ignored_coord must be integers between 0 and 7.")
-
-    z0, z1, z2, z3, z4 = sp.symbols('z0, z1, z2, z3, z4')
-    Z = [z0,z1,z2,z3,z4]
-    f = z0**5 + z1**5 + z2**5 + z3**5 + z4**5 + psi*z0*z1*z2*z3*z4
-
-    X = sp.symbols('x0:5', real=True)
-    Y = sp.symbols('y0:5', real=True)
-
-    # The order of symbols in XY is [x0,x1,x2,x3,x4, y0,y1,y2,y3,y4]
-    XY = X + Y
-    # This is the 4 complex affine coordinates after choosing a patch
-    # If we set z0 = 1, then the four affine coordinates will be
-    # x1 to x4 and y1 to y4
-    XY_affine = (X[:constant_coord] + X[constant_coord+1:] +
-                 Y[:constant_coord] + Y[constant_coord+1:])
-
-    # -----------------------------------------------------------
-    # Gonstruct the five constrains in real coordinates
-
-    substitutions = {z: x + sp.I*y for z, x, y in zip(Z, X, Y)}
-    # Perform the substitution
-    f_substituted = f.subs(substitutions)
-    cy_real, cy_imag = f_substituted.expand(complex=True).as_real_imag()
-
-    imag_basis_z = [sp.im(Z[i] * sp.conjugate(Z[j])) for i in range(5) for j in range(i + 1, 5)]
-    real_basis_z = [sp.re(Z[i] * sp.conjugate(Z[j])) for i in range(5) for j in range(i, 5)]
-
-    # The complete basis in terms of z
-    basis_z = imag_basis_z + real_basis_z
-
-    # The .doit() method evaluates the Re() and Im() functions
-    basis_xy = [b.subs(substitutions).doit() for b in basis_z]
-
-    A = sp.symbols('a0:25', real=True)
-    B = sp.symbols('b0:25', real=True)
-    C = sp.symbols('c0:25', real=True)
-
-    # Create the full linear combination of the basis functions
-    # linear_combination = sum(wk * bk for wk, bk in zip(w, basis_xy))
-    eq1 = sp.Add(*[ak * basisk for ak, basisk in zip(A, basis_xy)])
-    eq2 = sp.Add(*[bk * basisk for bk, basisk in zip(B, basis_xy)])
-    eq3 = sp.Add(*[ck * basisk for ck, basisk in zip(C, basis_xy)])
-
-    eq_list = [cy_real, cy_imag, eq1, eq2, eq3]
-
-    # Since we have more than one ignored_coordinate, sympy subs()
-    # cannot replace two coordinates simultaneously. As a result, if the first
-    # expression contains the coordinate to be replaced by the second expression
-    # that coordinate will also be replaced. So here we will create a temporary 
-    # coordinate list W to avoid this issue
-
-    V = sp.symbols('v0:8', real=True)
-    ignored_coordinate_v = [V[i] for i in ignored_coord]
-
-    local_coordinates_v = sp.Matrix(V).subs({coord: func for coord, func in zip(ignored_coordinate_v, eq_list)})
-    # Replace the correct affine coordinates back
-    local_coordinates = local_coordinates_v.subs({v: xy for v, xy in zip(V, XY_affine)})
-    jacobian_matrix = local_coordinates.jacobian(XY_affine)
-    restriction = jacobian_matrix._rep.inv().to_Matrix()
-    for coord in reversed(ignored_coord):
-        restriction.col_del(coord)
-    # Expand the dimension from 8 to 10 to include the two real constant coordinates
-    # (By default, Re(z0) and Im(z0)
-    #embedding_matrix = sp.eye(10)
-    #embedding_matrix.col_del(constant_coord+5)
-    #embedding_matrix.col_del(constant_coord)
-    #restriction = embedding_matrix * restriction
-
-    #jac_ignored = jacobian_matrix.extract(ignored_coord, ignored_coord)
-    #det_jac_ignored = jac_ignored.applyfunc(sp.factor).det(method='berkowitz')  
-    #restriction_scaled = restriction * det_jac_ignored
-    return restriction
-    #return restriction_scaled, det_jac_ignored
-
-
 def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray):
     """
     Computes the restriction applied to the holomorphic 3-form from the full restriction
@@ -190,32 +97,6 @@ def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, 
     Returns:
         The Jacobian matrix, shape (5, 8).
     """
-
-#    # This is the function we will differentiate. It evaluates all 5 equations.
-#    def evaluate_all_five_equations(point_10d: jnp.ndarray, coefficients: jnp.ndarray) -> jnp.ndarray:
-#        # --- Equation 1 & 2: Fermat Quintic ---
-#        # Convert 10 real coordinates to 5 complex coordinates
-#        z = point_10d[:5] + 1j * point_10d[5:]
-#        # Evaluate the quintic polynomial
-#        f = jnp.sum(z**5) + psi * jnp.prod()
-#        cy_real = f.real
-#        cy_imag = f.imag
-#
-#        # --- Equation 3, 4, & 5: Custom Equations ---
-#        # Helper to compute the 25 basis functions at a single point.
-#        x = point_10d[:5]
-#        y = point_10d[5:]
-#        imag_indices_i, imag_indices_j = jnp.triu_indices(5, 1)
-#        imag_basis = y[imag_indices_i] * x[imag_indices_j] - x[imag_indices_i] * y[imag_indices_j]
-#        real_indices_i, real_indices_j = jnp.triu_indices(5)
-#        real_basis = x[real_indices_i] * x[real_indices_j] + y[real_indices_i] * y[real_indices_j]
-#        basis_values = jnp.concatenate([imag_basis, real_basis])
-#        
-#        # Evaluate the 3 custom equations
-#        eq1, eq2, eq3 = jnp.dot(coefficients, basis_values)
-#
-#        # Return all 5 equations as a single vector
-#        return jnp.array([cy_real, cy_imag, eq1, eq2, eq3])
 
     # Use jax.jacobian to automatically compute the derivative.
     # argnums=0 means "differentiate with respect to the first argument (point_10d)".
