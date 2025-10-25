@@ -6,83 +6,6 @@ import itertools
 from functools import partial
 from helper import evaluate_equations_single_point
 
-def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray):
-    """
-    Computes the restriction applied to the holomorphic 3-form from the full restriction
-
-    Args:
-        restriction: An (N, 8, 8) array of the numerical restriction matrices.
-        Omega_coord: The index of the affine coordinates used to represent the holomorphic
-                     3-form. For example, With z_4 being the dependent coordinate,
-                     this list would be [0, 1, 2]. If z_3 is chosen as the dependent coordinate,
-                     then the list would be [0, 1, 3]. It doesn't depend on patch
-                     (which coordinate set to 1.)
-
-    Return:
-        An (N,) array of the determinant of the jacobian.
-    """
-    Omega_coord_y = Omega_coord + 4
-    N = restriction.shape[0]
-    row = jnp.arange(N)[:, None]
-    jacobian = restriction[row, Omega_coord] + 1j*restriction[row, Omega_coord_y]
-    # Rescale the jacobian in case the determinant blows up
-    max_abs_vals = jnp.max(jnp.abs(jacobian), axis=(-2, -1))
-    safe_max_vals = jnp.where(max_abs_vals == 0, 1.0, max_abs_vals)
-    scaling_factors = safe_max_vals[:, None, None]
-    jacobian_scaled = jacobian / scaling_factors
-    return jnp.linalg.det(jacobian_scaled)
-
-def get_jacobian_symbolic(constant_coord: int = 0, psi: complex = 0):
-    """
-    Not currently in use.
-    """ 
-    z0, z1, z2, z3, z4 = sp.symbols('z0, z1, z2, z3, z4')
-    Z = [z0,z1,z2,z3,z4]
-    f = z0**5 + z1**5 + z2**5 + z3**5 + z4**5 + psi*z0*z1*z2*z3*z4
-
-    X = sp.symbols('x0:5', real=True)
-    Y = sp.symbols('y0:5', real=True)
-
-    # The order of symbols in XY is [x0,x1,x2,x3,x4, y0,y1,y2,y3,y4]
-    XY = X + Y
-    # This is the 4 complex affine coordinates after choosing a patch
-    # If we set z0 = 1, then the four affine coordinates will be
-    # x1 to x4 and y1 to y4
-    XY_affine = (X[:constant_coord] + X[constant_coord+1:] +
-                 Y[:constant_coord] + Y[constant_coord+1:])
-
-    # -----------------------------------------------------------
-    # Gonstruct the five constrains in real coordinates
-
-    substitutions = {z: x + sp.I*y for z, x, y in zip(Z, X, Y)}
-    # Perform the substitution
-    f_substituted = f.subs(substitutions)
-    cy_real, cy_imag = f_substituted.expand(complex=True).as_real_imag()
-
-    imag_basis_z = [sp.im(Z[i] * sp.conjugate(Z[j])) for i in range(5) for j in range(i + 1, 5)]
-    real_basis_z = [sp.re(Z[i] * sp.conjugate(Z[j])) for i in range(5) for j in range(i, 5)]
-
-    # The complete basis in terms of z
-    basis_z = imag_basis_z + real_basis_z
-
-    # The .doit() method evaluates the Re() and Im() functions
-    basis_xy = [b.subs(substitutions).doit() for b in basis_z]
-
-    A = sp.symbols('a0:25', real=True)
-    B = sp.symbols('b0:25', real=True)
-    C = sp.symbols('c0:25', real=True)
-
-    # Create the full linear combination of the basis functions
-    # linear_combination = sum(wk * bk for wk, bk in zip(w, basis_xy))
-    eq1 = sp.Add(*[ak * basisk for ak, basisk in zip(A, basis_xy)])
-    eq2 = sp.Add(*[bk * basisk for bk, basisk in zip(B, basis_xy)])
-    eq3 = sp.Add(*[ck * basisk for ck, basisk in zip(C, basis_xy)])
-
-    eq_list = [cy_real, cy_imag, eq1, eq2, eq3]
-
-    eq_jacobian = sp.Matrix(eq_list).jacobian(XY_affine)
-    return eq_jacobian
-
 @partial(jax.jit, static_argnames=('constant_coord',))
 def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
     """
@@ -199,3 +122,31 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
     restriction = inverted_matrix[:, kept_cols]
 
     return restriction
+
+def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray):
+    """
+    Computes the restriction applied to the holomorphic 3-form from the full restriction
+
+    Args:
+        restriction: An (N, 8, 8) array of the numerical restriction matrices.
+        Omega_coord: The index of the affine coordinates used to represent the holomorphic
+                     3-form. For example, With z_4 being the dependent coordinate,
+                     this list would be [0, 1, 2]. If z_3 is chosen as the dependent coordinate,
+                     then the list would be [0, 1, 3]. It doesn't depend on patch
+                     (which coordinate set to 1.)
+
+    Return:
+        An (N,) array of the determinant of the jacobian.
+    """
+    Omega_coord_y = Omega_coord + 4
+    N = restriction.shape[0]
+    row = jnp.arange(N)[:, None]
+    jacobian = restriction[row, Omega_coord] + 1j*restriction[row, Omega_coord_y]
+    # Rescale the jacobian in case the determinant blows up
+    max_abs_vals = jnp.max(jnp.abs(jacobian), axis=(-2, -1))
+    safe_max_vals = jnp.where(max_abs_vals == 0, 1.0, max_abs_vals)
+    scaling_factors = safe_max_vals[:, None, None]
+    jacobian_scaled = jacobian / scaling_factors
+    return jnp.linalg.det(jacobian_scaled)
+
+
