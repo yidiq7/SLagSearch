@@ -80,12 +80,39 @@ key = jax.random.PRNGKey(1234)
 # -----------------------------------------------------------------------------
 # 2. CORE EVALUATION FUNCTIONS
 # -----------------------------------------------------------------------------
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'metric'))
-def calculate_fitness_for_one_individual(coeffs: jnp.ndarray, points_real: jnp.ndarray, psi: jnp.ndarray, k: int, n_refine_steps: int, constant_coord: int = 0, metric: str = 'FS') -> jnp.float32:
-    min_set_real, _, newton_check_pass = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord, filter_newton=True)
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'metric'))
+def calculate_fitness_for_one_individual(
+    coeffs: jnp.ndarray, 
+    points_real: jnp.ndarray, 
+    psi: jnp.ndarray, 
+    k: int, 
+    n_refine_steps: int, 
+    metric: str = 'FS'
+) -> jnp.float32:
+    """
+    Calculate fitness for one individual with automatic patch handling.
+    
+    Args:
+        coeffs: (3, 25) coefficient array
+        points_real: (N, 10) array of sample points
+        psi: Complex quintic parameter
+        k: Number of points to refine
+        n_refine_steps: Newton iterations
+        metric: 'FS' or 'k4_fermat'
+    
+    Returns:
+        Fitness value (0 if Newton's method fails to converge)
+    """
+ 
+    min_set_real, _, newton_check_pass = filter_and_refine(
+        points_real, coeffs, psi, k, n_refine_steps, filter_newton=True
+    )
+
     fitness = jax.lax.cond(
         newton_check_pass,
-        lambda points: compute_combined_fitness(min_set_real, coeffs, psi, constant_coord, metric),
+        lambda points: compute_combined_fitness(
+            min_set_real, coeffs, psi, metric
+        ),
         lambda points: jnp.float32(0.0),
         min_set_real
     )
@@ -278,7 +305,7 @@ if __name__ == '__main__':
     # --- Create the vmapped fitness function ---
     vmap_fitness_batch = vmap(
         calculate_fitness_for_one_individual,
-        in_axes=(0, None, None, None, None, None, None), out_axes=0
+        in_axes=(0, None, None, None, None, None), out_axes=0
     )
 
     # --- Load from checkpoint or initialize ---
@@ -357,7 +384,10 @@ if __name__ == '__main__':
             start_idx = i * FITNESS_MINI_BATCH_SIZE
             end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
             pop_batch = population[start_idx:end_idx]
-            fitness_batch = vmap_fitness_batch(pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0, METRIC)
+            fitness_batch = vmap_fitness_batch(
+                pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+            )
+
             # Replace any potential NaN/inf values with 0 before storing them.
             safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
             all_fitness_scores = all_fitness_scores.at[start_idx:end_idx].set(safe_fitness_batch)
@@ -558,6 +588,10 @@ if __name__ == '__main__':
         print("Complex equations:")
         print(combine_to_complex_equations(get_basis_labels(), best_member))
 
-        parent_folder = os.path.join(f'plots_slag_{args.job_id}', f'plots_slag_{args.job_id}_{rank}_id{s.id}')
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, constant_coord=0, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
+        parent_folder = os.path.join(
+            f'plots_slag_{args.job_id}', 
+            f'plots_slag_{args.job_id}_{rank}_id{s.id}'
+        )
+
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
         rank += 1

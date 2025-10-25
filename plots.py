@@ -9,7 +9,6 @@ from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import compute_combined_fitness
 from helper import canonicalize_coeffs 
 from typing import Optional
-from mpl_toolkits.mplot3d import Axes3D 
 
 def make_fitness_plots(
     points_real: jnp.ndarray,
@@ -17,7 +16,6 @@ def make_fitness_plots(
     psi: jnp.ndarray,
     k: int = 100000,
     n_refine_steps: int = 100,
-    constant_coord: int = 0,
     metric: str = 'FS',
     compare_with_random: bool = False,
     parent_folder: Optional[str] = 'plots_slag',
@@ -27,8 +25,11 @@ def make_fitness_plots(
     os.makedirs(parent_folder, exist_ok=True)
 
     # Compute the norms and phases
-    min_set_real, distances, _ = filter_and_refine(points_real, coeffs, psi, k, n_refine_steps, constant_coord)
-    total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, constant_coord, metric, debug_mode=True)
+    min_set_real, distances, _ = filter_and_refine(
+        points_real, coeffs, psi, k, n_refine_steps
+    )
+
+    total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, metric, debug_mode=True)
 
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, Mean: {jnp.mean(distances)}")
@@ -85,8 +86,8 @@ def make_fitness_plots(
         coeffs_random =  canonicalize_coeffs(coeffs_random)
         coeffs_random =  normalize_coeffs(coeffs_random)
 
-        min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps, constant_coord)
-        total_fitness_random, lagrangian_fitness_random, special_fitness_random, kahler_form_restricted_random, restriction_random, phases_random = compute_combined_fitness(min_set_real_random, coeffs_random, psi, constant_coord, metric, debug_mode=True)
+        min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps)
+        total_fitness_random, lagrangian_fitness_random, special_fitness_random, kahler_form_restricted_random, restriction_random, phases_random = compute_combined_fitness(min_set_real_random, coeffs_random, psi, metric, debug_mode=True)
         frobenius_norms_random = jnp.linalg.norm(kahler_form_restricted_random, axis=(1, 2))
 
         plt.figure(figsize=(10, 6))

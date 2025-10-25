@@ -6,7 +6,7 @@ import itertools
 from functools import partial
 from helper import evaluate_equations_single_point
 
-@partial(jax.jit, static_argnames=('constant_coord',))
+#@partial(jax.jit, static_argnames=('constant_coord',))
 def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
     """
     Computes the 5x8 Jacobian of the full system (Quintic + 3 custom equations)

@@ -217,3 +217,48 @@ def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi
     eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 
     return eqs_evaluated
 
+
+@jax.jit
+def convert_real_to_complex_batch(points_real: jnp.ndarray) -> jnp.ndarray:
+    """
+    Converts (N, 10) real representation to (N, 5) complex.
+    
+    Args:
+        points_real: An (N, 10) real array where first 5 are real parts, last 5 are imaginary
+        
+    Returns:
+        An (N, 5) complex array
+    """
+    return points_real[:, :5] + 1j * points_real[:, 5:]
+
+
+@jax.jit
+def convert_complex_to_real_batch(points_complex: jnp.ndarray) -> jnp.ndarray:
+    """
+    Converts (N, 5) complex representation to (N, 10) real.
+    
+    Args:
+        points_complex: An (N, 5) complex array
+        
+    Returns:
+        An (N, 10) real array where first 5 are real parts, last 5 are imaginary
+    """
+    return jnp.concatenate([jnp.real(points_complex), jnp.imag(points_complex)], axis=1)
+
+
+@jax.jit
+def determine_patches_batch(points_complex: jnp.ndarray) -> jnp.ndarray:
+    """
+    Determines the appropriate patch for a batch of points.
+    
+    Args:
+        points_complex: An (N, 5) complex array
+        
+    Returns:
+        patch_indices: An (N,) integer array with values in [0,4]
+    """
+    magnitudes = jnp.abs(points_complex)
+    patch_indices = jnp.argmax(magnitudes, axis=1)
+    return patch_indices
+
+

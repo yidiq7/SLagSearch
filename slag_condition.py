@@ -5,6 +5,7 @@ from functools import partial
 import math
 from itertools import combinations_with_replacement
 from collections import Counter
+from helper import convert_real_to_complex_batch, determine_patches_batch
 
 # --- Core Calculation ---
 
@@ -234,30 +235,36 @@ def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, metric: s
         lambda: _assemble_metric_tensor(calculate_complex_metric_k4(z, patch_index))
     )
 
-def _compute_kahler_for_single_point(z: jnp.ndarray, patch_index: int, metric: str, epsilon: float) -> jnp.ndarray:
-    """Computes the Fubini-Study Kähler form Omega for a single point."""
-    # Fubini-Study metric
-    if metric == 'FS':
-        return jax.lax.cond(
-            jnp.abs(z[patch_index]) < epsilon,
-            lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-            lambda: _assemble_kahler_form(calculate_complex_metric_FS(z, patch_index))
-        )
-    # k = 4 Ricci-flat metric
-    elif metric == 'k4_fermat':
-        return jax.lax.cond(
-            jnp.abs(z[patch_index]) < epsilon,
-            lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-            lambda: _assemble_kahler_form(calculate_complex_metric_k4(z, patch_index))
-        )
-    else:
-       raise ValueError(f"Unsupported metric: '{metric}'. Options are 'FS' or 'k4'.") 
 
+def _compute_kahler_for_point(
+    z: jnp.ndarray, 
+    patch_index: int, 
+    metric: str, 
+    epsilon: float
+) -> jnp.ndarray:
+    """
+    Computes the Kahler form for a single point with a specific patch index.
+    
+    This is a helper function designed to be vmapped over batches where each
+    point may be in a different patch.
+    """
+    if metric == 'FS':
+        metric_fn = calculate_complex_metric_FS
+    elif metric == 'k4_fermat':
+        metric_fn = calculate_complex_metric_k4
+    else:
+        raise ValueError(f"Unsupported metric: '{metric}'")
+    
+    return jax.lax.cond(
+        jnp.abs(z[patch_index]) < epsilon,
+        lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
+        lambda: _assemble_kahler_form(metric_fn(z, patch_index))
+    )
 
 
 def compute_kahler_form(
     points_Z: jnp.ndarray,
-    patch_index: int = 0,
+    patch_indices: jnp.ndarray,
     metric: str = 'FS',
     epsilon: float = 1e-8
 ) -> jnp.ndarray:
@@ -269,28 +276,41 @@ def compute_kahler_form(
 
     Args:
         points_Z: An (N, 5) array of complex numbers (homogeneous coordinates).
-        patch_index: The index of the homogeneous coordinate to use for the affine patch.
+        patch_indices: An (N,) integer array specifying which patch each point is in
+        metric: Either 'FS' or 'k4_fermat'
         epsilon: A small number to avoid division by zero.
 
     Returns:
         An (N, 8, 8) array of real numbers. Each 8x8 matrix is the component
         matrix `Omega` of the Kähler form.
     """
-    vmapped_computer = jax.vmap(
-        _compute_kahler_for_single_point, in_axes=(0, None, None, None)
-    )
-    return vmapped_computer(points_Z, patch_index, metric, epsilon)
+    compute_fn = partial(_compute_kahler_for_point_with_patch, metric=metric, epsilon=epsilon)
+    vmapped_compute = jax.vmap(compute_fn, in_axes=(0, 0))
+    
+    return vmapped_compute(points_Z, patch_indices)
 
-def compute_kahler_form_restricted(points: jnp.ndarray, restriction: jnp.ndarray, constant_coord: int = 0, metric: str = 'FS') -> jnp.ndarray:
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1, 2))
-    kahler_form = jit_compute_kahler_form(points, constant_coord, metric)
+
+def compute_kahler_form_restricted(
+    points: jnp.ndarray, 
+    restriction: jnp.ndarray, 
+    patch_indices: jnp.ndarray, 
+    metric: str = 'FS'
+) -> jnp.ndarray:
+
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2, 3))
+    kahler_form = jit_compute_kahler_form(points, patch_indices, metric)
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
     return kahler_form_restricted
 
 
-def compute_kahler_form_unrestricted(points: jnp.ndarray, constant_coord: int = 0, metric: str = 'FS') -> jnp.ndarray:
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(1, 2))
-    kahler_form = jit_compute_kahler_form(points, constant_coord, metric)
+def compute_kahler_form_unrestricted(
+    points: jnp.ndarray, 
+    patch_indices: jnp.ndarray, 
+    metric: str = 'FS'
+) -> jnp.ndarray:
+
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2, 3))
+    kahler_form = jit_compute_kahler_form(points, patch_indices, metric)
     return kahler_form
 
 
@@ -319,38 +339,113 @@ def get_Omega_coord(min_idx):
     return coord_lookup_table[min_idx]
 
 
-def compute_holomorphic_form(points_complex: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+def compute_holomorphic_form(
+    points_complex: jnp.ndarray,
+    patch_indices: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Compute the holomorphic 3-form from given points 
-
+    Computes the holomorphic 3-form accounting for different patches.
+    
+    The holomorphic form Ω changes between patches. In patch i, we have:
+        Ω_i = (constant/z_i^4) × (wedge product of other coordinates)
+    
     Args:
-        points: An (N, 5) complex array 
-    Return:
-        An (N,) array containing the component of the holomorphic 3-from
-        Omega = 1 / (5 * z_i)**4 dz_1 ^ ... dz_{i-1} ^ dz_{i+1} ... ^ dz_4
-        where the index i is chosen so that the norm of Omega is the smallest
-
-        An (N,) array containing the index i
-        An (N, 3) array containing the three coordinates in the basis
+        points_complex: An (N, 5) complex array
+        patch_indices: An (N,) integer array
+        
+    Returns:
+        Omega: An (N,) complex array of the holomorphic form values
+        Omega_min_indices: An (N,) integer array of which affine coordinate was used
+        Omega_coord: An (N, 3) integer array of the three coordinates in the basis
     """
-
-    Omega = 1 / (5*(points_complex[:, 1:])**4)
-    Omega_min_indices = jnp.argmin(jnp.abs(Omega), axis=1)
-    Omega = Omega[jnp.arange(Omega.shape[0]), Omega_min_indices]
-    Omega_coord = jax.vmap(get_Omega_coord)(Omega_min_indices)
-
+    # For each point, we work in its designated patch
+    # The affine coordinates are all coordinates except patch_indices[i]
+    
+    # Create affine coordinates by removing the patch coordinate
+    # This is more complex since each point has a different patch
+    
+    def compute_omega_single(point: jnp.ndarray, patch_idx: int):
+        """Compute Omega for a single point in a specific patch."""
+        # Get the 4 affine coordinates (excluding the patch coordinate)
+        affine_coords = jnp.delete(point, patch_idx)
+        
+        # Compute 1/(5*z_affine_i)^4 for each affine coordinate
+        Omega_values = 1.0 / (5.0 * affine_coords**4)
+        
+        # Choose the one with smallest magnitude
+        min_idx = jnp.argmin(jnp.abs(Omega_values))
+        Omega = Omega_values[min_idx]
+        
+        # Get the coordinate indices in the affine system
+        Omega_coord = get_Omega_coord(min_idx)
+       
+        # NOTE: I DONT THINK THIS IS NEEDED SINCE WE ALREADY REMOVED 
+        # THE COORDINATES WHEN COMPUTING THE RESTRICTION BUT LETS DOUBLE
+        # CHECK THIS. 
+        # Adjust coordinate indices if they're >= patch_idx (since we removed one coordinate)
+        # This remaps from affine indices back to original [0,1,2,3,4] indices
+        #Omega_coord = jnp.where(Omega_coord >= patch_idx, Omega_coord + 1, Omega_coord)
+        # Remove the patch coordinate from the list
+        #Omega_coord = jnp.array([c for c in Omega_coord if c != patch_idx])[:3]
+        
+        return Omega, min_idx, Omega_coord
+    
+    vmapped_compute = jax.vmap(compute_omega_single)
+    Omega, Omega_min_indices, Omega_coord = vmapped_compute(points_complex, patch_indices)
+    
     return Omega, Omega_min_indices, Omega_coord
 
 
-def compute_holomorphic_form_restricted(points_complex: jnp.ndarray, restriction: jnp.ndarray, phase_only: bool):
-
-    Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form(points_complex)
+def compute_holomorphic_form_restricted(
+    points_complex: jnp.ndarray,
+    patch_indices: jnp.ndarray,
+    restriction: jnp.ndarray,
+    phase_only: bool
+) -> jnp.ndarray:
+    """
+    Computes the restricted holomorphic form with patch-aware phase corrections.
+    
+    Args:
+        points_complex: An (N, 5) complex array
+        patch_indices: An (N,) integer array
+        restriction: An (N, 8, 3) array
+        phase_only: If True, return only phases; if False, return full Omega
+        
+    Returns:
+        If phase_only=True: An (N,) array of phases in [0, 2π)
+        If phase_only=False: An (N,) complex array
+    """
+    Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form_multipatch(
+        points_complex, patch_indices
+    )
+    
     Omega_restriction = compute_Omega_restriction(restriction, Omega_coord)
+    
     if phase_only:
-        phase_Omega = -4*jnp.angle(points_complex[jnp.arange(points_complex.shape[0]), Omega_min_indices+1])
+        # Compute phase from the point's coordinate in its patch
+        # Note: Omega_min_indices is relative to affine coordinates (0-3)
+        # We need to map back to the original coordinate
+        
+        # For each point, get the actual coordinate index being used
+        def get_actual_coord_idx(min_idx: int, patch_idx: int):
+            """Map affine index back to homogeneous coordinate index."""
+            # Affine coordinates are [0,1,2,3,4] with patch_idx removed
+            affine_to_homo = jnp.arange(5)
+            affine_to_homo = jnp.delete(affine_to_homo, patch_idx)
+            return affine_to_homo[min_idx]
+        
+        actual_indices = jax.vmap(get_actual_coord_idx)(Omega_min_indices, patch_indices)
+        
+        # Get phases from the actual coordinates
+        row_indices = jnp.arange(points_complex.shape[0])
+        phase_Omega = -4 * jnp.angle(points_complex[row_indices, actual_indices])
+        
         phase_restriction = jnp.angle(Omega_restriction)
         phase = phase_Omega + phase_restriction
-        phase = phase % (2*jnp.pi)
+        
+        # Normalize to [0, 2π)
+        phase = phase % (2 * jnp.pi)
+        
         return phase
     else:
         print("Warning: There is a scaling factor in Omega_restriction, "
@@ -358,6 +453,7 @@ def compute_holomorphic_form_restricted(points_complex: jnp.ndarray, restriction
             "Don't use this until further checking.")
         Omega_restricted = Omega * Omega_restriction
         return Omega_restricted
+
 
 @partial(jax.jit, static_argnames=('n_bins',))
 def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp.float32:
@@ -396,15 +492,45 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
 vmap_compute_jacobian = jax.vmap(compute_jacobian, in_axes=(0, None, None, None))
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
-def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int=0, metric: str='FS', debug_mode: bool=False) -> jnp.float32:
-    jacobians = vmap_compute_jacobian(min_set_real, coeffs, psi, constant_coord)
-    restriction = vmap_compute_restriction(jacobians)
+def compute_combined_fitness(
+    min_set_real: jnp.ndarray, 
+    coeffs: jnp.ndarray, 
+    psi: jnp.ndarray, 
+    metric: str='FS', 
+    debug_mode: bool=False
+) -> jnp.float32:
+    """
+    Computes combined fitness with automatic patch detection and handling.
+    
+    Args:
+        min_set_real: An (N, 10) array of points in real coordinates
+        coeffs: A (3, 25) array of equation coefficients
+        psi: Complex parameter for the quintic
+        metric: 'FS' or 'k4_fermat'
+        debug_mode: If True, return additional diagnostic information
+        
+    Returns:
+        If debug_mode=False: fitness scalar
+        If debug_mode=True: tuple of (fitness, lagrangian_fitness, special_fitness, 
+                                      kahler_form_restricted, restriction, phases, patch_indices)
+    """
 
-    min_set = min_set_real[:, :5] + 1j*min_set_real[:, 5:]
-    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord, metric=metric)
-    lagrangian_fitness = compute_lagrangian_condition_fitness(kahler_form_unrestricted, restriction, k=10)
+    min_set = convert_real_to_complex_batch(min_set_real)
+    patch_indices = determine_patches_batch(min_set) 
 
-    phases = compute_holomorphic_form_restricted(min_set, restriction, phase_only=True)
+    jacobians = vmap_compute_jacobian(min_set_real, coeffs, psi, patch_indices)
+    restrictions = vmap_compute_restriction(jacobians)
+
+    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
+
+    lagrangian_fitness = compute_lagrangian_condition_fitness(
+        kahler_form_unrestricted, restrictions, k=10
+    )
+
+    phases = compute_holomorphic_form_restricted(
+        min_set, patch_indices, restrictions, phase_only=True
+    )
+
     n_bins_val = 100
     special_fitness = compute_special_condition_fitness(phases, n_bins=n_bins_val)
    
@@ -413,7 +539,7 @@ def compute_combined_fitness(min_set_real: jnp.ndarray, coeffs: jnp.ndarray, psi
     #combined_fitness = jnp.where(lagrangian_fitness > 0.98 , 1 + special_fitness, lagrangian_fitness)
 
     if debug_mode:
-        kahler_form_restricted = compute_kahler_form_restricted(min_set, restriction, constant_coord=constant_coord, metric=metric)
+        kahler_form_restricted = compute_kahler_form_restricted(min_set, restrictions, patch_indices, metric=metric)
         normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
         kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
         # Test

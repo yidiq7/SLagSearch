@@ -102,4 +102,4 @@ coeffs_slag = normalize_coeffs(coeffs)
 #print('H: ', reconstruct_hermitian_matrices(coeffs_slag))
 
 #make_fitness_plots(points_real, coeffs_slag, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, compare_with_random=True)
-make_fitness_plots(points_real, coeffs_slag, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, metric=metric, compare_with_random=False, parent_folder='plots_slag/plots_slag_test_2')
+make_fitness_plots(points_real, coeffs_slag, psi, k=newton_npts, n_refine_steps=newton_refine_steps, metric=metric, compare_with_random=False, parent_folder='plots_slag/plots_slag_test_2')

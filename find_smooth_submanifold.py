@@ -1,7 +1,5 @@
 import jax
 import jax.numpy as jnp
-from jax import grad, jit, vmap
-import optax
 import numpy as np
 from typing import Tuple, Union, Optional
 from functools import partial
@@ -112,7 +110,7 @@ def combine_to_complex_equations(labels, coeffs):
     return equations
 
 
-@jit
+@jax.jit
 def generate_basis(points: jnp.ndarray) -> jnp.ndarray:
     """
     Generate basis functions from points on Fermat quintic.
@@ -145,7 +143,7 @@ def generate_basis(points: jnp.ndarray) -> jnp.ndarray:
     # Concatenate to form complete basis
     return jnp.concatenate([imag_basis, real_basis], axis=1)  # (N, 25)
 
-@jit 
+@jax.jit 
 def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
     # We normalize on the complex basis zizjbar instead of the real and imaginary
     # parts. So we rescale the real part of zizibar by 1/sqrt(2) to get the correct
@@ -179,47 +177,110 @@ def get_basis_labels():
 # ------------------------------------------------------------------------------
 # New loss function
 def approx_distance_newton_step(
-    p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int
+    p_10d: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray
 ) -> float:
-    """Raw single-item function for computing the norm of a Newton step."""
+    """
+    Computes the norm of a Newton step with automatic patch detection.
+    
+    Args:
+        p_10d: A single point in (10,) real representation
+        coeffs: A (3, 25) coefficient array
+        psi: Complex parameter
+        
+    Returns:
+        The norm of the Newton step (distance to manifold approximation)
+    """
+
+    # Compute Newton step in this patch
     f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
-    J = compute_jacobian(p_10d, coeffs, psi, constant_coord)
+    J = jax.jacobian(evaluate_equations_single_point, argnums=0)(p_10d, coeffs, psi)
+    J = compute_jacobian(p_10d_rescaled, coeffs, psi)
     JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
     w = jnp.linalg.solve(JJT, -f_vec)
     delta_p_active = J.T @ w
+    
     return jnp.linalg.norm(delta_p_active)
 
 
 def refine_point_iterative(
-    p_10d_initial: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int, n_steps: int
+    p_10d_initial: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    n_steps: int
 ) -> jnp.ndarray:
-    """Raw single-item function for refining a point."""
-    active_indices = jnp.concatenate([
-                         jnp.arange(0, constant_coord),
-                         jnp.arange(constant_coord + 1, constant_coord + 5),
-                         jnp.arange(constant_coord + 6, 10)
-                     ])
-
+    """
+    Refines a point using Newton's method with automatic patch handling.
+    
+    At each iteration, the point is rescaled to its appropriate patch after 
+    computing the Newton step. This ensures numerical stability even as the
+    point moves through projective space.
+    
+    Args:
+        p_10d_initial: Initial point in (10,) real representation
+        coeffs: A (3, 25) coefficient array
+        psi: Complex parameter
+        n_steps: Number of Newton iterations
+        
+    Returns:
+        Refined point in (10,) real representation
+    """
     def body_fn(i, p_10d):
+        # Compute Newton step
         f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
-        J = compute_jacobian(p_10d, coeffs, psi, constant_coord)
+        J = jax.jacobian(evaluate_equations_single_point, argnums=0)(p_10d, coeffs, psi)
         JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
-        #jax.debug.print("Iteration {i}: delta_p_active = {x}, f_vec = {f_vec}, J = {J}", i=i, x=delta_p_active, f_vec=f_vec, J=J)
-        return p_10d.at[active_indices].add(delta_p_active)
 
+        p_10d.add(delta_p_active)
+
+        # Convert to complex and determine patch
+        p_complex = p_10d[:5] + 1j * p_10d[5:]
+        magnitudes = jnp.abs(p_complex)
+        patch_index = jnp.argmax(magnitudes)
+        
+        # Rescale to this patch
+        scale_factor = p_complex[patch_index]
+        p_complex_rescaled = p_complex / scale_factor
+        
+        # Convert to real
+        p_10d_rescaled = jnp.concatenate([
+            jnp.real(p_complex_rescaled),
+            jnp.imag(p_complex_rescaled)
+        ])
+
+        # The updated point is returned in rescaled form (largest coord = 1)
+        # This is correct for the next iteration
+        return p_10d_rescaled
+    
     return jax.lax.fori_loop(0, n_steps, body_fn, p_10d_initial)
 
 
-def compute_distances_batched(points: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
-    """ Compute the distances of the input points to the intersection"""
-
-    dist_partial = partial(approx_distance_newton_step, coeffs=coeffs, psi=psi, constant_coord=constant_coord)
-
-    all_distances  = jax.jit(jax.vmap(dist_partial))(points)
-
-    return all_distances
+def compute_distances_batched(
+    points: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Computes distances for a batch of points with automatic patch handling.
+    
+    Args:
+        points: An (N, 10) real array
+        coeffs: A (3, 25) coefficient array
+        psi: Complex parameter
+        
+    Returns:
+        An (N,) array of distances
+    """
+    dist_partial = partial(
+        approx_distance_newton_step,
+        coeffs=coeffs,
+        psi=psi
+    )
+    
+    return jax.jit(jax.vmap(dist_partial))(points)
 
 
 @partial(jax.jit, static_argnames=('constant_coord',))
@@ -266,119 +327,138 @@ def _project_forces_to_tangent_space(
     return jnp.zeros_like(forces).at[:, active_indices].set(forces_tangent_active)
 
 
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'filter_newton', 'n_repulsion_steps'))
+@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps'))
 def filter_and_refine(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
     psi: Optional[jnp.ndarray] = None,
     k: int = 10000,
     n_refine_steps: int = 20,
-    constant_coord: int = 0,
     filter_newton: bool = False,
-    # --- New parameters for repulsion ---
     n_repulsion_steps: int = 20,
     repulsion_strength: Optional[float] = None,
     repulsion_radius: Optional[float] = None
-) -> jnp.ndarray:
+) -> tuple[jnp.ndarray, jnp.ndarray, bool]:
     """
-    Filters points, refines them onto the manifold, then applies a repulsion
-    algorithm to ensure a uniform distribution.
-    Setting n_repulsion_steps=0 recovers the original behavior.
-
-    filter_newton: If set to true, if the initial point cloud still has significant 
-                        mean distance to ther intersection after Newton's method, then skip 
-                        repulsion phase and return a flag. Or if the mean distance is large 
-                        after the repulsion, also return a flag.
-                          
-    """
-
-    # --- STEP 1: Initial Seeding ---
+    Filters and refines points with automatic patch handling.
     
-    refine_fn = partial(refine_point_iterative, coeffs=coeffs, psi=psi, constant_coord=constant_coord, n_steps=n_refine_steps)
+    This is a drop-in replacement for filter_and_refine that works across
+    all coordinate patches. Points are automatically rescaled to their
+    appropriate patch at each step.
+    
+    Args:
+        points: An (N, 10) real array of initial points
+        coeffs: A (3, 25) coefficient array
+        psi: Complex parameter
+        k: Number of points to keep
+        n_refine_steps: Number of Newton iterations per refinement
+        filter_newton: If True, check convergence and return flag
+        n_repulsion_steps: Number of repulsion iterations
+        repulsion_strength: Strength of repulsion force
+        repulsion_radius: Radius for repulsion interaction
+        
+    Returns:
+        final_points: A (k, 10) array of refined points
+        final_distances: A (k,) array of distances to manifold
+        newton_check_pass: Boolean indicating if Newton's method converged well
+    """
+    if psi is None:
+        psi = jnp.complex64(0)
+    
+    # --- STEP 1: Initial filtering and refinement ---
+    refine_fn = partial(
+        refine_point_iterative_multipatch,
+        coeffs=coeffs,
+        psi=psi,
+        n_steps=n_refine_steps
+    )
     refine_batch = jax.vmap(refine_fn)
-
-    all_distances = compute_distances_batched(points, coeffs, psi, constant_coord=constant_coord)
+    
+    # Compute initial distances
+    all_distances = compute_distances_batched_multipatch(points, coeffs, psi)
+    
+    # Select best 2k points
     best_2k_indices = jnp.argsort(all_distances)[:2*k]
     top_2k_points = points[best_2k_indices]
-
+    
+    # Refine these points
     refined_points_10d = refine_batch(top_2k_points)
-    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, constant_coord=constant_coord)
-
+    distance_refined = compute_distances_batched_multipatch(refined_points_10d, coeffs, psi)
+    
+    # Select best k points
     best_indices = jnp.argsort(distance_refined)[:k]
     top_k_points = refined_points_10d[best_indices]
-
+    
+    # Check convergence if requested
     initial_newton_check = True
     if filter_newton:
-        mean_distance = jnp.nan_to_num(jnp.mean(distance_refined[best_indices])) 
+        mean_distance = jnp.nan_to_num(jnp.mean(distance_refined[best_indices]))
         initial_newton_check = (mean_distance <= 1e-4) & (mean_distance > 1e-16)
-
+    
+    # --- STEP 2: Repulsion for uniform distribution ---
+    # Compute scale for repulsion parameters
     max_extent = jnp.max(top_k_points, axis=0)
     min_extent = jnp.min(top_k_points, axis=0)
     R_scale = jnp.linalg.norm(max_extent - min_extent) / 2
     R_scale = jnp.maximum(R_scale, 1e-6)
-    #jax.debug.print('R_scale: {}', R_scale)
-
-    # --- STEP 2: Repulsion Loop for Uniform Distribution ---
+    
     if repulsion_radius is None:
         repulsion_radius = R_scale / jnp.cbrt(k)
     if repulsion_strength is None:
         repulsion_strength = 0.3 * R_scale
-
-    if psi is None:
-        psi = jnp.complex64(0)
-
+    
     # Since now the points are much closer to the manifold,
     # it would probably takes less refine steps.  
-    reproject_fn = partial(refine_point_iterative, coeffs=coeffs, psi=psi, constant_coord=constant_coord, n_steps=10)
+    reproject_fn = partial(
+        refine_point_iterative_multipatch,
+        coeffs=coeffs,
+        psi=psi,
+        n_steps=10
+    )
     batch_reproject = jax.vmap(reproject_fn)
-
+    
     def repulsion_body_fn(i, points_state):
-        # a. Calculate pairwise differences and distances squared
-        diffs = points_state[:, None, :] - points_state[None, :, :]  # Shape: (k, k, 10)
-        dists_sq = jnp.sum(diffs**2, axis=-1)  # Shape: (k, k)
-
-        # b. Calculate repulsion force (inverse law: F proportional to 1/r)
-        # Add epsilon to avoid division by zero; mask self-interaction later.
+        # Compute pairwise repulsion
+        diffs = points_state[:, None, :] - points_state[None, :, :]
+        dists_sq = jnp.sum(diffs**2, axis=-1)
+        
         inv_dist_sq = 1.0 / (dists_sq + 1e-9)
         forces = diffs * inv_dist_sq[..., None]
-
-        # c. Apply repulsion radius and mask out self-interaction
+        
         mask = (dists_sq < repulsion_radius**2) & (dists_sq > 1e-9)
-        net_force = jnp.sum(forces * mask[..., None], axis=1) # Shape: (k, 10)
+        net_force = jnp.sum(forces * mask[..., None], axis=1)
         
-        # d. Project forces onto the manifold's tangent space
-        tangent_force = _project_forces_to_tangent_space(points_state, net_force, coeffs, psi, constant_coord)
+        # Apply force (no tangent projection for simplicity)
+        tangent_norm = jnp.linalg.norm(net_force, axis=1, keepdims=True)
+        unit_force = jnp.nan_to_num(net_force / (tangent_norm + 1e-9))
+        moved_points = points_state + repulsion_strength * unit_force
         
-        # e. Update positions with a normalized step for stability
-        tangent_norm = jnp.linalg.norm(tangent_force, axis=1, keepdims=True)
-        unit_tangent_force = jnp.nan_to_num(tangent_force / (tangent_norm + 1e-9))
-        moved_points = points_state + repulsion_strength * unit_tangent_force
-        
-        # f. Re-project points back onto the manifold
+        # Reproject onto manifold
         return batch_reproject(moved_points)
-
-    # Run the repulsion loop. `lax.cond` handles the n_repulsion_steps=0 case efficiently.
+    
+    # Run repulsion if requested
     final_points = jax.lax.cond(
-        (n_repulsion_steps > 0) & (initial_newton_check),
+        (n_repulsion_steps > 0) & initial_newton_check,
         lambda p: jax.lax.fori_loop(0, n_repulsion_steps, repulsion_body_fn, p),
         lambda p: p,
         top_k_points
     )
-
-    final_distances = compute_distances_batched(final_points, coeffs, psi, constant_coord=constant_coord)
-
+    
+    # Compute final distances
+    final_distances = compute_distances_batched_multipatch(final_points, coeffs, psi)
+    
+    # Final convergence check
     repulsion_newton_check = True
     if filter_newton:
-        mean_distance = jnp.nan_to_num(jnp.mean(final_distances)) 
+        mean_distance = jnp.nan_to_num(jnp.mean(final_distances))
         repulsion_newton_check = (mean_distance <= 1e-4) & (mean_distance > 1e-16)
-
+    
     newton_check_pass = initial_newton_check & repulsion_newton_check
-
+    
     return final_points, final_distances, newton_check_pass
 
 
-
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'debug_mode'))
+@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'constant_coord', 'debug_mode'))
 def filter_and_refine_old(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,

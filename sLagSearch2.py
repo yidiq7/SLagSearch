@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import timeit
-from helper import canonicalize_coeffs
+from helper import canonicalize_coeffs, convert_real_to_complex_batch
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 #with open('/projects/ruehlehet/yidi/sLag/data/50mil_patch0_3.pkl', 'rb') as f:
@@ -126,16 +126,16 @@ jacobian_func = sp.lambdify([XY], jacobian_replaced, 'jax')
 # Compute the average distance for random coeffs:
 
 st = time.time()
-#min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=3000, n_refine_steps=5, constant_coord=0, debug_mode=True)
-min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=newton_npts, n_refine_steps=newton_refine_steps, constant_coord=0, debug_mode=True)
-#min_set_real = filter_and_refine(points_real, coeffs, jacobian_func, psi, k=3000, n_refine_steps=5, constant_coord=0)
+#min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=3000, n_refine_steps=5, debug_mode=True)
+min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=newton_npts, n_refine_steps=newton_refine_steps, debug_mode=True)
+#min_set_real = filter_and_refine(points_real, coeffs, jacobian_func, psi, k=3000, n_refine_steps=5 
 total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, metric=metric, debug_mode=True)
 print('total_fitness: ', total_fitness)
 print('lagrangian_fitness: ', lagrangian_fitness)
 print('special_fitness: ', special_fitness)
 print('Time to compute the total fitness', time.time() - st)
 
-min_set = min_set_real[:,:5]+min_set_real[:,5:]*1j
+min_set = convert_real_to_complex_batch(min_set_real)
 CY_loss = jnp.sum(min_set**5, axis=1)
 print(jnp.max(CY_loss), jnp.mean(CY_loss))
 print(min_set_real[:,:5]+min_set_real[:,5:]*1j)
