@@ -24,7 +24,8 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 #PSI = 1000000
 #CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
 PSI = 0
-CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
+CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
+#CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
 
 # Metric used when compute the kahler form
 # Options are 1. FS - Fubini-Study metric

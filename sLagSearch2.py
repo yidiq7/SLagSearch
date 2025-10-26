@@ -20,8 +20,9 @@ newton_refine_steps = 60
 psi=0
 metric = 'k4_fermat'
 
-with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
+#with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
 #with open(f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{psi}_seed1024.pkl', 'rb') as f:
+with open(f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{psi}_seed1024.pkl', 'rb') as f:
     pts_5mil_patch0 = pickle.load(f)
 
 pts_5mil_patch0 = np.asarray(pts_5mil_patch0)
@@ -75,13 +76,13 @@ coeffs_random = jax.random.uniform(key, (3, 25), minval=-1, maxval=1)
 #coeffs = coeffs_new2
 #coeffs = coeffs_new
 #coeffs = coeffs_random
-#coeffs = coeffs_RP3
+coeffs = coeffs_RP3
 #coeffs = coeffs_RP3 + perturbation_order * coeffs_random
 #coeffs = coeffs_T3
 #coeffs = coeffs_T3 + perturbation_order * coeffs_random
 #coeffs = coeffs_1e6
 #coeffs = coeffs_1e6_add_cond
-coeffs = coeffs_slag
+#coeffs = coeffs_slag
 
 print('Original Coeffs: ', coeffs)
 coeffs = canonicalize_coeffs(coeffs)
@@ -127,7 +128,8 @@ jacobian_func = sp.lambdify([XY], jacobian_replaced, 'jax')
 
 st = time.time()
 #min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=3000, n_refine_steps=5, debug_mode=True)
-min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=newton_npts, n_refine_steps=newton_refine_steps, debug_mode=True)
+min_set_real, distances, _ = filter_and_refine(points_real, coeffs, psi, k=newton_npts, n_refine_steps=newton_refine_steps)
+print('Finished Newton Method')
 #min_set_real = filter_and_refine(points_real, coeffs, jacobian_func, psi, k=3000, n_refine_steps=5 
 total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, metric=metric, debug_mode=True)
 print('total_fitness: ', total_fitness)

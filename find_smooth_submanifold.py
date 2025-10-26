@@ -4,7 +4,7 @@ import numpy as np
 from typing import Tuple, Union, Optional
 from functools import partial
 from collections import defaultdict
-from get_restriction import compute_jacobian
+from get_restriction import compute_affine_jacobian
 from helper import evaluate_equations_single_point
 
 # Enable 64-bit precision for complex numbers
@@ -196,7 +196,6 @@ def approx_distance_newton_step(
     # Compute Newton step in this patch
     f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
     J = jax.jacobian(evaluate_equations_single_point, argnums=0)(p_10d, coeffs, psi)
-    J = compute_jacobian(p_10d_rescaled, coeffs, psi)
     JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
     w = jnp.linalg.solve(JJT, -f_vec)
     delta_p_active = J.T @ w
@@ -234,7 +233,7 @@ def refine_point_iterative(
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
 
-        p_10d.add(delta_p_active)
+        p_10d += delta_p_active
 
         # Convert to complex and determine patch
         p_complex = p_10d[:5] + 1j * p_10d[5:]
@@ -296,7 +295,7 @@ def _project_forces_to_tangent_space(
     This is a helper function for the repulsion algorithm.
     """
     # 1. Get Jacobians for all points in the batch using vmap
-    batch_jacobian_fn = jax.vmap(compute_jacobian, in_axes=(0, None, None, None))
+    batch_jacobian_fn = jax.vmap(compute_affine_jacobian, in_axes=(0, None, None, None))
     jacobians = batch_jacobian_fn(points, coeffs, psi, constant_coord)  # Shape: (k, 5, 8)
 
     # 2. Extract the 8 active components from the 10D force vectors
@@ -367,7 +366,7 @@ def filter_and_refine(
     
     # --- STEP 1: Initial filtering and refinement ---
     refine_fn = partial(
-        refine_point_iterative_multipatch,
+        refine_point_iterative,
         coeffs=coeffs,
         psi=psi,
         n_steps=n_refine_steps
@@ -375,7 +374,7 @@ def filter_and_refine(
     refine_batch = jax.vmap(refine_fn)
     
     # Compute initial distances
-    all_distances = compute_distances_batched_multipatch(points, coeffs, psi)
+    all_distances = compute_distances_batched(points, coeffs, psi)
     
     # Select best 2k points
     best_2k_indices = jnp.argsort(all_distances)[:2*k]
@@ -383,7 +382,7 @@ def filter_and_refine(
     
     # Refine these points
     refined_points_10d = refine_batch(top_2k_points)
-    distance_refined = compute_distances_batched_multipatch(refined_points_10d, coeffs, psi)
+    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi)
     
     # Select best k points
     best_indices = jnp.argsort(distance_refined)[:k]
@@ -410,7 +409,7 @@ def filter_and_refine(
     # Since now the points are much closer to the manifold,
     # it would probably takes less refine steps.  
     reproject_fn = partial(
-        refine_point_iterative_multipatch,
+        refine_point_iterative,
         coeffs=coeffs,
         psi=psi,
         n_steps=10
@@ -445,7 +444,7 @@ def filter_and_refine(
     )
     
     # Compute final distances
-    final_distances = compute_distances_batched_multipatch(final_points, coeffs, psi)
+    final_distances = compute_distances_batched(final_points, coeffs, psi)
     
     # Final convergence check
     repulsion_newton_check = True

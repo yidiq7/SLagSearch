@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from get_restriction import compute_jacobian, compute_restriction, compute_Omega_restriction
+from get_restriction import compute_affine_jacobian, compute_restriction, compute_Omega_restriction
 from functools import partial
 import math
 from itertools import combinations_with_replacement
@@ -489,7 +489,7 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
 
     return fitness
 
-vmap_compute_jacobian = jax.vmap(compute_jacobian, in_axes=(0, None, None, None))
+vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, None, None, None))
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
 def compute_combined_fitness(
@@ -518,7 +518,7 @@ def compute_combined_fitness(
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set) 
 
-    jacobians = vmap_compute_jacobian(min_set_real, coeffs, psi, patch_indices)
+    jacobians = vmap_compute_affine_jacobian(min_set_real, coeffs, psi, patch_indices)
     restrictions = vmap_compute_restriction(jacobians)
 
     kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)

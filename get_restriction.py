@@ -6,8 +6,42 @@ import itertools
 from functools import partial
 from helper import evaluate_equations_single_point
 
-#@partial(jax.jit, static_argnames=('constant_coord',))
-def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, constant_coord: int = 0) -> jnp.ndarray:
+
+def select_active_jacobian(single_patch_index, full_jacobian):
+  """
+  Selects a fixed number (8) of active columns for a single patch_index.
+  """
+  
+  M = 10  # Total number of columns
+  num_active = 8 # The fixed number of columns to select
+  all_indices = jnp.arange(M)
+
+  # 1. Create the boolean mask
+  exclude_mask = (all_indices == single_patch_index) | (all_indices == (single_patch_index + 5))
+  active_mask = ~exclude_mask # Shape (10,)
+
+  # 2. Convert boolean mask to fixed-size integer indices
+  #    This is the "mask-to-indices" pattern.
+  
+  # Set "inactive" indices (where mask is False) to a large value (M)
+  # Set "active" indices (where mask is True) to their own index
+  masked_indices = jnp.where(active_mask, all_indices, M)
+
+  # 3. Sort the indices. The M-2 active indices (0-9) will come
+  #    first, followed by the "inactive" indices (value M).
+  sorted_indices = jax.lax.sort(masked_indices) # Shape (10,)
+  
+  # 4. Slice the *indices* to get a fixed-size array
+  #    We take the first `num_active` (8) indices.
+  active_indices = sorted_indices[:num_active] # Shape (8,)
+
+  # 5. Use these *integer* indices to select columns
+  #    This is now jit- and vmap-safe because active_indices
+  #    is an integer array with a concrete shape (8,).
+  return full_jacobian[:, active_indices] # Returns shape (K, 8)
+
+
+def compute_affine_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, patch_index: int) -> jnp.ndarray:
     """
     Computes the 5x8 Jacobian of the full system (Quintic + 3 custom equations)
     with respect to the 8 active affine real coordinates.
@@ -15,7 +49,7 @@ def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, 
     Args:
         p_10d: A single point, shape (10,). The first 5 elements are x-coords, the next 5 are y-coords.
         coeffs: The coefficient matrix for one individual, shape (3, 25).
-        constant_coord: The index of the z-coordinate held constant (0 to 4).
+        patch_indices: The index of the z-coordinate held constant (0 to 4).
 
     Returns:
         The Jacobian matrix, shape (5, 8).
@@ -30,13 +64,7 @@ def compute_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, 
     # Now, select the 8 columns corresponding to the active affine coordinates.
     # The dropped coordinates are x_k and y_k, where k = constant_coord.
     # Their indices in the 10D vector are `constant_coord` and `constant_coord + 5`.
-    active_indices = jnp.concatenate([
-                         jnp.arange(0, constant_coord),
-                         jnp.arange(constant_coord + 1, constant_coord + 5),
-                         jnp.arange(constant_coord + 6, 10)
-                     ])
-    # Select the correct columns from the full jacobian
-    affine_jacobian = full_jacobian[:, active_indices]
+    affine_jacobian = select_active_jacobian(patch_indices, full_jacobian)
     
     return affine_jacobian 
 
