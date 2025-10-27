@@ -157,17 +157,24 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
                    [6]: (5,0,0,0,0)
     """
 
+    # Inhomogeneous coordinates (zeta) are the other 4 coordinates
+    zeta = delete_index(z, patch_index)
+
     #unique_coeffs = jnp.array([-4.79909*240, -75.298664*12, -83.726102*8, -103.669506*8, -39.049639*12, -33.852379*12, 1.0*(-180)])
     unique_coeffs = jnp.array([2.214272*48, 14.010661*8, 2.3827940*24, 9.073280*12, 1.0*48])
     # Expand the 7 unique coefficients into the full 126-coefficient array.
     # This is a highly efficient gather operation in JAX.
     full_coeffs = unique_coeffs[_COEFF_MAPPING_INDICES]
 
-    def kahler_potential(z: jnp.ndarray, zbar: jnp.ndarray) -> float:
+    def kahler_potential(zeta: jnp.ndarray, zeta_bar: jnp.ndarray) -> float:
         """
         Defines K = log(sum_i gamma_i |m_i|^2).
         This function is structured to be compatible with jax.grad on complex vars.
         """
+        # Re-homogenize both the holomorphic and anti-holomorphic coordinates
+        z = jnp.insert(zeta, patch_index, 1.0)
+        zbar = jnp.insert(zeta_bar, patch_index, 1.0)
+
         # Vectorize the monomial calculation over all 126 exponent sets.
         vmap_mono = jax.vmap(lambda exp, base: jnp.prod(base ** exp), in_axes=(0, None))
         
@@ -187,7 +194,7 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     metric_func = jax.jacfwd(jax.grad(kahler_potential, argnums=0, holomorphic=True), argnums=1, holomorphic=True)
     
     # Evaluate the metric function at the given coordinates
-    g_complex = metric_func(z, jnp.conj(z))
+    g_complex = metric_func(zeta, jnp.conj(zeta))
     
     return g_complex
 
