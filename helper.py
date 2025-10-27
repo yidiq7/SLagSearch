@@ -262,3 +262,28 @@ def determine_patches_batch(points_complex: jnp.ndarray) -> jnp.ndarray:
     return patch_indices
 
 
+def delete_index(arr, index):
+    """
+    JAX-compatible version of deleting an element at a specific index.
+    
+    This function works with traced values in JIT-compiled code, unlike jnp.delete().
+    
+    Args:
+        arr: JAX array to remove element from
+        index: Index of element to remove (can be a traced value)
+    
+    Returns:
+        Array with element at `index` removed (shape: arr.shape[0] - 1)
+    
+    Example:
+        >>> arr = jnp.array([1, 2, 3, 4, 5])
+        >>> jax_delete_index(arr, 2)
+        Array([1, 2, 4, 5])
+    """
+    n = arr.shape[0]
+    # Get elements before index
+    before = lax.dynamic_slice(arr, (0,), (index,))
+    # Get elements after index
+    after = lax.dynamic_slice(arr, (index + 1,), (n - index - 1,))
+    # Concatenate
+    return jnp.concatenate([before, after])

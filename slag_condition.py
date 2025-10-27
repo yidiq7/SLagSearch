@@ -5,7 +5,7 @@ from functools import partial
 import math
 from itertools import combinations_with_replacement
 from collections import Counter
-from helper import convert_real_to_complex_batch, determine_patches_batch
+from helper import convert_real_to_complex_batch, determine_patches_batch, delete_index
 
 # --- Core Calculation ---
 
@@ -24,13 +24,8 @@ def calculate_complex_metric_old(z: jnp.ndarray, patch_index: int) -> jnp.ndarra
     Returns:
         A (4, 4) complex array for the Hermitian metric g_ab_bar.
     """
-    # The coordinate for the patch denominator
-    z_patch = z[patch_index]
-
-    # Inhomogeneous coordinates (zeta) are the other 4 coordinates divided by z_patch
-    mask = jnp.arange(len(z)) != patch_index
-    zeta = z[mask] / z_patch
-    #zeta = jnp.delete(z, patch_index)
+    # Inhomogeneous coordinates (zeta) are the other 4 coordinates
+    zeta = delete_index(z, patch_index)
 
     # Denominator for the metric formula: 1 + |zeta|^2
     norm_sq_zeta = 1.0 + jnp.sum(jnp.abs(zeta)**2)
@@ -63,12 +58,8 @@ def calculate_complex_metric_FS(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     Returns:
         A (4, 4) complex array for the Hermitian metric g_ab_bar.
     """
-    # The coordinate for the patch denominator
-    z_patch = z[patch_index]
-
-    # Inhomogeneous coordinates (zeta) are the other 4 coordinates divided by z_patch
-    mask = jnp.arange(len(z)) != patch_index
-    zeta = z[mask] / z_patch
+    # Inhomogeneous coordinates (zeta) are the other 4 coordinates
+    zeta = delete_index(z, patch_index)
 
     def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
         """
@@ -172,29 +163,19 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     # This is a highly efficient gather operation in JAX.
     full_coeffs = unique_coeffs[_COEFF_MAPPING_INDICES]
 
-    # Inhomogeneous coordinates (zeta)
-    z_patch = z[patch_index]
-
-    mask = jnp.arange(len(z)) != patch_index
-    zeta = z[mask] / z_patch
-
-    def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
+    def kahler_potential(z: jnp.ndarray, zbar: jnp.ndarray) -> float:
         """
         Defines K = log(sum_i gamma_i |m_i|^2).
         This function is structured to be compatible with jax.grad on complex vars.
         """
-        # Re-homogenize both the holomorphic and anti-holomorphic coordinates
-        full_coords = jnp.insert(zeta_coords, patch_index, 1.0)
-        full_coords_bar = jnp.insert(zeta_bar_coords, patch_index, 1.0)
-
         # Vectorize the monomial calculation over all 126 exponent sets.
         vmap_mono = jax.vmap(lambda exp, base: jnp.prod(base ** exp), in_axes=(0, None))
         
         # Calculate all 126 monomial values m_i(zeta)
-        monomial_values = vmap_mono(_QUINTIC_EXPONENTS, full_coords)
+        monomial_values = vmap_mono(_QUINTIC_EXPONENTS, z)
         
         # Calculate all 126 anti-monomial values m_i(zeta_bar)
-        monomial_values_bar = vmap_mono(_QUINTIC_EXPONENTS, full_coords_bar)
+        monomial_values_bar = vmap_mono(_QUINTIC_EXPONENTS, zbar)
         
         # Calculate the real potential sum_i gamma_i * m_i * m_i_bar
         # jnp.real is used for type stability, although the product is already real.
@@ -206,7 +187,7 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     metric_func = jax.jacfwd(jax.grad(kahler_potential, argnums=0, holomorphic=True), argnums=1, holomorphic=True)
     
     # Evaluate the metric function at the given coordinates
-    g_complex = metric_func(zeta, jnp.conj(zeta))
+    g_complex = metric_func(z, jnp.conj(z))
     
     return g_complex
 
@@ -346,7 +327,7 @@ def compute_holomorphic_form(
     def compute_omega_single(point: jnp.ndarray, patch_idx: int):
         """Compute Omega for a single point in a specific patch."""
         # Get the 4 affine coordinates (excluding the patch coordinate)
-        affine_coords = jnp.delete(point, patch_idx)
+        affine_coords = delete_index(point, patch_idx)
         
         # Compute 1/(5*z_affine_i)^4 for each affine coordinate
         Omega_values = 1.0 / (5.0 * affine_coords**4)
@@ -410,7 +391,7 @@ def compute_holomorphic_form_restricted(
             """Map affine index back to homogeneous coordinate index."""
             # Affine coordinates are [0,1,2,3,4] with patch_idx removed
             affine_to_homo = jnp.arange(5)
-            affine_to_homo = jnp.delete(affine_to_homo, patch_idx)
+            affine_to_homo = delete_index(affine_to_homo, patch_idx)
             return affine_to_homo[min_idx]
         
         actual_indices = jax.vmap(get_actual_coord_idx)(Omega_min_indices, patch_indices)
