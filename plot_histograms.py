@@ -22,9 +22,9 @@ newton_refine_steps = 20
 
 psi = 0
 metric='k4_fermat'
-#with open(f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{psi}_seed1024.pkl', 'rb') as f:
+with open(f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{psi}_seed1024.pkl', 'rb') as f:
 #with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_1024.pkl', 'rb') as f:
-with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
+#with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
     pts_5mil_patch0 = pickle.load(f)
 
 

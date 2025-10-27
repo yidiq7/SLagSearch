@@ -295,7 +295,7 @@ def _project_forces_to_tangent_space(
     This is a helper function for the repulsion algorithm.
     """
     # 1. Get Jacobians for all points in the batch using vmap
-    batch_jacobian_fn = jax.vmap(compute_affine_jacobian, in_axes=(0, None, None, None))
+    batch_jacobian_fn = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))
     jacobians = batch_jacobian_fn(points, coeffs, psi, constant_coord)  # Shape: (k, 5, 8)
 
     # 2. Extract the 8 active components from the 10D force vectors

@@ -41,7 +41,7 @@ def select_active_jacobian(single_patch_index, full_jacobian):
   return full_jacobian[:, active_indices] # Returns shape (K, 8)
 
 
-def compute_affine_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray, patch_index: int) -> jnp.ndarray:
+def compute_affine_jacobian(p_10d: jnp.ndarray, patch_index: int, coeffs: jnp.ndarray, psi: jnp.ndarray) -> jnp.ndarray:
     """
     Computes the 5x8 Jacobian of the full system (Quintic + 3 custom equations)
     with respect to the 8 active affine real coordinates.
@@ -64,7 +64,7 @@ def compute_affine_jacobian(p_10d: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.nd
     # Now, select the 8 columns corresponding to the active affine coordinates.
     # The dropped coordinates are x_k and y_k, where k = constant_coord.
     # Their indices in the 10D vector are `constant_coord` and `constant_coord + 5`.
-    affine_jacobian = select_active_jacobian(patch_indices, full_jacobian)
+    affine_jacobian = select_active_jacobian(patch_index, full_jacobian)
     
     return affine_jacobian 
 

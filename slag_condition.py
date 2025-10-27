@@ -28,7 +28,9 @@ def calculate_complex_metric_old(z: jnp.ndarray, patch_index: int) -> jnp.ndarra
     z_patch = z[patch_index]
 
     # Inhomogeneous coordinates (zeta) are the other 4 coordinates divided by z_patch
-    zeta = jnp.delete(z, patch_index)
+    mask = jnp.arange(len(z)) != patch_index
+    zeta = z[mask] / z_patch
+    #zeta = jnp.delete(z, patch_index)
 
     # Denominator for the metric formula: 1 + |zeta|^2
     norm_sq_zeta = 1.0 + jnp.sum(jnp.abs(zeta)**2)
@@ -65,7 +67,8 @@ def calculate_complex_metric_FS(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     z_patch = z[patch_index]
 
     # Inhomogeneous coordinates (zeta) are the other 4 coordinates divided by z_patch
-    zeta = jnp.delete(z, patch_index)
+    mask = jnp.arange(len(z)) != patch_index
+    zeta = z[mask] / z_patch
 
     def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
         """
@@ -171,7 +174,9 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
 
     # Inhomogeneous coordinates (zeta)
     z_patch = z[patch_index]
-    zeta = jnp.delete(z, patch_index) / z_patch
+
+    mask = jnp.arange(len(z)) != patch_index
+    zeta = z[mask] / z_patch
 
     def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
         """
@@ -227,26 +232,29 @@ def _assemble_kahler_form(g_complex: jnp.ndarray) -> jnp.ndarray:
 
 # --- Vmapped Single-Point Computers ---
 
-def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, metric: str, epsilon: float) -> jnp.ndarray:
+def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, metric: str) -> jnp.ndarray:
     """Computes the Fubini-Study metric tensor G for a single point."""
-    return jax.lax.cond(
-        jnp.abs(z[patch_index]) < epsilon,
-        lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-        lambda: _assemble_metric_tensor(calculate_complex_metric_k4(z, patch_index))
-    )
+    return _assemble_metric_tensor(calculate_complex_metric_k4(z, patch_index))
 
 
-def _compute_kahler_for_point(
-    z: jnp.ndarray, 
-    patch_index: int, 
-    metric: str, 
-    epsilon: float
+def compute_kahler_form(
+    points_Z: jnp.ndarray,
+    patch_indices: jnp.ndarray,
+    metric: str = 'FS',
 ) -> jnp.ndarray:
     """
-    Computes the Kahler form for a single point with a specific patch index.
+    Computes the Fubini-Study Kähler form Omega for points in CP^4.
+    The Kähler form is a 2-form, represented here by its component matrix Omega_ij.
+    This matrix is always antisymmetric.
     
-    This is a helper function designed to be vmapped over batches where each
-    point may be in a different patch.
+    Args:
+        points_Z: An (N, 5) array of complex numbers (homogeneous coordinates).
+        patch_indices: An (N,) integer array specifying which patch each point is in
+        metric: Either 'FS' or 'k4_fermat'
+    
+    Returns:
+        An (N, 8, 8) array of real numbers. Each 8x8 matrix is the component
+        matrix `Omega` of the Kähler form.
     """
     if metric == 'FS':
         metric_fn = calculate_complex_metric_FS
@@ -255,38 +263,10 @@ def _compute_kahler_for_point(
     else:
         raise ValueError(f"Unsupported metric: '{metric}'")
     
-    return jax.lax.cond(
-        jnp.abs(z[patch_index]) < epsilon,
-        lambda: jnp.full((8, 8), jnp.nan, dtype=jnp.float32),
-        lambda: _assemble_kahler_form(metric_fn(z, patch_index))
-    )
-
-
-def compute_kahler_form(
-    points_Z: jnp.ndarray,
-    patch_indices: jnp.ndarray,
-    metric: str = 'FS',
-    epsilon: float = 1e-8
-) -> jnp.ndarray:
-    """
-    Computes the Fubini-Study Kähler form Omega for points in CP^4.
-
-    The Kähler form is a 2-form, represented here by its component matrix Omega_ij.
-    This matrix is always antisymmetric.
-
-    Args:
-        points_Z: An (N, 5) array of complex numbers (homogeneous coordinates).
-        patch_indices: An (N,) integer array specifying which patch each point is in
-        metric: Either 'FS' or 'k4_fermat'
-        epsilon: A small number to avoid division by zero.
-
-    Returns:
-        An (N, 8, 8) array of real numbers. Each 8x8 matrix is the component
-        matrix `Omega` of the Kähler form.
-    """
-    compute_fn = partial(_compute_kahler_for_point_with_patch, metric=metric, epsilon=epsilon)
-    vmapped_compute = jax.vmap(compute_fn, in_axes=(0, 0))
+    def compute_single_point(z, patch_index):
+        return _assemble_kahler_form(metric_fn(z, patch_index))
     
+    vmapped_compute = jax.vmap(compute_single_point, in_axes=(0, 0))
     return vmapped_compute(points_Z, patch_indices)
 
 
@@ -297,7 +277,7 @@ def compute_kahler_form_restricted(
     metric: str = 'FS'
 ) -> jnp.ndarray:
 
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2, 3))
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2,))
     kahler_form = jit_compute_kahler_form(points, patch_indices, metric)
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
     return kahler_form_restricted
@@ -309,9 +289,8 @@ def compute_kahler_form_unrestricted(
     metric: str = 'FS'
 ) -> jnp.ndarray:
 
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2, 3))
-    kahler_form = jit_compute_kahler_form(points, patch_indices, metric)
-    return kahler_form
+    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2,))
+    return jit_compute_kahler_form(points, patch_indices, metric)
 
 
 def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray, k: int=10):
@@ -415,7 +394,7 @@ def compute_holomorphic_form_restricted(
         If phase_only=True: An (N,) array of phases in [0, 2π)
         If phase_only=False: An (N,) complex array
     """
-    Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form_multipatch(
+    Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form(
         points_complex, patch_indices
     )
     
@@ -489,7 +468,7 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
 
     return fitness
 
-vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, None, None, None))
+vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
 def compute_combined_fitness(
@@ -517,8 +496,8 @@ def compute_combined_fitness(
 
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set) 
-
-    jacobians = vmap_compute_affine_jacobian(min_set_real, coeffs, psi, patch_indices)
+    print('patch_indices: ', patch_indices)
+    jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
     restrictions = vmap_compute_restriction(jacobians)
 
     kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
