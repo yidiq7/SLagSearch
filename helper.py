@@ -265,25 +265,29 @@ def determine_patches_batch(points_complex: jnp.ndarray) -> jnp.ndarray:
 def delete_index(arr, index):
     """
     JAX-compatible version of deleting an element at a specific index.
-    
-    This function works with traced values in JIT-compiled code, unlike jnp.delete().
-    
+
+    This function works with traced values in JIT-compiled code.
+
     Args:
-        arr: JAX array to remove element from
-        index: Index of element to remove (can be a traced value)
-    
+        arr: JAX array to remove element from (shape [n])
+        index: Scalar index of element to remove (can be a traced value)
+
     Returns:
-        Array with element at `index` removed (shape: arr.shape[0] - 1)
-    
-    Example:
-        >>> arr = jnp.array([1, 2, 3, 4, 5])
-        >>> jax_delete_index(arr, 2)
-        Array([1, 2, 4, 5])
+        Array with element at `index` removed (shape [n-1])
     """
     n = arr.shape[0]
-    # Get elements before index
-    before = lax.dynamic_slice(arr, (0,), (index,))
-    # Get elements after index
-    after = lax.dynamic_slice(arr, (index + 1,), (n - index - 1,))
-    # Concatenate
-    return jnp.concatenate([before, after])
+    
+    # Create indices for the *output* array, e.g., [0, 1, 2, 3] if n=5
+    out_indices = jnp.arange(n - 1)
+    
+    # Create the corresponding indices for the *input* array
+    # If the output index 'i' is before the removed 'index', we take arr[i].
+    # If 'i' is at or after the removed 'index', we take arr[i+1].
+    # jnp.where is JIT-compatible with a traced 'index'
+    in_indices = jnp.where(out_indices < index, 
+                          out_indices, 
+                          out_indices + 1)
+    
+    # Gather elements from 'arr' using the calculated indices.
+    # This integer array indexing is JIT-compatible.
+    return arr[in_indices]

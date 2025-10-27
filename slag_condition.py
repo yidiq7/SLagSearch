@@ -512,6 +512,7 @@ def compute_combined_fitness(
         # Test
         #kahler_form_restricted_normalized = kahler_form_restricted 
         #kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
-        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restriction, phases
+        #return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_unrestricted, restrictions, phases
+        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restrictions, phases
     else:
         return combined_fitness
