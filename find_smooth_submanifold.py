@@ -5,7 +5,25 @@ from typing import Tuple, Union, Optional
 from functools import partial
 from collections import defaultdict
 from get_restriction import compute_affine_jacobian
-from helper import evaluate_equations_single_point
+from helper import (evaluate_equations_single_point, convert_complex_to_real_single,
+                    convert_real_to_complex_single, determine_patch_and_rescale_single)
+
+PATCH_ACTIVE_MASKS = jnp.array([
+    [False, True, True, True, True, False, True, True, True, True],   # patch=0
+    [True, False, True, True, True, True, False, True, True, True],   # patch=1
+    [True, True, False, True, True, True, True, False, True, True],   # patch=2
+    [True, True, True, False, True, True, True, True, False, True],   # patch=3
+    [True, True, True, True, False, True, False, True, True, False],   # patch=4
+], dtype=bool)
+
+
+PATCH_ACTIVE_INDICES = jnp.array([
+    [1, 2, 3, 4, 6, 7, 8, 9],  # patch=0: skip 0,6
+    [0, 2, 3, 4, 5, 7, 8, 9],  # patch=1: skip 1,6
+    [0, 1, 3, 4, 5, 6, 8, 9],  # patch=2: skip 2,6
+    [0, 1, 2, 4, 5, 6, 7, 9],  # patch=3: skip 3,6
+    [0, 1, 2, 3, 5, 6, 7, 8],  # patch=4: skip 4,6
+], dtype=jnp.int32)
 
 # Enable 64-bit precision for complex numbers
 #jax.config.update("jax_enable_x64", True)
@@ -225,36 +243,36 @@ def refine_point_iterative(
     Returns:
         Refined point in (10,) real representation
     """
-    def body_fn(i, p_10d):
+
+    p_complex_init = convert_real_to_complex_single(p_10d_initial)
+    _, patch_index_init = determine_patch_and_rescale_single(p_complex_init)
+    init_state = (p_complex_init, patch_index_init)
+
+    def body_fn(i, state):
+        p_10d, patch_index = state
+        active_indices = PATCH_ACTIVE_INDICES[patch_index]
+
         # Compute Newton step
         f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
-        J = jax.jacobian(evaluate_equations_single_point, argnums=0)(p_10d, coeffs, psi)
+        #J = jax.jacobian(evaluate_equations_single_point, argnums=0)(p_10d, coeffs, psi)
+        J = compute_affine_jacobian(p_10d, patch_index, coeffs, psi)
         JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
 
-        p_10d += delta_p_active
+        #p_10d += delta_p_active
+        p_10d = p_10d.at[active_indices].add(delta_p_active)
 
-        # Convert to complex and determine patch
-        p_complex = p_10d[:5] + 1j * p_10d[5:]
-        magnitudes = jnp.abs(p_complex)
-        patch_index = jnp.argmax(magnitudes)
-        
-        # Rescale to this patch
-        scale_factor = p_complex[patch_index]
-        p_complex_rescaled = p_complex / scale_factor
-        
-        # Convert to real
-        p_10d_rescaled = jnp.concatenate([
-            jnp.real(p_complex_rescaled),
-            jnp.imag(p_complex_rescaled)
-        ])
+        p_complex = convert_real_to_complex_single(p_10d)
+        p_complex_rescaled, patch_index = determine_patch_and_rescale_single(p_complex)
+        p_10d_rescaled = convert_complex_to_real_single(p_complex_rescaled) 
 
         # The updated point is returned in rescaled form (largest coord = 1)
         # This is correct for the next iteration
-        return p_10d_rescaled
+        return (p_10d_rescaled, patch_index)
     
-    return jax.lax.fori_loop(0, n_steps, body_fn, p_10d_initial)
+    p_10d_final, _ = jax.lax.fori_loop(0, n_steps, body_fn, init_state)
+    return p_10d_final
 
 
 def compute_distances_batched(

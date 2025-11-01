@@ -291,3 +291,53 @@ def delete_index(arr, index):
     # Gather elements from 'arr' using the calculated indices.
     # This integer array indexing is JIT-compatible.
     return arr[in_indices]
+
+def convert_real_to_complex_single(points_real: jnp.ndarray) -> jnp.ndarray:
+    """
+    Converts (N, 10) real representation to (N, 5) complex.
+    
+    Args:
+        points_real: An (N, 10) real array where first 5 are real parts, last 5 are imaginary
+        
+    Returns:
+        An (N, 5) complex array
+    """
+    return points_real[:5] + 1j * points_real[5:]
+
+
+def convert_complex_to_real_single(points_complex: jnp.ndarray) -> jnp.ndarray:
+    """
+    Converts (N, 5) complex representation to (N, 10) real.
+    
+    Args:
+        points_complex: An (N, 5) complex array
+        
+    Returns:
+        An (N, 10) real array where first 5 are real parts, last 5 are imaginary
+    """
+    return jnp.concatenate([jnp.real(points_complex), jnp.imag(points_complex)])
+
+
+def determine_patch_and_rescale_single(point_complex: jnp.ndarray) -> tuple[jnp.ndarray, int]:
+    """
+    Determines the appropriate patch for a single point and rescales it.
+    
+    The patch is chosen so that the coordinate with largest magnitude is set to 1.
+    This ensures numerical stability and proper projective coordinates.
+    
+    Args:
+        point_complex: A (5,) complex array of homogeneous coordinates
+        
+    Returns:
+        rescaled_point: A (5,) complex array with largest coordinate normalized to 1
+        patch_index: Integer in [0,4] indicating which coordinate was normalized
+    """
+    magnitudes = jnp.abs(point_complex)
+    patch_index = jnp.argmax(magnitudes)
+    
+    # Rescale so that point_complex[patch_index] has magnitude 1
+    # Preserve the phase of the largest coordinate
+    scale_factor = point_complex[patch_index]
+    rescaled_point = point_complex / scale_factor
+    
+    return rescaled_point, patch_index
