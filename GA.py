@@ -37,9 +37,9 @@ METRIC = 'k4_fermat'
 POPULATION_SIZE = 800
 GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 10
+NUM_GENERATIONS = 400
 
-TRANSITION_GENERATION = 500
+TRANSITION_GENERATION = 300
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
@@ -70,10 +70,10 @@ LOG_INTERVAL = 1
 CHECKPOINT_DIR = 'checkpoints_3k'
 CHECKPOINT_INTERVAL = 100
 
-MINSET_SIZE = 100000
-NEWTON_STEPS = 100
-#MINSET_SIZE = 10000
-#NEWTON_STEPS = 40
+#MINSET_SIZE = 100000
+#NEWTON_STEPS = 100
+MINSET_SIZE = 10000
+NEWTON_STEPS = 40
 
 # JAX PRNG Key
 key = jax.random.PRNGKey(1234)
@@ -548,7 +548,7 @@ if __name__ == '__main__':
         start_idx = i * FITNESS_MINI_BATCH_SIZE
         end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
         population_batch = population[start_idx:end_idx]
-        fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, 0, METRIC)
+        fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC)
         final_fitness = final_fitness.at[start_idx:end_idx].set(fitness_batch)
 
     # 2. Use the correct vectorized speciation to assign members.
