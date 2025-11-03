@@ -222,7 +222,7 @@ def approx_distance_newton_step(
 
 
 def refine_point_iterative(
-    p_10d_initial: jnp.ndarray,
+    p_10d_init: jnp.ndarray,
     coeffs: jnp.ndarray,
     psi: jnp.ndarray,
     n_steps: int
@@ -235,7 +235,7 @@ def refine_point_iterative(
     point moves through projective space.
     
     Args:
-        p_10d_initial: Initial point in (10,) real representation
+        p_10d_init: Initial point in (10,) real representation
         coeffs: A (3, 25) coefficient array
         psi: Complex parameter
         n_steps: Number of Newton iterations
@@ -243,10 +243,40 @@ def refine_point_iterative(
     Returns:
         Refined point in (10,) real representation
     """
+    alpha_init = 1.0
+    rho = 0.5
+    max_backtrack = 10
 
-    p_complex_init = convert_real_to_complex_single(p_10d_initial)
+    p_complex_init = convert_real_to_complex_single(p_10d_init)
     _, patch_index_init = determine_patch_and_rescale_single(p_complex_init)
-    init_state = (p_complex_init, patch_index_init)
+    init_state = (p_10d_init, patch_index_init)
+
+    def backtracking_line_search(p_10d, delta_p_active, active_indices, 
+                                   f_vec, coeffs, psi):
+        """
+        Performs backtracking line search to find appropriate step size.
+        Returns: (alpha, p_10d_new, patch_index_new)
+        """
+        def search_body(carry):
+            alpha, k = carry
+            return (alpha * rho, k + 1)
+
+        def search_cond(carry):
+            alpha, k = carry
+            # Compute trial point
+            p_10d_trial = p_10d.at[active_indices].add(alpha * delta_p_active)
+            f_vec_trial = evaluate_equations_single_point(p_10d_trial, coeffs, psi)  
+            f_norm_trial = jnp.linalg.norm(f_vec_trial)
+
+            return (f_norm_trial >= f_norm_current) & (k < max_backtrack)
+
+        f_norm_current = jnp.linalg.norm(f_vec)
+        init_carry = (alpha_init, 0)
+        final_alpha, _ = jax.lax.while_loop(search_cond, search_body, init_carry)
+
+        p_10d_new = p_10d.at[active_indices].add(final_alpha * delta_p_active)
+
+        return p_10d_new
 
     def body_fn(i, state):
         p_10d, patch_index = state
@@ -260,8 +290,8 @@ def refine_point_iterative(
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
 
-        #p_10d += delta_p_active
-        p_10d = p_10d.at[active_indices].add(delta_p_active)
+        #p_10d = p_10d.at[active_indices].add(delta_p_active)
+        p_10d = backtracking_line_search(p_10d, delta_p_active, active_indices, f_vec, coeffs, psi)
 
         p_complex = convert_real_to_complex_single(p_10d)
         p_complex_rescaled, patch_index = determine_patch_and_rescale_single(p_complex)
@@ -352,7 +382,7 @@ def filter_and_refine(
     k: int = 10000,
     n_refine_steps: int = 20,
     filter_newton: bool = False,
-    n_repulsion_steps: int = 20,
+    n_repulsion_steps: int = 15,
     repulsion_strength: Optional[float] = None,
     repulsion_radius: Optional[float] = None
 ) -> tuple[jnp.ndarray, jnp.ndarray, bool]:
@@ -379,6 +409,8 @@ def filter_and_refine(
         final_distances: A (k,) array of distances to manifold
         newton_check_pass: Boolean indicating if Newton's method converged well
     """
+    # Side note: the repulsive sampling only seems to affecst the fake S1 case.
+    # For the new slag cases it barely changes the results 
     if psi is None:
         psi = jnp.complex64(0)
     
@@ -418,7 +450,7 @@ def filter_and_refine(
     min_extent = jnp.min(top_k_points, axis=0)
     R_scale = jnp.linalg.norm(max_extent - min_extent) / 2
     R_scale = jnp.maximum(R_scale, 1e-6)
-    
+
     if repulsion_radius is None:
         repulsion_radius = R_scale / jnp.cbrt(k)
     if repulsion_strength is None:
@@ -452,7 +484,7 @@ def filter_and_refine(
         
         # Reproject onto manifold
         return batch_reproject(moved_points)
-    
+ 
     # Run repulsion if requested
     final_points = jax.lax.cond(
         (n_repulsion_steps > 0) & initial_newton_check,

@@ -7,7 +7,7 @@ import pickle
 import matplotlib.pyplot as plt
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs 
+from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
 from typing import Optional
 
 def make_fitness_plots(
@@ -19,6 +19,7 @@ def make_fitness_plots(
     metric: str = 'FS',
     compare_with_random: bool = False,
     parent_folder: Optional[str] = 'plots_slag',
+    patch_index: Optional[int] = None
     ) -> None:
 
     # Create the folder for the plots
@@ -28,6 +29,12 @@ def make_fitness_plots(
     min_set_real, distances, _ = filter_and_refine(
         points_real, coeffs, psi, k, n_refine_steps
     )
+   
+    if patch_index: 
+        patch_indices = determine_patches_batch(convert_real_to_complex_batch(min_set_real)) 
+        idx = jnp.where(patch_indices==patch_index)
+        min_set_real = min_set_real[idx]
+        distances = distances[idx]
 
     total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, metric, debug_mode=True)
 
@@ -146,10 +153,12 @@ def make_scatter_plots(
     lagrangian_fitness = jnp.exp(-10*frobenius_norms)
     # Define the coordinate pairs and labels for plotting.
     plot_configs = [
+        {'x_idx': 0, 'y_idx': 5, 'xlabel': 'z0 real', 'ylabel': 'z0 imag', 'file_part': 'z0rz0i'},
         {'x_idx': 1, 'y_idx': 2, 'xlabel': 'z1 real', 'ylabel': 'z2 real', 'file_part': 'z1rz2r'},
         {'x_idx': 3, 'y_idx': 4, 'xlabel': 'z3 real', 'ylabel': 'z4 real', 'file_part': 'z3rz4r'},
         {'x_idx': 6, 'y_idx': 7, 'xlabel': 'z1 imag', 'ylabel': 'z2 imag', 'file_part': 'z1iz2i'},
         {'x_idx': 8, 'y_idx': 9, 'xlabel': 'z3 imag', 'ylabel': 'z4 imag', 'file_part': 'z3iz4i'},
+        {'x_idx': 1, 'y_idx': 6, 'xlabel': 'z1 real', 'ylabel': 'z1 imag', 'file_part': 'z1rz1i'},
     ]
 
     for config in plot_configs:
@@ -276,81 +285,3 @@ def plot_slag_data(jobid, max_rank, coordinates):
     plt.close(fig) # Close the figure to free up memory
     print(f"Plot successfully saved to: {save_path}")
 
-
-'''
-def plot_slag_data(jobid, max_rank, coordinates):
-    """
-    Finds, loads, and plots data from GA output folders.
-    """
-
-    coord_list = [
-        'z0_real',
-        'z1_real', 
-        'z2_real',  
-        'z3_real',  
-        'z4_real',  
-        'z0_img',   
-        'z1_img',   
-        'z2_img',   
-        'z3_img',   
-        'z4_img'    
-    ]
-
-
-    main_folder = f"plots_slag_{jobid}"
-
-    if not os.path.isdir(main_folder):
-        print(f"Error: Base directory '{main_folder}' not found.")
-        return
-
-    fig, ax = plt.subplots(figsize=(12, 10))
-    all_points_x = []
-    all_points_y = []
-
-    # Regex to parse folder names like 'plots_slag_12345_5_id678'
-    pattern = re.compile(f"plots_slag_{jobid}_(\\d+)_id\\d+")
-
-    print(f"Searching for subfolders in '{main_folder}' with rank < {max_rank}...")
-
-    for subfolder_name in sorted(os.listdir(main_folder)):
-        full_path = os.path.join(main_folder, subfolder_name)
-        if os.path.isdir(full_path):
-            match = pattern.match(subfolder_name)
-            if match:
-                rank = int(match.group(1))
-                if rank < max_rank:
-                    pkl_path = os.path.join(full_path, "min_set.pkl")
-                    if os.path.exists(pkl_path):
-                        try:
-                            with open(pkl_path, 'rb') as f:
-                                # Load the pickled data (assuming it's a jnp or numpy array)
-                                min_set_complex = pickle.load(f)
-
-                            # Convert jax array to a standard numpy array for processing
-                            min_set_complex_np = np.asarray(min_set_complex)
-
-                            # Convert the N x 5 complex array to an N x 10 real array
-                            # by stacking the real and imaginary parts
-                            min_set_real = np.hstack([min_set_complex_np.real, min_set_complex_np.imag])
-
-                            # Append the second (index 1) and third (index 2) coordinates
-                            all_points_y.extend(min_set_real[:, coordinates[0]])
-                            all_points_x.extend(min_set_real[:, coordinates[1]])
-
-                        except Exception as e:
-                            print(f"Warning: Could not process file {pkl_path}. Error: {e}")
-
-    if all_points_x and all_points_y:
-        print(f"Plotting {len(all_points_x)} total points.")
-        ax.scatter(all_points_x, all_points_y, s=0.1, alpha=0.7, edgecolors='none')
-        ax.set_title(f"{coord_list[coordinates[0]]} vs. {coord_list[coordinates[1]]} for Job ID: {jobid} (Ranks < {max_rank})", fontsize=16)
-        ax.set_xlabel(f"{coord_list[coordinates[1]]}", fontsize=12)
-        ax.set_ylabel(f"{coord_list[coordinates[1]]}", fontsize=12)
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-        fig.tight_layout()
-        plt.savefig(os.path.join(main_folder, f'scatter_plot_{jobid}_{coordinates[0]}_{coordinates[1]}.png'))
-        #plt.show()
-    else:
-        print("No data found to plot. Check folder names and paths.")
-
-'''

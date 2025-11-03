@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import timeit
-from helper import canonicalize_coeffs, convert_real_to_complex_batch
+from helper import canonicalize_coeffs, convert_real_to_complex_batch, convert_real_to_complex_single, determine_patch_and_rescale_single
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 #with open('/projects/ruehlehet/yidi/sLag/data/50mil_patch0_3.pkl', 'rb') as f:
@@ -15,9 +15,10 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 #newton_npts = 100000
 #newton_refine_steps = 100
 newton_npts = 10000
-newton_refine_steps = 60
+newton_refine_steps = 40
 #psi = 1000000
 psi=0
+#metric = 'FS'
 metric = 'k4_fermat'
 
 #with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
@@ -59,11 +60,15 @@ coeffs_new = jnp.asarray(
 
 
 coeffs_slag = jnp.asarray(
-[[0.11216665804386139, 0.0, 0.0, -0.02633090317249298, 0.36662667989730835, 0.026743261143565178, -0.16048716008663177, -0.01786438748240471, -0.20301805436611176, -0.019653748720884323, 0.23372647166252136, -0.1140589639544487, -0.10161467641592026, 0.5398538708686829, -0.04246379807591438, 0.22577781975269318, 0.1380372941493988, -0.16419844329357147, 0.18191319704055786, 0.10524267703294754, -0.20116859674453735, -0.24554167687892914, 0.3031361401081085, -0.06644229590892792, 0.5979450941085815],
-[0.0, 0.0185030996799469, 0.0, -0.05686819553375244, 0.41180339455604553, -0.1612538844347, -0.03338941931724548, -0.06938966363668442, -0.2844865322113037, 0.03726506978273392, 0.2984565794467926, -0.14783278107643127, -0.06539043039083481, 0.3878329396247864, -0.11212556064128876, 0.19980256259441376, -0.08283418416976929, -0.11308067291975021, 0.1923774629831314, 0.20798492431640625, -0.29761967062950134, -0.23533309996128082, 0.4763703942298889, -0.20195569097995758, 0.406141996383667],
-[0.0, 0.0, 0.1497003138065338, -0.0477476604282856, 0.39185118675231934, -0.21344517171382904, -0.06409186124801636, -0.04855991527438164, -0.2874813973903656, -0.01005624234676361, 0.2812081277370453, -0.1390218287706375, -0.039825718849897385, 0.3934180736541748, -0.10033828020095825, 0.2115786224603653, -0.12867453694343567, -0.12012004107236862, 0.20589330792427063, 0.16143667697906494, -0.20614327490329742, -0.255362868309021, 0.4688882827758789, -0.15645577013492584, 0.47072315216064453]]
+[[0.09372571110725403, 0.0, 0.0, 0.04947570711374283, -0.27014032006263733, 0.290439248085022, -0.05873992294073105, -0.42513707280158997, -0.09717778861522675, 0.19989840686321259, 0.38664567470550537, -0.07062390446662903, 0.013155322521924973, -0.15705052018165588, 0.1234697476029396, 0.5427428483963013, -0.3402601480484009, -0.1772173047065735, 0.21868768334388733, 0.23365969955921173, -0.2153988480567932, 0.02255122922360897, 0.1117400974035263, -0.07398983091115952, 0.31562912464141846],
+[0.0, 0.26131829619407654, 0.0, -0.24962270259857178, 0.6179611682891846, -0.263107031583786, -0.15143907070159912, 0.052236564457416534, 0.004278537351638079, -0.08185352385044098, 0.02838468924164772, -0.10935220867395401, -0.021405532956123352, -0.07216960936784744, 0.4299582839012146, -0.3281639814376831, 0.057126760482788086, 0.12651300430297852, -0.018878906965255737, 0.1969107687473297, -0.23213674128055573, -0.13236203789710999, -0.13546112179756165, -0.09763630479574203, 0.010455459356307983],
+[0.0, 0.0, 0.1908203363418579, 0.014503059908747673, -0.06520576030015945, -0.028506482020020485, 0.018275123089551926, 0.27912238240242004, -0.13690531253814697, -0.2538205683231354, -0.25144749879837036, 0.2966477572917938, -0.18626874685287476, 0.0020461399108171463, -0.326728492975235, -0.22679422795772552, 0.4030601382255554, -0.0541677325963974, -0.37111616134643555, 0.12218055129051208, 0.3886817693710327, 0.0006958091980777681, 0.008297581225633621, 0.22004170715808868, -0.0043386672623455524]]
+)
 
-
+coeffs_slag = jnp.asarray(
+[[0.008135111071169376, 0.0, 0.0, 0.034110456705093384, -0.051552366465330124, -0.09078127890825272, -0.21653585135936737, -0.10087347030639648, -0.036410510540008545, -0.09621314704418182, -0.10108081251382828, 0.01101162564009428, 0.8398250341415405, -0.12991644442081451, 0.04354538768529892, -0.12032864987850189, 0.022739004343748093, 0.252056360244751, -0.10091695934534073, -0.17623819410800934, -0.005732133984565735, 0.1443588137626648, -0.04366682097315788, 0.26619380712509155, -0.04954077675938606],
+[0.0, 0.002528600161895156, 0.0, -0.11464469879865646, -0.016054080799221992, -0.032600075006484985, -0.012370459735393524, 0.012286623008549213, 0.027733193710446358, 0.035988904535770416, 0.13274334371089935, 0.052412550896406174, -0.9457160830497742, 0.16518470644950867, -0.02148539386689663, 0.07934409379959106, 0.0823899358510971, -0.0412033312022686, 0.020897284150123596, 0.19772838056087494, 0.016522396355867386, -0.0860254094004631, 0.0731077715754509, 0.03563130646944046, 0.11174309253692627],
+[0.0, 0.0, 0.09465108066797256, 0.11126672476530075, 0.010422823950648308, 0.45290833711624146, 0.35332754254341125, 0.25843915343284607, 0.09951002895832062, 0.5054367184638977, -0.033156510442495346, 0.12722761929035187, -0.17186303436756134, 0.012448400259017944, -0.10432498902082443, 0.07591179758310318, 0.07454387843608856, 0.09396175295114517, -0.33415740728378296, 0.01807628944516182, -0.051696013659238815, -0.1775708943605423, 0.024721577763557434, -0.3077135682106018, 0.04064161330461502]]
 )
 
 perturbation_order = 0.001
@@ -76,13 +81,13 @@ coeffs_random = jax.random.uniform(key, (3, 25), minval=-1, maxval=1)
 #coeffs = coeffs_new2
 #coeffs = coeffs_new
 #coeffs = coeffs_random
-coeffs = coeffs_RP3
+#coeffs = coeffs_RP3
 #coeffs = coeffs_RP3 + perturbation_order * coeffs_random
 #coeffs = coeffs_T3
 #coeffs = coeffs_T3 + perturbation_order * coeffs_random
 #coeffs = coeffs_1e6
 #coeffs = coeffs_1e6_add_cond
-#coeffs = coeffs_slag
+coeffs = coeffs_slag
 
 print('Original Coeffs: ', coeffs)
 coeffs = canonicalize_coeffs(coeffs)
@@ -128,7 +133,7 @@ jacobian_func = sp.lambdify([XY], jacobian_replaced, 'jax')
 
 st = time.time()
 #min_set_real, distances = filter_and_refine(points_real, coeffs, psi, k=3000, n_refine_steps=5, debug_mode=True)
-min_set_real, distances, _ = filter_and_refine(points_real, coeffs, psi, k=newton_npts, n_refine_steps=newton_refine_steps)
+min_set_real, distances, _ = filter_and_refine(points_real, coeffs, psi, k=newton_npts, n_refine_steps=newton_refine_steps, n_repulsion_steps=20)
 print('Finished Newton Method')
 #min_set_real = filter_and_refine(points_real, coeffs, jacobian_func, psi, k=3000, n_refine_steps=5 
 total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, metric=metric, debug_mode=True)
@@ -223,3 +228,61 @@ plt.savefig(output_filename, dpi=300)
 # which is useful when running scripts automatically.
 plt.close()
 '''
+print('First 1000 norms: ', norms_cut[:1000])
+print('First 5000 norms: ', norms_cut[:5000])
+
+distances_sorted = jnp.sort(distances)
+print('First 5000 distances: ', distances_sorted[:5000])
+print('Last 20 distances: ', distances_sorted[-20:])
+
+PATCH_ACTIVE_INDICES = jnp.array([
+    [1, 2, 3, 4, 6, 7, 8, 9],  # patch=0: skip 0,6
+    [0, 2, 3, 4, 5, 7, 8, 9],  # patch=1: skip 1,6
+    [0, 1, 3, 4, 5, 6, 8, 9],  # patch=2: skip 2,6
+    [0, 1, 2, 4, 5, 6, 7, 9],  # patch=3: skip 3,6
+    [0, 1, 2, 3, 5, 6, 7, 8],  # patch=4: skip 4,6
+], dtype=jnp.int32)
+
+from get_restriction import compute_affine_jacobian
+from helper import (evaluate_equations_single_point, convert_complex_to_real_single,
+                    convert_real_to_complex_single, determine_patch_and_rescale_single)
+
+test_point = min_set_real[300]
+p_complex = convert_real_to_complex_single(test_point)
+p_complex_rescaled, patch_index = determine_patch_and_rescale_single(p_complex)
+
+active_indices = PATCH_ACTIVE_INDICES[patch_index]
+
+f_vec = evaluate_equations_single_point(test_point, coeffs, psi)
+J = compute_affine_jacobian(test_point, patch_index, coeffs, psi)
+
+print('f_vec: ', f_vec)
+print('J: ', J)
+JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
+w = jnp.linalg.solve(JJT, -f_vec)
+delta_p_active = J.T @ w
+
+print('JJT: ', JJT)
+print('w: ', w)
+print('delta_p_active: ', delta_p_active)
+
+test_point_new = test_point.at[active_indices].add(0.1*delta_p_active)
+
+res = evaluate_equations_single_point(test_point, coeffs, psi)
+res_new = evaluate_equations_single_point(test_point_new, coeffs, psi)
+
+test_point_new = convert_real_to_complex_single(test_point_new)
+test_point = convert_real_to_complex_single(test_point)
+
+test_point_new_rescaled, patch_index = determine_patch_and_rescale_single(test_point_new)
+
+print('before: ', test_point)
+print('after: ', test_point_new)
+print('after scaled: ', test_point_new_rescaled)
+print('res_old: ', res)
+print('res_new: ', res_new)
+
+test_point_new_rescaled_real = convert_complex_to_real_single(test_point_new_rescaled)
+res_new_rescaled = evaluate_equations_single_point(test_point_new_rescaled_real, coeffs, psi)
+print('res_new_rescaled: ', res_new_rescaled)
+
