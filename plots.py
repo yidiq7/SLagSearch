@@ -48,7 +48,7 @@ def make_fitness_plots(
         plt.figure(figsize=(10, 6))
         plt.hist(frobenius_norms, bins=200, alpha=0.7, label='Potential sLag', color='skyblue', density=True)
         plt.xlabel('Frobenius norm')
-        plt.ylabel('Counts')
+        plt.ylabel('Probability density')
         plt.title('Distribution of the norm of the Kahler form')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
