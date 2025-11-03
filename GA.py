@@ -359,7 +359,8 @@ if __name__ == '__main__':
     last_log_time = start_time # Initialize timer for logging intervals
     
     # --- Main Evolution Loop ---
-    for gen in range(start_gen, NUM_GENERATIONS):
+    end_gen = start_gen + NUM_GENERATIONS
+    for gen in range(start_gen, end_gen):
         
         # --- Set parameters based on the current generation ---
         if gen < TRANSITION_GENERATION:
@@ -508,11 +509,11 @@ if __name__ == '__main__':
 
             max_fitness = jnp.max(all_fitness_scores)
             avg_fitness = jnp.mean(all_fitness_scores)
-            print(f"Gen {gen+1:4d}/{NUM_GENERATIONS} | Species: {len(species_list):2d} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
+            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
         
             last_log_time = current_time # Reset timer for the next interval
         # 6. Checkpointing
-        if (gen + 1) % CHECKPOINT_INTERVAL == 0 and (gen + 1) < NUM_GENERATIONS:
+        if (gen + 1) % CHECKPOINT_INTERVAL == 0 and (gen + 1) < end_gen:
             checkpoint_filename = os.path.join(CHECKPOINT_DIR, f'checkpoint_gen_{gen+1}.pkl')
             # Prune members from species before saving to reduce file size
             # The representative and stagnation state is the important part
