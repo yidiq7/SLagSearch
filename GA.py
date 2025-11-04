@@ -39,7 +39,7 @@ GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
 NUM_GENERATIONS = 400
 
-TRANSITION_GENERATION = 300
+TRANSITION_GENERATION = 400
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
@@ -64,10 +64,10 @@ SPECIES_ELITISM = 1        # Number of best individuals per species to carry ove
 
 # Batching for Fitness Evaluation
 FITNESS_MINI_BATCH_SIZE = 50
-LOG_INTERVAL = 1
+LOG_INTERVAL = 10
 
 # Checkpointing
-CHECKPOINT_DIR = 'checkpoints_3k'
+CHECKPOINT_DIR = 'checkpoints'
 CHECKPOINT_INTERVAL = 100
 
 #MINSET_SIZE = 100000
@@ -363,7 +363,7 @@ if __name__ == '__main__':
     for gen in range(start_gen, end_gen):
         
         # --- Set parameters based on the current generation ---
-        if gen < TRANSITION_GENERATION:
+        if gen < start_gen + TRANSITION_GENERATION:
             current_tourney_size = TOURNEY_SIZE_EXPLORE
             current_eta_mutation = ETA_MUTATION_EXPLORE
             current_eta_crossover = ETA_CROSSOVER_EXPLORE
