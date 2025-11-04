@@ -513,7 +513,7 @@ if __name__ == '__main__':
         
             last_log_time = current_time # Reset timer for the next interval
         # 6. Checkpointing
-        if (gen + 1) % CHECKPOINT_INTERVAL == 0 and (gen + 1) < end_gen:
+        if (gen + 1) % CHECKPOINT_INTERVAL == 0 and (gen + 1) <= end_gen:
             checkpoint_filename = os.path.join(CHECKPOINT_DIR, f'checkpoint_gen_{gen+1}.pkl')
             # Prune members from species before saving to reduce file size
             # The representative and stagnation state is the important part

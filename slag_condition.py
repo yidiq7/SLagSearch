@@ -484,7 +484,7 @@ def compute_combined_fitness(
 
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set) 
-    print('patch_indices: ', patch_indices)
+
     jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
     restrictions = vmap_compute_restriction(jacobians)
 
