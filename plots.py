@@ -164,7 +164,7 @@ def make_scatter_plots(
         min_set_y = min_set_real[:, config['y_idx']]
 
         # --- Colored by Lagrangian Fitness ---
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(10, 8))
         scatter = plt.scatter(min_set_x, min_set_y, c=lagrangian_fitness, cmap='viridis', s=0.05, edgecolor=None)
         plt.colorbar(scatter, label='Lagrangian Fitness')
         plt.title(f'Scatter Plot of {config["ylabel"]} vs {config["xlabel"]} (Color by Lagrangian Fitness)')
