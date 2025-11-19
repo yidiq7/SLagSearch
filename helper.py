@@ -190,9 +190,10 @@ def generate_basis_single_point(point: jnp.ndarray) -> jnp.ndarray:
 
     # Create all pairwise products zi * zj_bar using broadcasting
     # Shape: (5, 5)
+    z_sq = jnp.sum(point * point.conj()).real # (N,)
     zi = point[:, None]  # (5, 1)
     zj_bar = jnp.conj(point[None, :])  # (1, 5)
-    products = zi * zj_bar  # (5, 5)
+    products = zi * zj_bar / z_sq # (5, 5)
 
     # Extract upper triangular indices for imaginary parts (i < j)
     # This gives us 10 unique imaginary parts
@@ -210,9 +211,16 @@ def generate_basis_single_point(point: jnp.ndarray) -> jnp.ndarray:
 
 def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray) -> jnp.ndarray:
     """Evaluate the five equations. The input points are real."""
+    # W1: 25 x 10, W2: 10 x 3
+    W1 = coeffs[0: 250].reshape(25, 10)
+    b1 = coeffs[250:260]
+    W2 = coeffs[260: 290].reshape(10, 3)
+    b2 = coeffs[290:293]
+
     point_complex = point[:5] + 1j * point[5:]
     basis = generate_basis_single_point(point_complex)
-    eqs_vec = coeffs @ basis # (3,)
+    layer1 = jnp.tanh(basis @ W1 + b1)
+    eqs_vec = layer1 @ W2 + b2
     cy = jnp.sum(point_complex**5) + psi * jnp.prod(point_complex)
     eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 
     return eqs_evaluated

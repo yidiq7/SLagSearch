@@ -10,9 +10,9 @@ import argparse
 import glob
 import re
 import sys
-from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
+from find_smooth_submanifold import filter_and_refine, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs, format_array_with_commas
+from helper import format_array_with_commas
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
@@ -34,9 +34,9 @@ CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_
 METRIC = 'k4_fermat'
 
 # GA Parameters
-POPULATION_SIZE = 800
-GENOTYPE_SHAPE = (3, 25)
-NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
+POPULATION_SIZE = 600
+GENOTYPE_SHAPE = (293,)
+NUM_GENES = GENOTYPE_SHAPE[0]
 NUM_GENERATIONS = 400
 
 TRANSITION_GENERATION = 400
@@ -45,8 +45,8 @@ TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
 ETA_MUTATION_EXPLORE = 10.0
 ETA_CROSSOVER_EXPLORE = 5.0
-SPECIATION_THRESHOLD_EXPLORE = 2.5
-SPECIES_SHARING_RADIUS_EXPLORE = 2.7
+SPECIATION_THRESHOLD_EXPLORE = 3.5
+SPECIES_SHARING_RADIUS_EXPLORE = 3.7
 
 # Exploitation Phase Settings
 TOURNEY_SIZE_EXPLOIT = 7
@@ -63,8 +63,8 @@ STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement be
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
-FITNESS_MINI_BATCH_SIZE = 50
-LOG_INTERVAL = 10
+FITNESS_MINI_BATCH_SIZE = 25
+LOG_INTERVAL = 1
 
 # Checkpointing
 CHECKPOINT_DIR = 'checkpoints'
@@ -213,7 +213,7 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
     offspring1_batch, offspring2_batch = vmap(crossover_fn)(cross_keys, parent1_batch, parent2_batch)
     
     # Decide which children to keep based on crossover rate
-    crossover_mask = vmap(jax.random.uniform)(cross_keys).reshape(-1, 1, 1) < CROSSOVER_RATE
+    crossover_mask = vmap(jax.random.uniform)(cross_keys).reshape(-1, 1) < CROSSOVER_RATE
     child_batch = jnp.where(crossover_mask, offspring1_batch, parent1_batch)
 
     # VMAP to perform batched mutation
@@ -221,9 +221,9 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
     mutated_batch = vmap(mutation_fn)(mut_keys, child_batch)
 
     # VMAP to normalize the final batch
-    normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
+    #normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
     
-    return normalized_batch
+    return mutated_batch
 
 
 def reproduce_within_species(key, species, num_offspring, tournament_size, eta_mutation, eta_crossover, mutation_rate):
@@ -248,18 +248,20 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
 
     MAX_OFFSPRING_PER_SPECIES = 64 
 
+    # If there is only one member, duplicate itself
     if num_members < 2:
         mutation_fn = partial(polynomial_mutation, prob_mut=mutation_rate, eta=eta_mutation)
         padded_offspring = vmap(mutation_fn, in_axes=(0, 0))(
             jax.random.split(key, offspring_to_generate), 
-            jnp.tile(members_arr, (offspring_to_generate, 1, 1))
+            jnp.tile(members_arr, (offspring_to_generate, 1))
         )
+    # Otherwise, duplicate the first member and assign -inf to them just to hold the shape
     else:
         MAX_SPECIES_SIZE = POPULATION_SIZE 
         padding_size = MAX_SPECIES_SIZE - num_members
         padded_members = jnp.concatenate([
             members_arr,
-            jnp.tile(members_arr[0:1], (padding_size, 1, 1))
+            jnp.tile(members_arr[0:1], (padding_size, 1))
         ])
         padded_fitness = jnp.concatenate([
             fitness_arr,
@@ -273,9 +275,9 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
         )
     
     new_offspring = padded_offspring[:offspring_to_generate]
-    final_offspring = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(new_offspring)
+    #final_offspring = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(new_offspring)
 
-    return elite_offspring + list(final_offspring)
+    return elite_offspring + list(new_offspring)
 
 
 # 5. MAIN GA LOOP (WITH FULL CHECKPOINTING)
@@ -351,7 +353,7 @@ if __name__ == '__main__':
         print("\nNo valid checkpoint specified. Starting a new run.")
         key, subkey = jax.random.split(key)
         population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
-        population = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(population)
+        #population = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(population)
         species_list = []
     
     print(f"\nStarting evolution from generation {start_gen}...")
@@ -496,7 +498,7 @@ if __name__ == '__main__':
                  key, subkey = jax.random.split(key)
                  randoms_needed = POPULATION_SIZE - current_pop_size
                  random_individuals = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
-                 random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
+                 #random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
                  next_generation_population.extend(random_individuals)
 
         population = jnp.array(next_generation_population[:POPULATION_SIZE])
@@ -585,15 +587,14 @@ if __name__ == '__main__':
 
         print(f"\n--- Species {s.id} (Best Fitness: {best_fitness:.5f}) ---")
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
-        print("Best Member's Coefficients:")
+        print("Best Member's parameters:")
         print(format_array_with_commas(best_member))
-        print("Complex equations:")
-        print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(
             f'plots_slag_{args.job_id}', 
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=10000, n_refine_steps=40, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
+        #make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
         rank += 1

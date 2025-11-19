@@ -144,9 +144,10 @@ def generate_basis(points: jnp.ndarray) -> jnp.ndarray:
     
     # Create all pairwise products zi * zj_bar using broadcasting
     # Shape: (N, 5, 5)
+    z_sq = jnp.sum(points * points.conj(), axis=1).real[:, None, None] # (N,)
     zi = points[:, :, None]  # (N, 5, 1)
     zj_bar = jnp.conj(points[:, None, :])  # (N, 1, 5)
-    products = zi * zj_bar  # (N, 5, 5)
+    products = zi * zj_bar / z_sq # (N, 5, 5)
     
     # Extract upper triangular indices for imaginary parts (i < j)
     # This gives us 10 unique imaginary parts
