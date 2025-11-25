@@ -468,6 +468,24 @@ if __name__ == '__main__':
         
         # 5. Stagnation & Refill
         for s in species_list: s.update_stagnation()
+
+        # Find the best fitness in the entire current population
+        global_best_fitness = max(s.best_fitness for s in species_list)
+        
+        # Define a tolerance (e.g., keep species that are within 90% of the best)
+        OPTIMAL_TOLERANCE = 0.90 
+        
+        species_list = [
+            s for s in species_list 
+            if (
+                # Condition A: It is NOT stagnating
+                s.generations_since_improvement < STAGNATION_THRESHOLD 
+                
+                # OR Condition B: It IS stagnating, BUT it's a top-tier species (a found peak)
+                or s.best_fitness >= (global_best_fitness * OPTIMAL_TOLERANCE)
+            ) 
+            and s.members
+        ]
        
         # Ensure population size is maintained  
         if len(next_generation_population) < POPULATION_SIZE:
