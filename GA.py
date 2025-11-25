@@ -221,7 +221,7 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
 
     # Crossover
     crossover_fn = partial(sbx_crossover, eta=eta_cross, min_val=min_val, max_val=max_val)
-    offspring1_batch, offspring2_batch = vmap(crossover_fn)(cross_keys, parent1_batch,
+    offspring1_batch, offspring2_batch = vmap(crossover_fn)(cross_keys, parent1_batch, parent2_batch)
 
     # Decide which children to keep based on crossover rate 
     crossover_mask = vmap(jax.random.uniform)(cross_keys).reshape(-1, 1) < CROSSOVER_RATE
@@ -287,9 +287,9 @@ if __name__ == '__main__':
     parser.add_argument('--job_id', type=str, nargs='?', const='0', default='0')
     args = parser.parse_args()
 
-    print(f"--- Speciation GA ---")
-    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}) 
-    print(f"Switching to exploitation mode at generation {TRANSITION_GENERATION}")      
+    print("--- Speciation GA ---")
+    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}") 
+    print(f"Switching to exploitation mode at generation {TRANSITION_GENERATION}")
     print(f"Weight Bounds: [{WEIGHT_BOUND_MIN}, {WEIGHT_BOUND_MAX}]")
     print(f"Params: Eta_Mut_Exp={ETA_MUTATION_EXPLORE}, Eta_Mut_Exploit={ETA_MUTATION_EXPLOIT}")
 
