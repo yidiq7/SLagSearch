@@ -161,16 +161,24 @@ def generate_basis(points: jnp.ndarray) -> jnp.ndarray:
     # Concatenate to form complete basis
     return jnp.concatenate([imag_basis, real_basis], axis=1)  # (N, 25)
 
+
+#@jax.jit 
+#def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
+#    # We normalize on the complex basis zizjbar instead of the real and imaginary
+#    # parts. So we rescale the real part of zizibar by 1/sqrt(2) to get the correct
+#    # normalization since they are only counted once instead of twice compared to
+#    # the upper triangular terms.
+#    zzbar_indices = jnp.array([10, 15, 19, 22, 24])
+#    weights = jnp.ones((3, 25))
+#    weights = weights.at[:,zzbar_indices].divide(jnp.sqrt(2.0))
+#    norms = jnp.linalg.norm(weights*coeffs, axis=1, keepdims=True)
+#    coeffs_normalized = coeffs / norms
+#    return coeffs_normalized
+#
+
 @jax.jit 
 def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
-    # We normalize on the complex basis zizjbar instead of the real and imaginary
-    # parts. So we rescale the real part of zizibar by 1/sqrt(2) to get the correct
-    # normalization since they are only counted once instead of twice compared to
-    # the upper triangular terms.
-    zzbar_indices = jnp.array([10, 15, 19, 22, 24])
-    weights = jnp.ones((3, 25))
-    weights = weights.at[:,zzbar_indices].divide(jnp.sqrt(2.0))
-    norms = jnp.linalg.norm(weights*coeffs, axis=1, keepdims=True)
+    norms = jnp.linalg.norm(coeffs, axis=1, keepdims=True)
     coeffs_normalized = coeffs / norms
     return coeffs_normalized
 

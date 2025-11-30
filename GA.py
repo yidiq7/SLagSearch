@@ -12,7 +12,7 @@ import re
 import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs, format_array_with_commas
+from helper import format_array_with_commas
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
@@ -35,7 +35,7 @@ METRIC = 'k4_fermat'
 
 # GA Parameters
 POPULATION_SIZE = 800
-GENOTYPE_SHAPE = (3, 25)
+GENOTYPE_SHAPE = (3, 225)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
 NUM_GENERATIONS = 400
 
@@ -43,8 +43,8 @@ NUM_GENERATIONS = 400
 TRANSITION_GENERATION = 999999
 
 # --- Dynamic Speciation Parameters ---
-TARGET_SPECIES_COUNT_MIN = 0
-TARGET_SPECIES_COUNT_MAX = 25
+TARGET_SPECIES_COUNT_MIN = 20
+TARGET_SPECIES_COUNT_MAX = 40
 
 SPECIATION_THRESHOLD_INIT = 2.5
 SPECIATION_THRESHOLD_STEP = 0.05 # each gen *= (1 +/- step) 
@@ -235,7 +235,7 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
     mutated_batch = vmap(mutation_fn)(mut_keys, child_batch)
 
     # VMAP to normalize the final batch
-    normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
+    normalized_batch = vmap(lambda p: normalize_coeffs(p))(mutated_batch)
     
     return normalized_batch
 
@@ -287,7 +287,7 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
         )
     
     new_offspring = padded_offspring[:offspring_to_generate]
-    final_offspring = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(new_offspring)
+    final_offspring = vmap(lambda p: normalize_coeffs(p))(new_offspring)
 
     return elite_offspring + list(final_offspring)
 
@@ -368,7 +368,7 @@ if __name__ == '__main__':
         print("\nNo valid checkpoint specified. Starting a new run.")
         key, subkey = jax.random.split(key)
         population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
-        population = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(population)
+        population = vmap(lambda p: normalize_coeffs(p))(population)
         species_list = []
     
     print(f"\nStarting evolution from generation {start_gen}...")
@@ -528,7 +528,7 @@ if __name__ == '__main__':
                  key, subkey = jax.random.split(key)
                  randoms_needed = POPULATION_SIZE - current_pop_size
                  random_individuals = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
-                 random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
+                 random_individuals = vmap(lambda p: normalize_coeffs(p))(random_individuals)
                  next_generation_population.extend(random_individuals)
 
         population = jnp.array(next_generation_population[:POPULATION_SIZE])

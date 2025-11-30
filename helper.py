@@ -208,10 +208,70 @@ def generate_basis_single_point(point: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([imag_basis, real_basis])  # (25,)
 
 
+def generate_basis_second_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
+    """
+    Generate second-order basis functions from points on Fermat quintic.
+    These are polynomials of degree (2, 2) in the coordinates: z_i z_j z_m_bar z_n_bar.
+
+    Args:
+        point: (5,) complex array of points on the quintic
+
+    Returns:
+        basis: (225,) real array of basis functions
+               - 105 Imaginary parts of (v_A * v_B_bar) for A < B
+               - 120 Real parts of (v_A * v_B_bar) for A <= B
+               Where v is the vector of 15 quadratic monomials.
+    """
+    # 1. Construct the vector of quadratic monomials (z_i * z_j)
+    # ---------------------------------------------------------
+    zi = point[:, None]
+    zj = point[None, :]
+    
+    # Shape: (5, 5) representing all z_i * z_j
+    quad_products = zi * zj
+    
+    # We only need the unique monomials. Since z_i*z_j = z_j*z_i, 
+    # we take the upper triangle (including diagonal).
+    # There are 5*(5+1)/2 = 15 such monomials.
+    triu_indices_1 = jnp.triu_indices(5, k=0)
+    
+    # Shape: (15,)
+    # Let's call this vector v. v_A corresponds to a pair (i,j)
+    v = quad_products[triu_indices_1[0], triu_indices_1[1]]
+
+    # 2. Construct the matrix of quartic products (v_A * v_B_bar)
+    # ---------------------------------------------------------
+    # This represents (z_i z_j) * (z_m_bar z_n_bar)
+    v_A = v[:, None]       # (15, 1)
+    v_B_bar = jnp.conj(v[None, :]) # (1, 15)
+    
+    # Shape: (15, 15)
+    # This matrix M is Hermitian by construction.
+    M = v_A * v_B_bar
+
+    # 3. Extract Independent Real Basis Functions
+    # ---------------------------------------------------------
+    # Just like the first order case, we extract the independent real parameters
+    # from this Hermitian matrix.
+    
+    # Imaginary parts: Strict upper triangle of the 15x15 matrix (k=1)
+    # Count: 15 * 14 / 2 = 105
+    triu_indices_imag = jnp.triu_indices(15, k=1)
+    imag_basis = jnp.imag(M[triu_indices_imag[0], triu_indices_imag[1]])
+
+    # Real parts: Upper triangle + diagonal of the 15x15 matrix (k=0)
+    # Count: 15 * 16 / 2 = 120
+    triu_indices_real = jnp.triu_indices(15, k=0)
+    real_basis = jnp.real(M[triu_indices_real[0], triu_indices_real[1]])
+
+    # Total size: 105 + 120 = 225
+    return jnp.concatenate([imag_basis, real_basis])
+
+
 def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray) -> jnp.ndarray:
     """Evaluate the five equations. The input points are real."""
     point_complex = point[:5] + 1j * point[5:]
-    basis = generate_basis_single_point(point_complex)
+    basis = generate_basis_second_order_single_point(point_complex)
     eqs_vec = coeffs @ basis # (3,)
     cy = jnp.sum(point_complex**5) + psi * jnp.prod(point_complex)
     eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 

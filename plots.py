@@ -7,7 +7,7 @@ import pickle
 import matplotlib.pyplot as plt
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
+from helper import convert_real_to_complex_batch, determine_patches_batch
 from typing import Optional
 
 def make_fitness_plots(
@@ -90,7 +90,6 @@ def make_fitness_plots(
         seed = 1230
         key = jax.random.PRNGKey(seed)
         coeffs_random = jax.random.uniform(key, (3, 25), minval=-1, maxval=1)
-        coeffs_random =  canonicalize_coeffs(coeffs_random)
         coeffs_random =  normalize_coeffs(coeffs_random)
 
         min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps)
