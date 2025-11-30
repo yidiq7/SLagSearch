@@ -39,22 +39,36 @@ GENOTYPE_SHAPE = (3, 25)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
 NUM_GENERATIONS = 400
 
-TRANSITION_GENERATION = 400
+#TRANSITION_GENERATION = 1600
+TRANSITION_GENERATION = 999999
+
+# --- Dynamic Speciation Parameters ---
+TARGET_SPECIES_COUNT_MIN = 0
+TARGET_SPECIES_COUNT_MAX = 25
+
+SPECIATION_THRESHOLD_INIT = 2.5
+SPECIATION_THRESHOLD_STEP = 0.05 # each gen *= (1 +/- step) 
+WARMUP_GENERATIONS = 300
+COOLDOWN_GENERATIONS = 10
+
+TERRITORY_BUFFER_EXPLORE = 0.5
+TERRITORY_BUFFER_EXPLOIT = 0.5
+
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
 MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
 ETA_MUTATION_EXPLORE = 10.0
 ETA_CROSSOVER_EXPLORE = 5.0
-SPECIATION_THRESHOLD_EXPLORE = 2.5
-SPECIES_SHARING_RADIUS_EXPLORE = 2.7
+#SPECIATION_THRESHOLD_EXPLORE = 2.5
+#SPECIES_SHARING_RADIUS_EXPLORE = 2.7
 
 # Exploitation Phase Settings
 TOURNEY_SIZE_EXPLOIT = 7
 MUTATION_RATE_EXPLOIT = 0.5 / NUM_GENES  # Lower rate
 ETA_MUTATION_EXPLOIT = 100.0
 ETA_CROSSOVER_EXPLOIT = 30.0
-SPECIATION_THRESHOLD_EXPLOIT = 1.5 
-SPECIES_SHARING_RADIUS_EXPLOIT = 1.7
+#SPECIATION_THRESHOLD_EXPLOIT = 1.5 
+#SPECIES_SHARING_RADIUS_EXPLOIT = 1.7
 
 # Crossover and Mutation Parameters
 CROSSOVER_RATE = 0.9
@@ -246,7 +260,7 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
     if offspring_to_generate <= 0:
         return elite_offspring
 
-    MAX_OFFSPRING_PER_SPECIES = 64 
+    MAX_OFFSPRING_PER_SPECIES = 128 
 
     if num_members < 2:
         mutation_fn = partial(polynomial_mutation, prob_mut=mutation_rate, eta=eta_mutation)
@@ -293,7 +307,7 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
     print("--- Speciation-based GA with Adaptive Schedule ---")
-    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Exploration Speciation Threshold: {SPECIATION_THRESHOLD_EXPLORE}, Exploitation Speciation Threshold: {SPECIATION_THRESHOLD_EXPLOIT}")
+    print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}")
     print(f"Switching to exploitation mode at generation {TRANSITION_GENERATION}")
 
 
@@ -311,8 +325,10 @@ if __name__ == '__main__':
 
     # --- Load from checkpoint or initialize ---
     start_gen = 0
+    cooldown_timer = COOLDOWN_GENERATIONS
     population = None
     species_list = []
+    current_speciation_threshold = SPECIATION_THRESHOLD_INIT
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     
     checkpoint_to_load = None
@@ -338,6 +354,7 @@ if __name__ == '__main__':
         start_gen = checkpoint['generation'] + 1
         key = checkpoint['key']
         species_list = checkpoint['species_list']
+        current_speciation_threshold = checkpoint.get('speciation_threshold', SPECIATION_THRESHOLD_INIT)
         population = jnp.asarray(population) # Ensure it's a JAX array
 
         # IMPORTANT: Reset the species ID counter to avoid collisions
@@ -363,21 +380,19 @@ if __name__ == '__main__':
     for gen in range(start_gen, end_gen):
         
         # --- Set parameters based on the current generation ---
-        if gen < start_gen + TRANSITION_GENERATION:
+        if gen < TRANSITION_GENERATION:
             current_tourney_size = TOURNEY_SIZE_EXPLORE
             current_eta_mutation = ETA_MUTATION_EXPLORE
             current_eta_crossover = ETA_CROSSOVER_EXPLORE
             current_mutation_rate = MUTATION_RATE_EXPLORE
-            current_speciation_threshold = SPECIATION_THRESHOLD_EXPLORE
-            current_species_sharing_radius = SPECIES_SHARING_RADIUS_EXPLORE
+            territory_buffer = TERRITORY_BUFFER_EXPLORE
             
         else:
             current_tourney_size = TOURNEY_SIZE_EXPLOIT
             current_eta_mutation = ETA_MUTATION_EXPLOIT
             current_eta_crossover = ETA_CROSSOVER_EXPLOIT
             current_mutation_rate = MUTATION_RATE_EXPLOIT
-            current_speciation_threshold = SPECIATION_THRESHOLD_EXPLOIT
-            current_species_sharing_radius = SPECIES_SHARING_RADIUS_EXPLOIT
+            territory_buffer = TERRITORY_BUFFER_EXPLOIT
             
         # 1. Calculate fitness for the entire population
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
@@ -425,6 +440,21 @@ if __name__ == '__main__':
                 species_idx = closest_species_indices[i]
                 species_list[species_idx].add_member(population[i], all_fitness_scores[i])
 
+
+        # --- Dynamic Threshold Adjustment ---
+        if gen > WARMUP_GENERATIONS: 
+            if cooldown_timer > 0:
+                cooldown_timer -= 1
+            else:
+                current_species_count = len(species_list)
+                if current_species_count < TARGET_SPECIES_COUNT_MIN:
+                    current_speciation_threshold *= 1 - SPECIATION_THRESHOLD_STEP
+                    cooldown_timer = COOLDOWN_GENERATIONS
+                elif current_species_count > TARGET_SPECIES_COUNT_MAX:
+                    current_speciation_threshold *= 1 + SPECIATION_THRESHOLD_STEP
+                    cooldown_timer = COOLDOWN_GENERATIONS
+
+
         # --- Update representatives to prevent drift ---
         for s in species_list:
             if s.members:
@@ -445,10 +475,12 @@ if __name__ == '__main__':
         dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
         species_dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(representatives, representatives)
 
+        current_territory_radius = current_speciation_threshold + territory_buffer
+
         # Step 3: Calculate niche crowding for each species
         # A species is "crowded" by another if the distance is < the sharing radius.
         # We get a boolean matrix of shape (num_species, num_species).
-        sharing_matrix = species_dist_matrix < current_species_sharing_radius
+        sharing_matrix = species_dist_matrix < current_territory_radius
         
         # The niche count is the sum of True values in each row.
         niche_counts = jnp.sum(sharing_matrix, axis=1)
@@ -509,7 +541,7 @@ if __name__ == '__main__':
 
             max_fitness = jnp.max(all_fitness_scores)
             avg_fitness = jnp.mean(all_fitness_scores)
-            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
+            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Threshold: {current_speciation_threshold:.2f} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
         
             last_log_time = current_time # Reset timer for the next interval
         # 6. Checkpointing
@@ -527,7 +559,8 @@ if __name__ == '__main__':
                 'population': population,
                 'generation': gen,
                 'key': key,
-                'species_list': species_to_save
+                'species_list': species_to_save,
+                'speciation_threshold': current_speciation_threshold
             }
             with open(checkpoint_filename, 'wb') as f:
                 pickle.dump(checkpoint_data, f)
@@ -595,5 +628,5 @@ if __name__ == '__main__':
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with_random=False, parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with_random=True, parent_folder=parent_folder)
         rank += 1
