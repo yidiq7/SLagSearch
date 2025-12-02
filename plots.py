@@ -89,7 +89,7 @@ def make_fitness_plots(
     elif compare_with_random:
         seed = 1230
         key = jax.random.PRNGKey(seed)
-        coeffs_random = jax.random.uniform(key, (3, 25), minval=-1, maxval=1)
+        coeffs_random = jax.random.uniform(key, (3, 225), minval=-1, maxval=1)
         coeffs_random =  normalize_coeffs(coeffs_random)
 
         min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps)
