@@ -620,7 +620,7 @@ if __name__ == '__main__':
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")
         print(format_array_with_commas(best_member))
-        print("Complex equations:")
+        #print("Complex equations:")
         #print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(
