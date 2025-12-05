@@ -348,7 +348,7 @@ def calculate_distance(ind1, ind2):
 
 @jax.jit
 def calculate_distance_matrix(pop1: jnp.ndarray, pop2: jnp.ndarray): -> jnp.ndarray
-    dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
-    dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(pop1, pop2) # all pop1 vs pop2
+    dist_to_reps = jax.vmap(calculate_distance, in_axes=(None, 0))
+    dist_matrix = jax.vmap(dist_to_reps, in_axes=(0, None))(pop1, pop2) # all pop1 vs pop2
     return dist_matrix
 
