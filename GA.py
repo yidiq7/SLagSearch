@@ -74,6 +74,7 @@ ETA_CROSSOVER_EXPLOIT = 30.0
 CROSSOVER_RATE = 0.9
 
 STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
+STAGNATION_SURVIVAL_RATE = 0.9  # Always keep the species as long as their fitness is above the max fitness times this rate 
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
@@ -518,7 +519,10 @@ if __name__ == '__main__':
         for s in species_list: s.update_stagnation()
         
         # Prune stale species, but keep at least one
-        species_list = [s for s in species_list if (s.generations_since_improvement < STAGNATION_THRESHOLD or len(species_list) == 1) and s.members]
+        survival_threshold = jnp.max(all_fitness_scores) * STAGNATION_SURVIVAL_RATE
+        species_list = [s for s in species_list if (
+                                s.generations_since_improvement < STAGNATION_THRESHOLD or s.best_fitness > survival_threshold)
+                                and s.members]
         
         # Ensure population size is maintained
         if len(next_generation_population) != POPULATION_SIZE:
