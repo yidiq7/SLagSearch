@@ -47,9 +47,10 @@ TARGET_SPECIES_COUNT_MIN = 0
 TARGET_SPECIES_COUNT_MAX = 25
 
 SPECIATION_THRESHOLD_INIT = 2.5
-SPECIATION_THRESHOLD_STEP = 0.05 # each gen *= (1 +/- step) 
+SPECIATION_THRESHOLD_STEP = 0.02 # each gen *= (1 +/- step) 
 WARMUP_GENERATIONS = 300
-COOLDOWN_GENERATIONS = 10
+COOLDOWN_GENERATIONS = 20
+SPECIATION_MERGE_RATIO = 0.5  # Merge if distance smaller than threshold * ratio
 
 TERRITORY_BUFFER_EXPLORE = 0.5
 TERRITORY_BUFFER_EXPLOIT = 0.5
@@ -74,7 +75,7 @@ ETA_CROSSOVER_EXPLOIT = 30.0
 CROSSOVER_RATE = 0.9
 
 STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
-STAGNATION_SURVIVAL_RATE = 0.9  # Always keep the species as long as their fitness is above the max fitness times this rate 
+STAGNATION_SURVIVAL_RATIO = 0.9  # Always keep the species as long as their fitness is above the max fitness times this rate 
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
@@ -417,10 +418,26 @@ if __name__ == '__main__':
             new_species = Species(representative=population[0])
             species_list.append(new_species)
 
+        try:
+            # Merge close species
+            species_list.sort(key=lambda s:s.best_fitness, reverse=True)
+            representatives = jnp.array([s.representative for s in species_list])
+
+            dist_matrix = calculate_distance_matrix(representatives, representatives)
+            merge_threshold = current_speciation_threshold * SPECIATION_MERGE_RATIO
+            is_close = dist_matrix < merge_threshold
+            # Always merge the lower fitness species to the higher ones
+            keep_mask = ~jnp.any(jnp.tril(is_close, k=-1), axis=1)
+
+            keep_mask_np = np.array(keep_mask) # Convert to CPU
+            species_list = [s for i, s in enumerate(species_list) if keep_mask_np[i]]
+
+        except Exception:
+            continue
+
         # Create a matrix of all species representatives
         representatives = jnp.array([s.representative for s in species_list])
-       
-        dist_matrix = calculate_distance_matrix(population, representatives) 
+        dist_matrix = calculate_distance_matrix(population, representatives)
         
         # Find the closest species index for each individual in one go
         closest_species_indices = jnp.argmin(dist_matrix, axis=1)
@@ -440,6 +457,15 @@ if __name__ == '__main__':
                 species_list[species_idx].add_member(population[i], all_fitness_scores[i])
 
 
+        # --- Update representatives to prevent drift ---
+        for s in species_list:
+            if s.members:
+                # Find the best member of the current generation
+                best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
+                # Update the representative to this new best member
+                s.representative = s.members[best_member_idx]
+
+
         # --- Dynamic Threshold Adjustment ---
         if gen > WARMUP_GENERATIONS: 
             if cooldown_timer > 0:
@@ -454,15 +480,7 @@ if __name__ == '__main__':
                     cooldown_timer = COOLDOWN_GENERATIONS
 
 
-        # --- Update representatives to prevent drift ---
-        for s in species_list:
-            if s.members:
-                # Find the best member of the current generation
-                best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
-                # Update the representative to this new best member
-                s.representative = s.members[best_member_idx]
-
-        # 3. Calculate offspring allocation
+                # 3. Calculate offspring allocation
         # --- NEW: Species-Level Fitness Sharing ---
         
         # Step 1: Calculate the raw average fitness for each species
@@ -516,7 +534,7 @@ if __name__ == '__main__':
         for s in species_list: s.update_stagnation()
         
         # Prune stale species, but keep at least one
-        survival_threshold = jnp.max(all_fitness_scores) * STAGNATION_SURVIVAL_RATE
+        survival_threshold = jnp.max(all_fitness_scores) * STAGNATION_SURVIVAL_RATIO
         species_list = [s for s in species_list if (
                                 s.generations_since_improvement < STAGNATION_THRESHOLD or s.best_fitness > survival_threshold)
                                 and s.members]

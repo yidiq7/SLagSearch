@@ -4,9 +4,7 @@ import jax.numpy as jnp
 @jax.jit
 def canonicalize_coeffs(A: jnp.ndarray) -> jnp.ndarray:
     """
-    Optimized RREF using vectorized operations.
-    """
-    #A = coeffs.astype(jnp.float32)
+    # Optimized RREF using vectorized operations.
     eps = 1e-10
     
     # Process columns one by one, tracking pivot row
@@ -67,7 +65,8 @@ def canonicalize_coeffs(A: jnp.ndarray) -> jnp.ndarray:
     (result, _), _ = jax.lax.scan(process_column, (A, 0), jnp.arange(25))
     
     return result
-
+    """
+    return A
 
 @jax.jit
 def canonicalize_coeffs_QR_decomposition(coeffs: jnp.ndarray) -> jnp.ndarray:
