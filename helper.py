@@ -341,3 +341,15 @@ def determine_patch_and_rescale_single(point_complex: jnp.ndarray) -> tuple[jnp.
     rescaled_point = point_complex / scale_factor
     
     return rescaled_point, patch_index
+
+@jax.jit
+def calculate_distance(ind1, ind2):
+    return jnp.linalg.norm(ind1.ravel() - ind2.ravel())
+
+
+@jax.jit
+def calculate_distance_matrix(pop1: jnp.ndarray, pop2: jnp.ndarray): -> jnp.ndarray
+    dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
+    dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(pop1, pop2) # all pop1 vs pop2
+    return dist_matrix
+
