@@ -37,7 +37,7 @@ METRIC = 'k4_fermat'
 POPULATION_SIZE = 800
 GENOTYPE_SHAPE = (3, 225)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 400
+NUM_GENERATIONS = 100 
 
 #TRANSITION_GENERATION = 1600
 TRANSITION_GENERATION = 999999
@@ -78,8 +78,8 @@ STAGNATION_SURVIVAL_RATE = 0.9  # Always keep the species as long as their fitne
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
 
 # Batching for Fitness Evaluation
-FITNESS_MINI_BATCH_SIZE = 50
-LOG_INTERVAL = 10
+FITNESS_MINI_BATCH_SIZE = 25
+LOG_INTERVAL = 1
 
 # Checkpointing
 CHECKPOINT_DIR = 'checkpoints'
@@ -624,8 +624,8 @@ if __name__ == '__main__':
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")
         print(format_array_with_commas(best_member))
-        print("Complex equations:")
-        print(combine_to_complex_equations(get_basis_labels(), best_member))
+        #print("Complex equations:")
+        #print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(
             f'plots_slag_{args.job_id}', 
