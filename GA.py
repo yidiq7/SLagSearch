@@ -12,7 +12,7 @@ import re
 import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs, format_array_with_commas
+from helper import canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
@@ -419,10 +419,8 @@ if __name__ == '__main__':
 
         # Create a matrix of all species representatives
         representatives = jnp.array([s.representative for s in species_list])
-        
-        # Create a vectorized distance function
-        dist_to_reps = vmap(calculate_distance, in_axes=(None, 0)) # ind vs all reps
-        dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(population, representatives) # all inds vs all reps
+       
+        dist_matrix = calculate_distance_matrix(population, representatives) 
         
         # Find the closest species index for each individual in one go
         closest_species_indices = jnp.argmin(dist_matrix, axis=1)
@@ -473,8 +471,7 @@ if __name__ == '__main__':
         # Step 2: Calculate distances between all species representatives
         # We already have the 'representatives' array from the speciation step.
         representatives = jnp.array([s.representative for s in species_list])
-        dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
-        species_dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(representatives, representatives)
+        species_dist_matrix = calculate_distance_matrix(representatives, representatives)
 
         current_territory_radius = current_speciation_threshold + territory_buffer
 
@@ -594,9 +591,7 @@ if __name__ == '__main__':
     
     if species_list:
         representatives = jnp.array([s.representative for s in species_list])
-        
-        dist_to_reps = vmap(calculate_distance, in_axes=(None, 0))
-        dist_matrix = vmap(dist_to_reps, in_axes=(0, None))(population, representatives)
+        dist_matrix = calculate_distance_matrix(population, representatives)
         
         closest_species_indices = jnp.argmin(dist_matrix, axis=1)
 
