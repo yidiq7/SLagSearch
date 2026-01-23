@@ -456,6 +456,22 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
 
     return fitness
 
+@jax.jit
+def compute_special_condition_fitness_smooth(phases: jnp.array) -> jnp.float32:
+    """
+    Calculates a differentiable fitness based on the Kuramoto order parameter.
+    Measures phase coherence/clustering.
+    
+    Returns:
+        Scalar value in [0, 1]. 
+        1.0 = perfectly identical phases (max concentration)
+        0.0 = uniform distribution
+    """
+    # Calculate the complex order parameter R = |mean(e^(i*theta))|
+    # This is fully differentiable.
+    order_parameter = jnp.abs(jnp.mean(jnp.exp(1j * phases)))
+    return order_parameter
+
 vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
