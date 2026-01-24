@@ -52,8 +52,12 @@ def compute_loss(
 
     # 2. Compute Fitness Components
     from helper import convert_real_to_complex_batch, determine_patches_batch
-    from find_smooth_submanifold import vmap_compute_affine_jacobian, vmap_compute_restriction
-    from slag_condition import compute_kahler_form_unrestricted, compute_holomorphic_form_restricted
+    from slag_condition import (
+        vmap_compute_affine_jacobian, 
+        vmap_compute_restriction,
+        compute_kahler_form_unrestricted, 
+        compute_holomorphic_form_restricted
+    )
 
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set) 
