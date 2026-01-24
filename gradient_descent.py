@@ -23,11 +23,16 @@ CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_
 METRIC = 'k4_fermat'
 
 # Optimization Parameters
-LEARNING_RATE = 0.001 # Adam handles scale, so standard LR is fine
-NUM_STEPS = 40
+LEARNING_RATE = 0.001 
+NUM_STEPS = 1000
 MINSET_SIZE = 10000
 NEWTON_STEPS = 100
 MINE_INTERVAL = 20 
+
+def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
+    """Standard Euclidean normalization for optimization stability."""
+    norms = jnp.linalg.norm(coeffs, axis=1, keepdims=True)
+    return coeffs / (norms + 1e-9)
 
 # -----------------------------------------------------------------------------
 # SIMPLIFIED NEWTON SOLVER
@@ -216,6 +221,7 @@ def main():
         # --- Tangent Projection (Crucial for Spherical Optimization) ---
         # Ensure gradient effectively only moves coeffs along the sphere surface
         dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
+        radial_mag = jnp.mean(jnp.abs(dot_prods))
         grads = grads - dot_prods * coeffs
         
         updates, opt_state = optimizer.update(grads, opt_state, coeffs)
@@ -226,7 +232,7 @@ def main():
         
         epoch_time = time.time() - start_time
         grad_norm = jnp.linalg.norm(grads)
-        print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | GNorm: {grad_norm:.2e} | Time: {epoch_time:.2f}s")
+        print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | GNorm: {grad_norm:.2e} | Rad: {radial_mag:.2e} | Time: {epoch_time:.2f}s")
 
     print("\nOptimization Complete.")
     print("Final Coefficients:")
