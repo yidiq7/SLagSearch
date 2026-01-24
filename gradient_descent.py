@@ -6,12 +6,13 @@ import time
 import argparse
 import os
 from functools import partial
+import optax # Restore Optax
 
 from find_smooth_submanifold import compute_distances_batched, normalize_coeffs, evaluate_equations_single_point, compute_affine_jacobian, convert_real_to_complex_single, determine_patch_and_rescale_single, convert_complex_to_real_single, PATCH_ACTIVE_INDICES
 from slag_condition import compute_combined_fitness, compute_special_condition_fitness_smooth
 from helper import canonicalize_coeffs
 
-# Enable 64-bit precision
+# Enable 64-bit precision (Critical for stability)
 jax.config.update("jax_enable_x64", True)
 
 # -----------------------------------------------------------------------------
@@ -21,17 +22,15 @@ PSI = 0
 CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
 METRIC = 'k4_fermat'
 
-# SGD Parameters
-LEARNING_RATE = 0.0005 # Reduced for stability
-MOMENTUM = 0.9
-NUM_STEPS = 500
+# Optimization Parameters
+LEARNING_RATE = 0.001 # Adam handles scale, so standard LR is fine
+NUM_STEPS = 40
 MINSET_SIZE = 10000
 NEWTON_STEPS = 100
 MINE_INTERVAL = 20 
-MAX_GRAD_NORM = 1.0 # Gradient clipping threshold
 
 # -----------------------------------------------------------------------------
-# SIMPLIFIED NEWTON SOLVER (AD-Friendly)
+# SIMPLIFIED NEWTON SOLVER
 # -----------------------------------------------------------------------------
 def refine_point_iterative_simple(
     p_10d_init: jnp.ndarray,
@@ -39,13 +38,8 @@ def refine_point_iterative_simple(
     psi: jnp.ndarray,
     n_steps: int
 ) -> jnp.ndarray:
-    """
-    Simplified Newton solver without backtracking line search.
-    Fixed step size alpha=1.0 (or smaller) to ensure stable gradients.
-    """
-    # Use fixed alpha. 1.0 is standard Newton. 0.5 is safer.
-    alpha = 1.0 
     
+    alpha = 1.0 
     p_complex_init = convert_real_to_complex_single(p_10d_init)
     _, patch_index_init = determine_patch_and_rescale_single(p_complex_init)
     init_state = (p_10d_init, patch_index_init)
@@ -54,20 +48,17 @@ def refine_point_iterative_simple(
         p_10d, patch_index = state
         active_indices = PATCH_ACTIVE_INDICES[patch_index]
 
-        # Compute Newton step
         f_vec = evaluate_equations_single_point(p_10d, coeffs, psi)
         J = compute_affine_jacobian(p_10d, patch_index, coeffs, psi)
         
-        # Increased regularization for stability
-        JJT = J @ J.T + 1e-5 * jnp.eye(J.shape[0])
+        # Lower regularization now that we have x64
+        JJT = J @ J.T + 1e-8 * jnp.eye(J.shape[0])
         
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
 
-        # Simple update (No backtracking)
         p_10d = p_10d.at[active_indices].add(alpha * delta_p_active)
 
-        # Rescale
         p_complex = convert_real_to_complex_single(p_10d)
         p_complex_rescaled, patch_index = determine_patch_and_rescale_single(p_complex)
         p_10d_rescaled = convert_complex_to_real_single(p_complex_rescaled) 
@@ -118,27 +109,43 @@ def compute_loss_on_fixed_points(
     patch_indices = determine_patches_batch(min_set) 
 
     jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
+    restrictions = vmap_compute_restriction(jacobians)
+
+    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
+
+    # Lagrangian Loss
+    kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restrictions, restrictions)
+    frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
+    normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
     
-    # --- DUMMY LOSS TEST ---
-    # Testing if Newton solver gradients are stable.
-    # restrictions = vmap_compute_restriction(jacobians)
-    # kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
+    norms_normalized = frobenius_norms / (normalization_factor + 1e-9)
     
-    # Simple dummy loss: push points to have smaller norm (meaningless on CP4 but differentiable)
-    dummy_loss = jnp.mean(jnp.abs(min_set))
+    # Use sorting again to be robust to outliers
+    sorted_norms = jnp.sort(norms_normalized)
+    cutoff_index = int(sorted_norms.shape[0] * 0.99)
+    norms_cut = sorted_norms[:cutoff_index]
     
-    total_loss = dummy_loss
+    lagrangian_loss = jnp.mean(norms_cut)
+
+    # Special Loss
+    phases = compute_holomorphic_form_restricted(
+        min_set, patch_indices, restrictions, phase_only=True
+    )
+    order_parameter = compute_special_condition_fitness_smooth(phases)
+    special_loss = 1.0 - order_parameter
     
-    # Return dummy values for aux
-    return total_loss, (dummy_loss, 0.0)
+    # Combine both
+    total_loss = lagrangian_loss + special_loss
+    
+    return total_loss, (lagrangian_loss, special_loss)
 
 loss_value_and_grad = jax.jit(jax.value_and_grad(compute_loss_on_fixed_points, argnums=0, has_aux=True), static_argnames=('n_refine_steps', 'metric'))
 
 # -----------------------------------------------------------------------------
-# 4. MAIN LOOP (Manual SGD + Tangent Projection)
+# 4. MAIN LOOP (Adam)
 # -----------------------------------------------------------------------------
 def main():
-    print("--- Manual SGD with Tangent Projection ---")
+    print("--- Hybrid Mining-Adam Optimization (Stable) ---")
     
     # Load Data
     try:
@@ -159,8 +166,9 @@ def main():
     coeffs = jax.random.uniform(key, (3, 25), minval=-1.0, maxval=1.0)
     coeffs = normalize_coeffs(coeffs)
     
-    # Init Momentum Buffer
-    velocity = jnp.zeros_like(coeffs)
+    # Init Optimizer
+    optimizer = optax.adam(learning_rate=LEARNING_RATE)
+    opt_state = optimizer.init(coeffs)
 
     print(f"Starting {NUM_STEPS} steps (Re-mining every {MINE_INTERVAL} steps)...")
     
@@ -182,24 +190,19 @@ def main():
             coeffs, current_batch, PSI, NEWTON_STEPS, METRIC
         )
         
-        # --- Gradient Clipping ---
-        grad_norm = jnp.linalg.norm(grads)
-        if grad_norm > MAX_GRAD_NORM:
-            grads = grads * (MAX_GRAD_NORM / grad_norm)
-            
-        # --- Tangent Projection ---
-        dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
-        grads_tangent = grads - dot_prods * coeffs
+        # We don't need manual clipping with Adam usually, but let's be safe against infs
+        # Replace infs/nans with zero in gradients
+        grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
         
-        # --- SGD Update with Momentum ---
-        velocity = MOMENTUM * velocity + grads_tangent
-        coeffs = coeffs - LEARNING_RATE * velocity
+        updates, opt_state = optimizer.update(grads, opt_state, coeffs)
+        coeffs = optax.apply_updates(coeffs, updates)
         
         # Renormalize to stay on sphere
         coeffs = normalize_coeffs(coeffs)
         
         epoch_time = time.time() - start_time
-        print(f"Step {step+1:4d} | Loss: {loss_val:.6f} | GNorm: {grad_norm:.4f} | Lag: {lag_loss:.6f} | Time: {epoch_time:.2f}s")
+        grad_norm = jnp.linalg.norm(grads)
+        print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | GNorm: {grad_norm:.2e} | Time: {epoch_time:.2f}s")
 
     print("\nOptimization Complete.")
     print("Final Coefficients:")
