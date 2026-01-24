@@ -145,24 +145,43 @@ loss_value_and_grad = jax.jit(jax.value_and_grad(compute_loss_on_fixed_points, a
 # 4. MAIN LOOP (Adam)
 # -----------------------------------------------------------------------------
 def main():
-    print("--- Hybrid Mining-Adam Optimization (Stable) ---")
+    parser = argparse.ArgumentParser(description="Gradient Descent for sLag Search")
+    parser.add_argument("--psi", type=int, default=0, help="PSI parameter")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning Rate")
+    parser.add_argument("--steps", type=int, default=1000, help="Number of optimization steps")
+    parser.add_argument("--job_id", type=str, default="0", help="Job ID for saving results")
+    args = parser.parse_args()
+
+    PSI = args.psi
+    LEARNING_RATE = args.lr
+    NUM_STEPS = args.steps
+    
+    print(f"--- Hybrid Mining-Adam Optimization (Stable) ---")
+    print(f"PSI: {PSI}, LR: {LEARNING_RATE}, Steps: {NUM_STEPS}")
+    
+    # Update global PSI if needed, or pass it down. 
+    # Since PSI is used in mine_indices and loss, we should pass it.
+    # The global constant PSI was used in main() before. We update it here for the main scope.
     
     # Load Data
+    # Note: Using the global variable name for file path which depends on PSI
+    cypoints_file = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
+    
     try:
-        with open(CYPOINTSFILE, 'rb') as f:
+        with open(cypoints_file, 'rb') as f:
             points_real = np.asarray(pickle.load(f))
         points_real = np.concatenate([np.real(points_real), np.imag(points_real)], axis=1)
         points_real = jax.device_put(jnp.asarray(points_real))
-        print(f"Loaded {len(points_real)} points.")
+        print(f"Loaded {len(points_real)} points from {cypoints_file}.")
     except FileNotFoundError:
-        print("Using random points.")
+        print(f"Warning: Data file {cypoints_file} not found. Using random points.")
         key = jax.random.PRNGKey(0)
         random_complex = jax.random.normal(key, (100000, 5), dtype=jnp.complex64)
         random_complex = random_complex / jnp.linalg.norm(random_complex, axis=1, keepdims=True)
         points_real = jnp.concatenate([jnp.real(random_complex), jnp.imag(random_complex)], axis=1)
 
     # Init Coeffs (New Seed)
-    key = jax.random.PRNGKey(123) 
+    key = jax.random.PRNGKey(int(args.job_id) if args.job_id.isdigit() else 42) 
     coeffs = jax.random.uniform(key, (3, 25), minval=-1.0, maxval=1.0)
     coeffs = normalize_coeffs(coeffs)
     
@@ -193,6 +212,11 @@ def main():
         # We don't need manual clipping with Adam usually, but let's be safe against infs
         # Replace infs/nans with zero in gradients
         grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # --- Tangent Projection (Crucial for Spherical Optimization) ---
+        # Ensure gradient effectively only moves coeffs along the sphere surface
+        dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
+        grads = grads - dot_prods * coeffs
         
         updates, opt_state = optimizer.update(grads, opt_state, coeffs)
         coeffs = optax.apply_updates(coeffs, updates)
