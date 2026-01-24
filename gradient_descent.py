@@ -11,7 +11,21 @@ from find_smooth_submanifold import compute_distances_batched, normalize_coeffs,
 from slag_condition import compute_combined_fitness, compute_special_condition_fitness_smooth
 from helper import canonicalize_coeffs
 
-# ... (Configuration remains the same) ...
+# -----------------------------------------------------------------------------
+# 1. CONFIGURATION
+# -----------------------------------------------------------------------------
+PSI = 0
+CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
+METRIC = 'k4_fermat'
+
+# SGD Parameters
+LEARNING_RATE = 0.0005 # Reduced for stability
+MOMENTUM = 0.9
+NUM_STEPS = 500
+MINSET_SIZE = 10000
+NEWTON_STEPS = 100
+MINE_INTERVAL = 20 
+MAX_GRAD_NORM = 1.0 # Gradient clipping threshold
 
 # -----------------------------------------------------------------------------
 # SIMPLIFIED NEWTON SOLVER (AD-Friendly)
@@ -63,7 +77,16 @@ def refine_point_iterative_simple(
 # -----------------------------------------------------------------------------
 # 2. MINING STEP
 # -----------------------------------------------------------------------------
-# ... (Mine indices remains the same) ...
+@partial(jax.jit, static_argnames=('k',))
+def mine_indices(
+    coeffs: jnp.ndarray,
+    points_real: jnp.ndarray,
+    psi: jnp.ndarray,
+    k: int
+) -> jnp.ndarray:
+    all_distances = compute_distances_batched(points_real, coeffs, psi)
+    best_indices = jnp.argsort(all_distances)[:k]
+    return best_indices
 
 # -----------------------------------------------------------------------------
 # 3. LOSS FUNCTION
