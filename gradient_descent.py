@@ -11,6 +11,9 @@ from find_smooth_submanifold import compute_distances_batched, normalize_coeffs,
 from slag_condition import compute_combined_fitness, compute_special_condition_fitness_smooth
 from helper import canonicalize_coeffs
 
+# Enable 64-bit precision
+jax.config.update("jax_enable_x64", True)
+
 # -----------------------------------------------------------------------------
 # 1. CONFIGURATION
 # -----------------------------------------------------------------------------
