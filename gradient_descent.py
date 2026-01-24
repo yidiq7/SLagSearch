@@ -22,12 +22,13 @@ CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_
 METRIC = 'k4_fermat'
 
 # SGD Parameters
-LEARNING_RATE = 0.005 # Moderate learning rate for SGD
+LEARNING_RATE = 0.0005 # Reduced for stability
 MOMENTUM = 0.9
 NUM_STEPS = 500
 MINSET_SIZE = 10000
 NEWTON_STEPS = 100
 MINE_INTERVAL = 20 
+MAX_GRAD_NORM = 1.0 # Gradient clipping threshold
 
 # -----------------------------------------------------------------------------
 # 2. MINING STEP
@@ -147,14 +148,12 @@ def main():
             coeffs, current_batch, PSI, NEWTON_STEPS, METRIC
         )
         
+        # --- Gradient Clipping ---
+        grad_norm = jnp.linalg.norm(grads)
+        if grad_norm > MAX_GRAD_NORM:
+            grads = grads * (MAX_GRAD_NORM / grad_norm)
+            
         # --- Tangent Projection ---
-        # Project gradient onto the tangent space of the coefficient sphere
-        # g_tan = g - (g . c) * c  (assuming c is unit norm)
-        # Note: coeffs is (3, 25). Normalization is row-wise?
-        # normalize_coeffs in `find_smooth_submanifold` normalizes ROWS.
-        # So we project row-wise.
-        
-        # Dot product per row: (3, 1)
         dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
         grads_tangent = grads - dot_prods * coeffs
         
@@ -166,7 +165,7 @@ def main():
         coeffs = normalize_coeffs(coeffs)
         
         epoch_time = time.time() - start_time
-        print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | Time: {epoch_time:.2f}s")
+        print(f"Step {step+1:4d} | Loss: {loss_val:.6f} | GNorm: {grad_norm:.4f} | Lag: {lag_loss:.6f} | Time: {epoch_time:.2f}s")
 
     print("\nOptimization Complete.")
     print("Final Coefficients:")
