@@ -77,14 +77,9 @@ def compute_loss_on_fixed_points(
     # Lagrangian Loss
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restrictions, restrictions)
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
-    normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-    norms_normalized = frobenius_norms / (normalization_factor + 1e-9)
     
-    sorted_norms = jnp.sort(norms_normalized)
-    cutoff_index = int(sorted_norms.shape[0] * 0.99)
-    norms_cut = sorted_norms[:cutoff_index]
-    
-    lagrangian_loss = jnp.mean(norms_cut)
+    # SIMPLIFIED DEBUG LOSS: Just mean norm. No division, no sorting.
+    lagrangian_loss = jnp.mean(frobenius_norms)
 
     # Special Loss
     phases = compute_holomorphic_form_restricted(
