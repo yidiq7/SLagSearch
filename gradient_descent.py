@@ -180,9 +180,16 @@ def main():
         random_complex = random_complex / jnp.linalg.norm(random_complex, axis=1, keepdims=True)
         points_real = jnp.concatenate([jnp.real(random_complex), jnp.imag(random_complex)], axis=1)
 
-    # Init Coeffs (New Seed)
-    key = jax.random.PRNGKey(int(args.job_id) if args.job_id.isdigit() else 42) 
-    coeffs = jax.random.uniform(key, (3, 25), minval=-1.0, maxval=1.0)
+    # Init Coeffs (Explicit Initialization)
+    # key = jax.random.PRNGKey(int(args.job_id) if args.job_id.isdigit() else 42) 
+    # coeffs = jax.random.uniform(key, (3, 25), minval=-1.0, maxval=1.0)
+    
+    coeffs_init = np.array([
+        [0.0025219726376235485, 0.0, 0.0, -0.08686183393001556, -0.02574935182929039, 0.49281060695648193, 0.1484731286764145, -0.24019324779510498, 0.61200350522995, 0.5428056716918945, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.001420305809006095, 0.0, -0.0856453999876976, -0.049294039607048035, 0.4915770888328552, 0.14858689904212952, -0.2377711832523346, 0.5984134674072266, 0.5584561228752136, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.007958698086440563, 0.07783487439155579, 0.04338883236050606, -0.4836330711841583, 0.00038171466439962387, 0.15793439745903015, -0.6161141395568848, -0.5946048498153687, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ])
+    coeffs = jnp.array(coeffs_init, dtype=jnp.float64) # Ensure x64
     coeffs = normalize_coeffs(coeffs)
     
     # Init Optimizer
