@@ -7,9 +7,6 @@ import argparse
 import os
 from functools import partial
 
-# We remove optax for this manual SGD test
-# import optax 
-
 from find_smooth_submanifold import refine_point_iterative, compute_distances_batched, normalize_coeffs
 from slag_condition import compute_combined_fitness, compute_special_condition_fitness_smooth
 from helper import canonicalize_coeffs
@@ -78,7 +75,7 @@ def compute_loss_on_fixed_points(
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restrictions, restrictions)
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     
-    # SIMPLIFIED DEBUG LOSS: Just mean norm. No division, no sorting.
+    # SIMPLIFIED LOSS: Mean Frobenius Norm (No Division)
     lagrangian_loss = jnp.mean(frobenius_norms)
 
     # Special Loss
