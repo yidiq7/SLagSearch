@@ -6,7 +6,9 @@ import time
 import argparse
 import os
 from functools import partial
-import optax
+
+# We remove optax for this manual SGD test
+# import optax 
 
 from find_smooth_submanifold import refine_point_iterative, compute_distances_batched, normalize_coeffs
 from slag_condition import compute_combined_fitness, compute_special_condition_fitness_smooth
@@ -19,16 +21,16 @@ PSI = 0
 CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
 METRIC = 'k4_fermat'
 
-LEARNING_RATE = 0.001
-NUM_STEPS = 1000
+# SGD Parameters
+LEARNING_RATE = 0.005 # Moderate learning rate for SGD
+MOMENTUM = 0.9
+NUM_STEPS = 500
 MINSET_SIZE = 10000
-NEWTON_STEPS = 40
-
-# Re-mining frequency: How often to pick a new set of points
+NEWTON_STEPS = 100
 MINE_INTERVAL = 20 
 
 # -----------------------------------------------------------------------------
-# 2. MINING STEP (Non-Differentiable Selection)
+# 2. MINING STEP
 # -----------------------------------------------------------------------------
 @partial(jax.jit, static_argnames=('k',))
 def mine_indices(
@@ -37,45 +39,24 @@ def mine_indices(
     psi: jnp.ndarray,
     k: int
 ) -> jnp.ndarray:
-    """
-    Finds the indices of the k points closest to the manifold defined by coeffs.
-    This step is NOT differentiable and is run periodically.
-    """
-    # Compute initial distances to the current manifold guess
     all_distances = compute_distances_batched(points_real, coeffs, psi)
-    
-    # Select best k points
-    # We select 2*k and refine them, then pick best k?
-    # Or just pick best k initial candidates?
-    # Let's mirror the original logic: Pick best 2*k, refine once, then pick best k.
-    # But for speed in the loop, let's just pick the best K initial candidates for now.
-    # If the points are already somewhat close, this is fine.
     best_indices = jnp.argsort(all_distances)[:k]
-    
     return best_indices
 
 # -----------------------------------------------------------------------------
-# 3. LOSS FUNCTION (Differentiable on FIXED indices)
+# 3. LOSS FUNCTION
 # -----------------------------------------------------------------------------
 def compute_loss_on_fixed_points(
     coeffs: jnp.ndarray,
-    fixed_points_real: jnp.ndarray, # These are the points selected by the miner
+    fixed_points_real: jnp.ndarray,
     psi: jnp.ndarray,
     n_refine_steps: int,
     metric: str
 ) -> tuple[jnp.float32, tuple[jnp.float32, jnp.float32]]:
     
-    # 1. Refine the FIXED set of points
-    # This refinement IS differentiable.
-    refine_fn = partial(
-        refine_point_iterative,
-        coeffs=coeffs,
-        psi=psi,
-        n_steps=n_refine_steps
-    )
+    refine_fn = partial(refine_point_iterative, coeffs=coeffs, psi=psi, n_steps=n_refine_steps)
     min_set_real = jax.vmap(refine_fn)(fixed_points_real)
 
-    # 2. Compute Fitness
     from helper import convert_real_to_complex_batch, determine_patches_batch
     from slag_condition import (
         vmap_compute_affine_jacobian, 
@@ -92,11 +73,10 @@ def compute_loss_on_fixed_points(
 
     kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
 
-    # --- Lagrangian Loss ---
+    # Lagrangian Loss
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restrictions, restrictions)
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-    
     norms_normalized = frobenius_norms / (normalization_factor + 1e-9)
     
     sorted_norms = jnp.sort(norms_normalized)
@@ -105,25 +85,25 @@ def compute_loss_on_fixed_points(
     
     lagrangian_loss = jnp.mean(norms_cut)
 
-    # --- Special Loss ---
+    # Special Loss
     phases = compute_holomorphic_form_restricted(
         min_set, patch_indices, restrictions, phase_only=True
     )
     order_parameter = compute_special_condition_fitness_smooth(phases)
     special_loss = 1.0 - order_parameter
     
-    total_loss = lagrangian_loss + special_loss
+    # DEBUG: Using ONLY Lagrangian loss
+    total_loss = lagrangian_loss
     
     return total_loss, (lagrangian_loss, special_loss)
 
 loss_value_and_grad = jax.jit(jax.value_and_grad(compute_loss_on_fixed_points, argnums=0, has_aux=True), static_argnames=('n_refine_steps', 'metric'))
 
-
 # -----------------------------------------------------------------------------
-# 4. MAIN LOOP
+# 4. MAIN LOOP (Manual SGD + Tangent Projection)
 # -----------------------------------------------------------------------------
 def main():
-    print("--- Hybrid Mining-Adam Optimization ---")
+    print("--- Manual SGD with Tangent Projection ---")
     
     # Load Data
     try:
@@ -139,14 +119,13 @@ def main():
         random_complex = random_complex / jnp.linalg.norm(random_complex, axis=1, keepdims=True)
         points_real = jnp.concatenate([jnp.real(random_complex), jnp.imag(random_complex)], axis=1)
 
-    # Init Coeffs
-    key = jax.random.PRNGKey(42)
+    # Init Coeffs (New Seed)
+    key = jax.random.PRNGKey(123) 
     coeffs = jax.random.uniform(key, (3, 25), minval=-1.0, maxval=1.0)
-    coeffs = normalize_coeffs(coeffs) # Removed RREF as requested
+    coeffs = normalize_coeffs(coeffs)
     
-    # Init Optimizer
-    optimizer = optax.adam(learning_rate=LEARNING_RATE)
-    opt_state = optimizer.init(coeffs)
+    # Init Momentum Buffer
+    velocity = jnp.zeros_like(coeffs)
 
     print(f"Starting {NUM_STEPS} steps (Re-mining every {MINE_INTERVAL} steps)...")
     
@@ -155,28 +134,38 @@ def main():
     for step in range(NUM_STEPS):
         start_time = time.time()
         
-        # --- PHASE 1: MINING (Every N steps) ---
+        # Mining
         if step % MINE_INTERVAL == 0:
             mine_start = time.time()
-            # Find the best indices for the CURRENT coefficients
             active_indices = mine_indices(coeffs, points_real, PSI, MINSET_SIZE)
-            # Freeze the actual coordinate values of these points to be used for the next N steps
             current_batch = points_real[active_indices]
             mine_time = time.time() - mine_start
             print(f"  [Mining] Selected new {MINSET_SIZE} points in {mine_time:.2f}s")
             
-        # --- PHASE 2: TRAINING (Every step) ---
-        # Optimize coeffs to better fit the CURRENT BATCH
+        # Training
         (loss_val, (lag_loss, spec_loss)), grads = loss_value_and_grad(
             coeffs, current_batch, PSI, NEWTON_STEPS, METRIC
         )
         
-        updates, opt_state = optimizer.update(grads, opt_state, coeffs)
-        coeffs = optax.apply_updates(coeffs, updates)
+        # --- Tangent Projection ---
+        # Project gradient onto the tangent space of the coefficient sphere
+        # g_tan = g - (g . c) * c  (assuming c is unit norm)
+        # Note: coeffs is (3, 25). Normalization is row-wise?
+        # normalize_coeffs in `find_smooth_submanifold` normalizes ROWS.
+        # So we project row-wise.
+        
+        # Dot product per row: (3, 1)
+        dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
+        grads_tangent = grads - dot_prods * coeffs
+        
+        # --- SGD Update with Momentum ---
+        velocity = MOMENTUM * velocity + grads_tangent
+        coeffs = coeffs - LEARNING_RATE * velocity
+        
+        # Renormalize to stay on sphere
         coeffs = normalize_coeffs(coeffs)
         
         epoch_time = time.time() - start_time
-        
         print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | Time: {epoch_time:.2f}s")
 
     print("\nOptimization Complete.")
