@@ -67,28 +67,19 @@ def compute_loss_on_fixed_points(
     patch_indices = determine_patches_batch(min_set) 
 
     jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
-    restrictions = vmap_compute_restriction(jacobians)
-
-    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
-
-    # Lagrangian Loss
-    kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restrictions, restrictions)
-    frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     
-    # SIMPLIFIED LOSS: Mean Frobenius Norm (No Division)
-    lagrangian_loss = jnp.mean(frobenius_norms)
-
-    # Special Loss
-    phases = compute_holomorphic_form_restricted(
-        min_set, patch_indices, restrictions, phase_only=True
-    )
-    order_parameter = compute_special_condition_fitness_smooth(phases)
-    special_loss = 1.0 - order_parameter
+    # --- DUMMY LOSS TEST ---
+    # Testing if Newton solver gradients are stable.
+    # restrictions = vmap_compute_restriction(jacobians)
+    # kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
     
-    # DEBUG: Using ONLY Lagrangian loss
-    total_loss = lagrangian_loss
+    # Simple dummy loss: push points to have smaller norm (meaningless on CP4 but differentiable)
+    dummy_loss = jnp.mean(jnp.abs(min_set))
     
-    return total_loss, (lagrangian_loss, special_loss)
+    total_loss = dummy_loss
+    
+    # Return dummy values for aux
+    return total_loss, (dummy_loss, 0.0)
 
 loss_value_and_grad = jax.jit(jax.value_and_grad(compute_loss_on_fixed_points, argnums=0, has_aux=True), static_argnames=('n_refine_steps', 'metric'))
 
