@@ -27,12 +27,7 @@ LEARNING_RATE = 0.001
 NUM_STEPS = 1000
 MINSET_SIZE = 10000
 NEWTON_STEPS = 100
-MINE_INTERVAL = 20 
-
-def normalize_coeffs(coeffs: jnp.ndarray) -> jnp.ndarray:
-    """Standard Euclidean normalization for optimization stability."""
-    norms = jnp.linalg.norm(coeffs, axis=1, keepdims=True)
-    return coeffs / (norms + 1e-9)
+MINE_INTERVAL = 10000 # Disable re-mining for this test
 
 # -----------------------------------------------------------------------------
 # SIMPLIFIED NEWTON SOLVER
