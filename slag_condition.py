@@ -486,7 +486,7 @@ def compute_combined_fitness(
         kahler_form_unrestricted, restrictions, k=10
     )
 
-    phases, phase_Omega, phase_restriction = compute_holomorphic_form_restricted(
+    phases = compute_holomorphic_form_restricted(
         min_set, patch_indices, psi, restrictions, phase_only=True
     )
 
@@ -505,6 +505,6 @@ def compute_combined_fitness(
         #kahler_form_restricted_normalized = kahler_form_restricted 
         #kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
         #return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_unrestricted, restrictions, phases
-        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restrictions, phases, phase_Omega, phase_restriction
+        return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restrictions, phases
     else:
         return combined_fitness
