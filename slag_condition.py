@@ -385,14 +385,11 @@ def compute_holomorphic_form_restricted(
     Omega_restriction = compute_Omega_restriction(restriction, Omega_coord)
     
     if phase_only:
-        phase_Omega= jnp.angle(Omega)
-        phase_restriction = jnp.angle(Omega_restriction)
-        phase = phase_Omega + phase_restriction
-        
+        phase = jnp.angle(Omega * Omega_restriction)
         # Normalize to [0, 2π)
         phase = phase % (2 * jnp.pi)
-        
-        return phase, phase_Omega, phase_restriction
+
+        return phase
     else:
         print("Warning: There is a scaling factor in Omega_restriction, "
             "which does not affect the phase but the actual Omega might be wrong. "
