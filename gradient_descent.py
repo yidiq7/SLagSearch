@@ -8,26 +8,21 @@ import os
 from functools import partial
 import optax # Restore Optax
 
-from find_smooth_submanifold import compute_distances_batched, normalize_coeffs, evaluate_equations_single_point, compute_affine_jacobian, convert_real_to_complex_single, determine_patch_and_rescale_single, convert_complex_to_real_single, PATCH_ACTIVE_INDICES
-from slag_condition import compute_combined_fitness, compute_special_condition_fitness_smooth
-from helper import canonicalize_coeffs
+from find_smooth_submanifold import compute_distances_batched, evaluate_equations_single_point, compute_affine_jacobian, PATCH_ACTIVE_INDICES, filter_and_refine, normalize_coeffs
 
+from helper import canonicalize_coeffs, convert_real_to_complex_single, convert_complex_to_real_single, determine_patch_and_rescale_single, convert_real_to_complex_batch, determine_patches_batch, format_array_with_commas
+
+from slag_condition import (
+    vmap_compute_affine_jacobian, 
+    vmap_compute_restriction,
+    compute_kahler_form_unrestricted, 
+    compute_holomorphic_form_restricted,
+    compute_special_condition_fitness_smooth
+    )
+
+ 
 # Enable 64-bit precision (Critical for stability)
 jax.config.update("jax_enable_x64", True)
-
-# -----------------------------------------------------------------------------
-# 1. CONFIGURATION
-# -----------------------------------------------------------------------------
-PSI = 0
-CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
-METRIC = 'k4_fermat'
-
-# Optimization Parameters
-LEARNING_RATE = 0.001 
-NUM_STEPS = 1000
-MINSET_SIZE = 10000
-NEWTON_STEPS = 100
-MINE_INTERVAL = 20 # Disable re-mining for this test
 
 # -----------------------------------------------------------------------------
 # SIMPLIFIED NEWTON SOLVER
@@ -87,7 +82,7 @@ def mine_indices(
 # -----------------------------------------------------------------------------
 def compute_loss_on_fixed_points(
     coeffs: jnp.ndarray,
-    fixed_points_real: jnp.ndarray,
+    min_set_real: jnp.ndarray,
     psi: jnp.ndarray,
     n_refine_steps: int,
     metric: str
@@ -95,15 +90,7 @@ def compute_loss_on_fixed_points(
     
     # Use the SIMPLIFIED solver
     refine_fn = partial(refine_point_iterative_simple, coeffs=coeffs, psi=psi, n_steps=n_refine_steps)
-    min_set_real = jax.vmap(refine_fn)(fixed_points_real)
-
-    from helper import convert_real_to_complex_batch, determine_patches_batch
-    from slag_condition import (
-        vmap_compute_affine_jacobian, 
-        vmap_compute_restriction,
-        compute_kahler_form_unrestricted, 
-        compute_holomorphic_form_restricted
-    )
+    min_set_real = jax.vmap(refine_fn)(min_set_real)
 
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set) 
@@ -129,13 +116,15 @@ def compute_loss_on_fixed_points(
 
     # Special Loss
     phases = compute_holomorphic_form_restricted(
-        min_set, patch_indices, restrictions, phase_only=True
+        min_set, patch_indices, psi, restrictions, phase_only=True
     )
     order_parameter = compute_special_condition_fitness_smooth(phases)
     special_loss = 1.0 - order_parameter
     
     # Combine both
-    total_loss = lagrangian_loss + special_loss
+    total_loss = lagrangian_loss
+    #total_loss = special_loss
+    #total_loss = lagrangian_loss + special_loss
     
     return total_loss, (lagrangian_loss, special_loss)
 
@@ -148,14 +137,19 @@ def main():
     parser = argparse.ArgumentParser(description="Gradient Descent for sLag Search")
     parser.add_argument("--psi", type=int, default=0, help="PSI parameter")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning Rate")
-    parser.add_argument("--steps", type=int, default=1000, help="Number of optimization steps")
+    parser.add_argument("--steps", type=int, default=100, help="Number of optimization steps")
     parser.add_argument("--job_id", type=str, default="0", help="Job ID for saving results")
     args = parser.parse_args()
 
     PSI = args.psi
     LEARNING_RATE = args.lr
     NUM_STEPS = args.steps
-    
+    METRIC = 'k4_fermat'
+    MINSET_SIZE = 10000
+    NEWTON_STEPS = 50
+    MINE_INTERVAL = 10 # Disable re-mining for this test
+
+ 
     print(f"--- Hybrid Mining-Adam Optimization (Stable) ---")
     print(f"PSI: {PSI}, LR: {LEARNING_RATE}, Steps: {NUM_STEPS}")
     
@@ -189,6 +183,7 @@ def main():
         [0.42350825667381287, 0.16512976586818695, -0.009587904438376427, 0.020616931840777397, -0.10060423612594604, 0.11577785015106201, 0.3959497809410095, -0.23205921053886414, -0.007092039100825787, 0.1421680897474289, -0.033782344311475754, 0.15470725297927856, -0.05985529348254204, -0.11284781247377396, 0.41878288984298706, 0.012480814009904861, 0.09610676020383835, 0.09385758638381958, 0.1206778883934021, -0.05080771818757057, -0.5067381262779236, -0.14283324778079987, -0.01962202973663807, -0.10288462787866592, 0.02445816993713379],
         [0.3107169568538666, -0.16336588561534882, 0.13979989290237427, -0.06237269937992096, 0.20755282044410706, -0.18239142000675201, 0.2927098274230957, 0.17870883643627167, 0.15436840057373047, -0.20919054746627808, -0.014542280696332455, 0.08693742007017136, -0.039950814098119736, 0.14380718767642975, 0.2939481735229492, -0.007748228497803211, -0.04357427731156349, -0.07980721443891525, 0.08186690509319305, -0.03721674904227257, 0.6561188101768494, 0.1590929478406906, -0.06476886570453644, -0.03910057991743088, 0.025055011734366417]
     ])
+
     coeffs = jnp.array(coeffs_init, dtype=jnp.float64) # Ensure x64
     coeffs = normalize_coeffs(coeffs)
     
@@ -205,15 +200,18 @@ def main():
         
         # Mining
         if step % MINE_INTERVAL == 0:
-            mine_start = time.time()
-            active_indices = mine_indices(coeffs, points_real, PSI, MINSET_SIZE)
-            current_batch = points_real[active_indices]
-            mine_time = time.time() - mine_start
-            print(f"  [Mining] Selected new {MINSET_SIZE} points in {mine_time:.2f}s")
+            #mine_start = time.time()
+            #active_indices = mine_indices(coeffs, points_real, PSI, MINSET_SIZE)
+            #current_batch = points_real[active_indices]
+            #mine_time = time.time() - mine_start
+            #print(f"  [Mining] Selected new {MINSET_SIZE} points in {mine_time:.2f}s")
+            min_set_real, _, newton_check_pass = filter_and_refine(
+                points_real, coeffs, PSI, MINSET_SIZE, NEWTON_STEPS, filter_newton=True
+            )
             
         # Training
         (loss_val, (lag_loss, spec_loss)), grads = loss_value_and_grad(
-            coeffs, current_batch, PSI, NEWTON_STEPS, METRIC
+            coeffs, min_set_real, PSI, 10, METRIC
         )
         
         # We don't need manual clipping with Adam usually, but let's be safe against infs
@@ -222,9 +220,9 @@ def main():
         
         # --- Tangent Projection (Crucial for Spherical Optimization) ---
         # Ensure gradient effectively only moves coeffs along the sphere surface
-        dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
-        radial_mag = jnp.mean(jnp.abs(dot_prods))
-        grads = grads - dot_prods * coeffs
+        #dot_prods = jnp.sum(grads * coeffs, axis=1, keepdims=True)
+        #radial_mag = jnp.mean(jnp.abs(dot_prods))
+        #grads = grads - dot_prods * coeffs
         
         updates, opt_state = optimizer.update(grads, opt_state, coeffs)
         coeffs = optax.apply_updates(coeffs, updates)
@@ -234,11 +232,11 @@ def main():
         
         epoch_time = time.time() - start_time
         grad_norm = jnp.linalg.norm(grads)
-        print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | GNorm: {grad_norm:.2e} | Rad: {radial_mag:.2e} | Time: {epoch_time:.2f}s")
+        print(f"Step {step+1:4d} | Total: {loss_val:.6f} | Lag: {lag_loss:.6f} | Spec: {spec_loss:.6f} | GNorm: {grad_norm:.2e} | Time: {epoch_time:.2f}s")
 
     print("\nOptimization Complete.")
     print("Final Coefficients:")
-    print(coeffs)
+    print(format_array_with_commas(coeffs))
 
 if __name__ == "__main__":
     main()

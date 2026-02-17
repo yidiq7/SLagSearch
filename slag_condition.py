@@ -445,7 +445,7 @@ def compute_special_condition_fitness_smooth(phases: jnp.array) -> jnp.float32:
     """
     # Calculate the complex order parameter R = |mean(e^(i*theta))|
     # This is fully differentiable.
-    order_parameter = jnp.abs(jnp.mean(jnp.exp(1j * phases)))
+    order_parameter = jnp.abs(jnp.mean(jnp.exp(2j * phases)))
     return order_parameter
 
 vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))
