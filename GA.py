@@ -75,8 +75,16 @@ ETA_CROSSOVER_EXPLOIT = 30.0
 CROSSOVER_RATE = 0.9
 
 STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
-STAGNATION_SURVIVAL_RATIO = 0.9  # Always keep the species as long as their fitness is above the max fitness times this rate 
+STAGNATION_SURVIVAL_RATIO = 0.9  # Always keep the species as long as their fitness is above the max fitness times this rate
 SPECIES_ELITISM = 1        # Number of best individuals per species to carry over directly.
+
+# --- Adaptive Step Size (1/5th success rule per species) ---
+SIGMA_INIT = 1.0
+SIGMA_MIN = 0.1
+SIGMA_MAX = 5.0
+SIGMA_INCREASE = 1.3   # on improvement
+SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 ≈ 0.97)
+SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
 FITNESS_MINI_BATCH_SIZE = 50
@@ -154,6 +162,8 @@ class Species:
         self.fitness_values = []
         self.best_fitness = -jnp.inf
         self.generations_since_improvement = 0
+        self.sigma = SIGMA_INIT
+        self.sigma_cooldown = 0
 
     def add_member(self, individual, fitness):
         self.members.append(individual)
@@ -163,16 +173,28 @@ class Species:
         current_max_fitness = jnp.max(jnp.array(self.fitness_values)) if self.members else -jnp.inf
         if current_max_fitness > self.best_fitness:
             self.best_fitness = current_max_fitness
+            improved = True
             self.generations_since_improvement = 0
         else:
+            improved = False
             self.generations_since_improvement += 1
+
+        # Adaptive step size with cooldown
+        if self.sigma_cooldown > 0:
+            self.sigma_cooldown -= 1
+        else:
+            if improved:
+                self.sigma = min(self.sigma * SIGMA_INCREASE, SIGMA_MAX)
+            else:
+                self.sigma = max(self.sigma * SIGMA_DECAY, SIGMA_MIN)
+            self.sigma_cooldown = SIGMA_COOLDOWN
 
     def clear_members(self):
         self.members = []
         self.fitness_values = []
 
     def __repr__(self):
-        return f"Species(id={self.id}, members={len(self.members)}, best_fitness={self.best_fitness:.4f}, stagnated_for={self.generations_since_improvement})"
+        return f"Species(id={self.id}, members={len(self.members)}, best_fitness={self.best_fitness:.4f}, stagnated_for={self.generations_since_improvement}, sigma={self.sigma:.3f})"
 
 # -----------------------------------------------------------------------------
 # 4. GENETIC ALGORITHM OPERATORS (REFACTORED FOR SPECIES)
@@ -198,18 +220,18 @@ def sbx_crossover(key, parent1, parent2, eta):
     return offspring1, offspring2
 
 @partial(jit, static_argnames=('prob_mut', 'eta'))
-def polynomial_mutation(key, individual, prob_mut, eta):
+def polynomial_mutation(key, individual, prob_mut, eta, sigma=1.0):
     key1, key2 = jax.random.split(key)
     u = jax.random.uniform(key1, shape=individual.shape)
     do_mutation = jax.random.uniform(key2, shape=individual.shape) < prob_mut
     delta = jnp.where(u < 0.5, (2 * u)**(1 / (eta + 1)) - 1, 1 - (2 * (1 - u))**(1 / (eta + 1)))
-    mutated_individual = jnp.where(do_mutation, individual + delta, individual)
+    mutated_individual = jnp.where(do_mutation, individual + sigma * delta, individual)
     return jnp.clip(mutated_individual, -1.0, 1.0)
 
 @partial(jit, static_argnames=('max_offspring', 'k_tournament', 'p_mut', 'eta_cross', 'eta_mut'))
-def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tournament, p_mut, eta_cross, eta_mut):
+def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tournament, p_mut, eta_cross, eta_mut, sigma=1.0):
     """Generates a fixed-size batch of offspring and we slice from it later."""
-    
+
     # Create 4 master keys, one for each stochastic operation.
     key_p1, key_p2, key_cross, key_mut = jax.random.split(key, 4)
 
@@ -227,22 +249,22 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
     # VMAP to perform batched crossover
     crossover_fn = partial(sbx_crossover, eta=eta_cross)
     offspring1_batch, offspring2_batch = vmap(crossover_fn)(cross_keys, parent1_batch, parent2_batch)
-    
+
     # Decide which children to keep based on crossover rate
     crossover_mask = vmap(jax.random.uniform)(cross_keys).reshape(-1, 1, 1) < CROSSOVER_RATE
     child_batch = jnp.where(crossover_mask, offspring1_batch, parent1_batch)
 
-    # VMAP to perform batched mutation
-    mutation_fn = partial(polynomial_mutation, prob_mut=p_mut, eta=eta_mut)
+    # VMAP to perform batched mutation with adaptive step size
+    mutation_fn = partial(polynomial_mutation, prob_mut=p_mut, eta=eta_mut, sigma=sigma)
     mutated_batch = vmap(mutation_fn)(mut_keys, child_batch)
 
     # VMAP to normalize the final batch
     normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
-    
+
     return normalized_batch
 
 
-def reproduce_within_species(key, species, num_offspring, tournament_size, eta_mutation, eta_crossover, mutation_rate):
+def reproduce_within_species(key, species, num_offspring, tournament_size, eta_mutation, eta_crossover, mutation_rate, sigma=1.0):
     """Generates offspring by calling a padded, JIT-compiled function."""
     if num_offspring <= 0:
         return []
@@ -257,21 +279,21 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
         num_elites = min(SPECIES_ELITISM, num_offspring)
         elite_indices = jnp.argsort(fitness_arr)[-num_elites:]
         elite_offspring = [members_arr[i] for i in elite_indices]
-        
+
     offspring_to_generate = num_offspring - len(elite_offspring)
     if offspring_to_generate <= 0:
         return elite_offspring
 
-    MAX_OFFSPRING_PER_SPECIES = 128 
+    MAX_OFFSPRING_PER_SPECIES = 128
 
     if num_members < 2:
-        mutation_fn = partial(polynomial_mutation, prob_mut=mutation_rate, eta=eta_mutation)
+        mutation_fn = partial(polynomial_mutation, prob_mut=mutation_rate, eta=eta_mutation, sigma=sigma)
         padded_offspring = vmap(mutation_fn, in_axes=(0, 0))(
-            jax.random.split(key, offspring_to_generate), 
+            jax.random.split(key, offspring_to_generate),
             jnp.tile(members_arr, (offspring_to_generate, 1, 1))
         )
     else:
-        MAX_SPECIES_SIZE = POPULATION_SIZE 
+        MAX_SPECIES_SIZE = POPULATION_SIZE
         padding_size = MAX_SPECIES_SIZE - num_members
         padded_members = jnp.concatenate([
             members_arr,
@@ -281,13 +303,13 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
             fitness_arr,
             jnp.full(padding_size, -jnp.inf)
         ])
-        
+
         # Pass the dynamic parameters to the JIT-compiled function
         padded_offspring = generate_padded_offspring_batch(
             key, padded_members, padded_fitness, MAX_OFFSPRING_PER_SPECIES,
-            tournament_size, mutation_rate, eta_crossover, eta_mutation
+            tournament_size, mutation_rate, eta_crossover, eta_mutation, sigma
         )
-    
+
     new_offspring = padded_offspring[:offspring_to_generate]
     final_offspring = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(new_offspring)
 
@@ -526,7 +548,8 @@ if __name__ == '__main__':
                     key, subkey = jax.random.split(key)
                     offspring = reproduce_within_species(
                         subkey, s, num_offspring,
-                        current_tourney_size, current_eta_mutation, current_eta_crossover, current_mutation_rate
+                        current_tourney_size, current_eta_mutation, current_eta_crossover, current_mutation_rate,
+                        sigma=s.sigma
                     )
                     next_generation_population.extend(offspring)
 
@@ -560,7 +583,9 @@ if __name__ == '__main__':
 
             max_fitness = jnp.max(all_fitness_scores)
             avg_fitness = jnp.mean(all_fitness_scores)
-            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Threshold: {current_speciation_threshold:.2f} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
+            sigmas = [s.sigma for s in species_list if s.members]
+            sigma_str = f"Sigma: {min(sigmas):.2f}/{max(sigmas):.2f}" if sigmas else "Sigma: -"
+            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Threshold: {current_speciation_threshold:.2f} | {sigma_str} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
         
             last_log_time = current_time # Reset timer for the next interval
         # 6. Checkpointing
@@ -573,6 +598,8 @@ if __name__ == '__main__':
                 s.id = species_list[i].id
                 s.best_fitness = species_list[i].best_fitness
                 s.generations_since_improvement = species_list[i].generations_since_improvement
+                s.sigma = species_list[i].sigma
+                s.sigma_cooldown = species_list[i].sigma_cooldown
 
             checkpoint_data = {
                 'population': population,
