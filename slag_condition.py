@@ -127,8 +127,12 @@ def _create_coefficient_mapping(exponents: jnp.ndarray):
 
 # --- Pre-compute constants at module load time for maximum performance ---
 
-# (7, 5) array of the unique, sorted exponent structures.
-# (126,) array of indices (0-6) mapping each monomial to its canonical form.
+# For degree=4 (k=4 Donaldson): 70 monomials, 5 canonical forms.
+#   (5, 5) array of the unique, sorted exponent structures.
+#   (70,) array of indices (0-4) mapping each monomial to its canonical form.
+# For degree=5 (k=5 Donaldson): 126 monomials, 7 canonical forms.
+#   (7, 5) array of the unique, sorted exponent structures.
+#   (126,) array of indices (0-6) mapping each monomial to its canonical form.
 _QUINTIC_EXPONENTS = generate_quintic_exponents(num_vars=5, degree=4)
 _CANONICAL_EXPONENT_FORMS, _COEFF_MAPPING_INDICES = _create_coefficient_mapping(_QUINTIC_EXPONENTS)
 
@@ -145,26 +149,34 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     Returns:
         A (4, 4) complex array for the Hermitian metric g_ab_bar.
     """
-    """
-        unique_coeffs: A (7,) array of unique complex coefficients. The order
-                   corresponds to the canonical exponent forms, which can be
-                   inspected by printing `_CANONICAL_EXPONENT_FORMS`. The order is:
-                   [0]: (1,1,1,1,1)
-                   [1]: (2,1,1,1,0)
-                   [2]: (2,2,1,0,0)
-                   [3]: (3,1,1,0,0)
-                   [4]: (3,2,0,0,0)
-                   [5]: (4,1,0,0,0)
-                   [6]: (5,0,0,0,0)
-    """
+    # The unique_coeffs array holds the balanced metric coefficients, one per
+    # canonical exponent form. Inspect `_CANONICAL_EXPONENT_FORMS` for the ordering.
+    #
+    # For degree=4 (current): 5 canonical forms, 70 monomials.
+    #   [0]: (1,1,1,1,0)  ->  5 monomials
+    #   [1]: (2,1,1,0,0)  -> 30 monomials
+    #   [2]: (2,2,0,0,0)  -> 10 monomials
+    #   [3]: (3,1,0,0,0)  -> 20 monomials
+    #   [4]: (4,0,0,0,0)  ->  5 monomials
+    #
+    # For degree=5: 7 canonical forms, 126 monomials.
+    #   [0]: (1,1,1,1,1)  ->   1 monomial
+    #   [1]: (2,1,1,1,0)  ->  20 monomials
+    #   [2]: (2,2,1,0,0)  ->  30 monomials
+    #   [3]: (3,1,1,0,0)  ->  20 monomials
+    #   [4]: (3,2,0,0,0)  ->  20 monomials
+    #   [5]: (4,1,0,0,0)  ->  20 monomials
+    #   [6]: (5,0,0,0,0)  ->   5 monomials
 
     # Inhomogeneous coordinates (zeta) are the other 4 coordinates
     zeta = delete_index(z, patch_index)
 
+    # Balanced metric coefficients for the Fermat quintic.
+    # degree=5 (commented out):
     #unique_coeffs = jnp.array([-4.79909*240, -75.298664*12, -83.726102*8, -103.669506*8, -39.049639*12, -33.852379*12, 1.0*(-180)])
+    # degree=4 (active):
     unique_coeffs = jnp.array([2.214272*48, 14.010661*8, 2.3827940*24, 9.073280*12, 1.0*48])
-    # Expand the 7 unique coefficients into the full 126-coefficient array.
-    # This is a highly efficient gather operation in JAX.
+    # Expand unique coefficients into the full coefficient array via gather.
     full_coeffs = unique_coeffs[_COEFF_MAPPING_INDICES]
 
     def kahler_potential(zeta: jnp.ndarray, zeta_bar: jnp.ndarray) -> float:

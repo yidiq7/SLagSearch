@@ -13,7 +13,7 @@ PATCH_ACTIVE_MASKS = jnp.array([
     [True, False, True, True, True, True, False, True, True, True],   # patch=1
     [True, True, False, True, True, True, True, False, True, True],   # patch=2
     [True, True, True, False, True, True, True, True, False, True],   # patch=3
-    [True, True, True, True, False, True, False, True, True, False],   # patch=4
+    [True, True, True, True, False, True, True, True, True, False],   # patch=4
 ], dtype=bool)
 
 
