@@ -481,8 +481,8 @@ if __name__ == '__main__':
             keep_mask_np = np.array(keep_mask) # Convert to CPU
             species_list = [s for i, s in enumerate(species_list) if keep_mask_np[i]]
 
-        except Exception:
-            continue
+        except Exception as e:
+            print(f"Warning: species merge failed at gen {gen+1}: {e}")
 
         # Create a matrix of all species representatives
         representatives = jnp.array([s.representative for s in species_list])
