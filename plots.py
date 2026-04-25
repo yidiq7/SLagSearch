@@ -89,7 +89,7 @@ def make_fitness_plots(
     elif compare_with_random:
         seed = 1230
         key = jax.random.PRNGKey(seed)
-        coeffs_random = jax.random.uniform(key, (3, 25), minval=-1, maxval=1)
+        coeffs_random = jax.random.uniform(key, (3, 250), minval=-1, maxval=1)
         coeffs_random =  canonicalize_coeffs(coeffs_random)
         coeffs_random =  normalize_coeffs(coeffs_random)
 

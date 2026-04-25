@@ -35,7 +35,7 @@ METRIC = 'k4_fermat'
 
 # GA Parameters
 POPULATION_SIZE = 800
-GENOTYPE_SHAPE = (3, 25)
+GENOTYPE_SHAPE = (3, 250)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
 NUM_GENERATIONS = 400
 
@@ -120,7 +120,7 @@ def calculate_fitness_for_one_individual(
     Calculate fitness for one individual with automatic patch handling.
     
     Args:
-        coeffs: (3, 25) coefficient array
+        coeffs: (3, 250) coefficient array
         points_real: (N, 10) array of sample points
         psi: Complex quintic parameter
         k: Number of points to refine
@@ -691,8 +691,8 @@ if __name__ == '__main__':
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")
         print(format_array_with_commas(best_member))
-        print("Complex equations:")
-        print(combine_to_complex_equations(get_basis_labels(), best_member))
+        # print("Complex equations:")
+        # print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(
             f'plots_slag_{args.job_id}', 
