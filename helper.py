@@ -270,14 +270,14 @@ def generate_basis_second_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
 def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray) -> jnp.ndarray:
     """Evaluate the five equations. The input points are real."""
     point_complex = point[:5] + 1j * point[5:]
-    norm_sq = jnp.linalg.norm(point_complex) ** 2
-    basis_d1 = generate_basis_single_point(point_complex)/norm_sq 
-    basis_d2 = generate_basis_second_order_single_point(point_complex)/norm_sq**2
+    norm_sq = jnp.vdot(point_complex, point_complex).real 
+    basis_d1 = generate_basis_single_point(point_complex) / norm_sq 
+    basis_d2 = generate_basis_second_order_single_point(point_complex) / (norm_sq**2)
+    eqs_vec = (coeffs[:, :25] @ basis_d1) + (coeffs[:, 25:] @ basis_d2)
     basis = jnp.concatenate([basis_d1, basis_d2])
     eqs_vec = coeffs @ basis # (3,)
     cy = jnp.sum(point_complex**5) + psi * jnp.prod(point_complex)
-    eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 
-    return eqs_evaluated
+    return jnp.concatenate([jnp.array([jnp.real(cy), jnp.imag(cy)]), eqs_vec])
 
 
 @jax.jit
