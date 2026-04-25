@@ -37,7 +37,7 @@ METRIC = 'k4_fermat'
 POPULATION_SIZE = 800
 GENOTYPE_SHAPE = (3, 250)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 400
+NUM_GENERATIONS = 100
 
 #TRANSITION_GENERATION = 1600
 TRANSITION_GENERATION = 999999
@@ -89,8 +89,8 @@ SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 â
 SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
-FITNESS_MINI_BATCH_SIZE = 50
-LOG_INTERVAL = 10
+FITNESS_MINI_BATCH_SIZE = 25
+LOG_INTERVAL = 1
 
 # Checkpointing
 CHECKPOINT_DIR = 'checkpoints'
