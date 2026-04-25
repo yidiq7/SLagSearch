@@ -334,7 +334,7 @@ def reproduce_within_species(key, species, num_offspring, tournament_size, eta_m
         # Pass the dynamic parameters to the JIT-compiled function
         padded_offspring = generate_padded_offspring_batch(
             key, padded_members, padded_fitness, MAX_OFFSPRING_PER_SPECIES,
-            tournament_size, mutation_rate, eta_crossover, eta_mutation, sigma
+            tournament_size, mutation_rate, eta_mutation, sigma
         )
 
     new_offspring = padded_offspring[:offspring_to_generate]
