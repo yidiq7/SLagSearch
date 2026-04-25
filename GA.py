@@ -72,6 +72,8 @@ ETA_CROSSOVER_EXPLOIT = 30.0
 #SPECIES_SHARING_RADIUS_EXPLOIT = 1.7
 
 # Crossover and Mutation Parameters
+# In this version the crossover has been turned off so this 
+# parameter is not being used
 CROSSOVER_RATE = 0.9
 
 STAGNATION_THRESHOLD = 20  # Generations a species can go without improvement before being removed.
@@ -229,7 +231,7 @@ def polynomial_mutation(key, individual, prob_mut, eta, sigma=1.0):
     return jnp.clip(mutated_individual, -1.0, 1.0)
 
 @partial(jit, static_argnames=('max_offspring', 'k_tournament', 'p_mut', 'eta_cross', 'eta_mut'))
-def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tournament, p_mut, eta_cross, eta_mut, sigma=1.0):
+def generate_padded_offspring_batch_with_crossover(key, members, fitness, max_offspring, k_tournament, p_mut, eta_cross, eta_mut, sigma=1.0):
     """Generates a fixed-size batch of offspring and we slice from it later."""
 
     # Create 4 master keys, one for each stochastic operation.
@@ -261,6 +263,31 @@ def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tour
     # VMAP to normalize the final batch
     normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
 
+    return normalized_batch
+
+
+@partial(jit, static_argnames=('max_offspring', 'k_tournament', 'p_mut', 'eta_mut'))
+def generate_padded_offspring_batch(key, members, fitness, max_offspring, k_tournament, p_mut, eta_mut, sigma=1.0):
+    """Generates a fixed-size batch of offspring using mutation only (no crossover)."""
+    
+    # Create 2 master keys: one for selection, one for mutation
+    key_sel, key_mut = jax.random.split(key, 2)
+    
+    # Split each master key into a batch of size max_offspring
+    sel_keys = jax.random.split(key_sel, max_offspring)
+    mut_keys = jax.random.split(key_mut, max_offspring)
+    
+    # VMAP to perform batched tournament selection
+    select_fn = partial(tournament_selection, population=members, fitness=fitness, k=k_tournament)
+    parent_batch = vmap(select_fn)(sel_keys)
+    
+    # VMAP to perform batched mutation
+    mutation_fn = partial(polynomial_mutation, prob_mut=p_mut, eta=eta_mut, sigma=sigma)
+    mutated_batch = vmap(mutation_fn)(mut_keys, parent_batch)
+    
+    # VMAP to normalize the final batch
+    normalized_batch = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(mutated_batch)
+    
     return normalized_batch
 
 
