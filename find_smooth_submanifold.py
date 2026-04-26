@@ -320,7 +320,28 @@ def compute_distances_batched(
         psi=psi
     )
     
-    return jax.jit(jax.vmap(dist_partial))(points)
+    vmapped_dist = jax.vmap(dist_partial)
+    
+    # Process in chunks to prevent XLA OOM on large batches
+    chunk_size = 100000
+    n_points = points.shape[0]
+    
+    if n_points <= chunk_size:
+        return vmapped_dist(points)
+        
+    n_chunks = (n_points + chunk_size - 1) // chunk_size
+    pad_size = n_chunks * chunk_size - n_points
+    
+    padded_points = jnp.pad(points, ((0, pad_size), (0, 0)))
+    points_reshaped = padded_points.reshape((n_chunks, chunk_size, -1))
+    
+    def scan_body(carry, points_chunk):
+        return carry, vmapped_dist(points_chunk)
+        
+    _, dists_reshaped = jax.lax.scan(scan_body, None, points_reshaped)
+    dists = dists_reshaped.reshape(-1)
+    
+    return dists[:n_points]
 
 
 @partial(jax.jit, static_argnames=('constant_coord',))
@@ -414,7 +435,25 @@ def filter_and_refine(
         psi=psi,
         n_steps=n_refine_steps
     )
-    refine_batch = jax.vmap(refine_fn)
+    vmapped_refine = jax.vmap(refine_fn)
+    
+    def refine_batch(pts):
+        n_pts = pts.shape[0]
+        chunk_size = 5000
+        if n_pts <= chunk_size:
+            return vmapped_refine(pts)
+            
+        n_chunks = (n_pts + chunk_size - 1) // chunk_size
+        pad_size = n_chunks * chunk_size - n_pts
+        
+        padded_pts = jnp.pad(pts, ((0, pad_size), (0, 0)))
+        pts_reshaped = padded_pts.reshape((n_chunks, chunk_size, -1))
+        
+        def scan_body(carry, pts_chunk):
+            return carry, vmapped_refine(pts_chunk)
+            
+        _, refined_reshaped = jax.lax.scan(scan_body, None, pts_reshaped)
+        return refined_reshaped.reshape((-1, 10))[:n_pts]
     
     # Compute initial distances
     all_distances = compute_distances_batched(points, coeffs, psi)
@@ -457,7 +496,25 @@ def filter_and_refine(
         psi=psi,
         n_steps=10
     )
-    batch_reproject = jax.vmap(reproject_fn)
+    vmapped_reproject = jax.vmap(reproject_fn)
+    
+    def batch_reproject(pts):
+        n_pts = pts.shape[0]
+        chunk_size = 5000
+        if n_pts <= chunk_size:
+            return vmapped_reproject(pts)
+            
+        n_chunks = (n_pts + chunk_size - 1) // chunk_size
+        pad_size = n_chunks * chunk_size - n_pts
+        
+        padded_pts = jnp.pad(pts, ((0, pad_size), (0, 0)))
+        pts_reshaped = padded_pts.reshape((n_chunks, chunk_size, -1))
+        
+        def scan_body(carry, pts_chunk):
+            return carry, vmapped_reproject(pts_chunk)
+            
+        _, reprojected_reshaped = jax.lax.scan(scan_body, None, pts_reshaped)
+        return reprojected_reshaped.reshape((-1, 10))[:n_pts]
     
     def repulsion_body_fn(i, points_state):
         # Compute pairwise repulsion
