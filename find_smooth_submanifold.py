@@ -301,7 +301,8 @@ def refine_point_iterative(
 def compute_distances_batched(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
-    psi: jnp.ndarray
+    psi: jnp.ndarray,
+    chunk_size_dist: int = 25000
 ) -> jnp.ndarray:
     """
     Computes distances for a batch of points with automatic patch handling.
@@ -310,6 +311,7 @@ def compute_distances_batched(
         points: An (N, 10) real array
         coeffs: A (3, 25) coefficient array
         psi: Complex parameter
+        chunk_size_dist: Chunk size for processing distance to avoid OOM
         
     Returns:
         An (N,) array of distances
@@ -323,7 +325,7 @@ def compute_distances_batched(
     vmapped_dist = jax.vmap(dist_partial)
     
     # Process in chunks to prevent XLA OOM on large batches
-    chunk_size = 25000
+    chunk_size = chunk_size_dist
     n_points = points.shape[0]
     
     if n_points <= chunk_size:
@@ -388,7 +390,7 @@ def _project_forces_to_tangent_space(
     return jnp.zeros_like(forces).at[:, active_indices].set(forces_tangent_active)
 
 
-@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps'))
+@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps', 'chunk_size_dist', 'chunk_size_refine'))
 def filter_and_refine(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
@@ -398,7 +400,9 @@ def filter_and_refine(
     filter_newton: bool = False,
     n_repulsion_steps: int = 15,
     repulsion_strength: Optional[float] = None,
-    repulsion_radius: Optional[float] = None
+    repulsion_radius: Optional[float] = None,
+    chunk_size_dist: int = 25000,
+    chunk_size_refine: int = 1250
 ) -> tuple[jnp.ndarray, jnp.ndarray, bool]:
     """
     Filters and refines points with automatic patch handling.
@@ -439,7 +443,7 @@ def filter_and_refine(
     
     def refine_batch(pts):
         n_pts = pts.shape[0]
-        chunk_size = 1250
+        chunk_size = chunk_size_refine
         if n_pts <= chunk_size:
             return vmapped_refine(pts)
             
@@ -456,7 +460,7 @@ def filter_and_refine(
         return refined_reshaped.reshape((-1, 10))[:n_pts]
     
     # Compute initial distances
-    all_distances = compute_distances_batched(points, coeffs, psi)
+    all_distances = compute_distances_batched(points, coeffs, psi, chunk_size_dist)
     
     # Select best 2k points
     best_2k_indices = jnp.argsort(all_distances)[:2*k]
@@ -464,7 +468,7 @@ def filter_and_refine(
     
     # Refine these points
     refined_points_10d = refine_batch(top_2k_points)
-    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi)
+    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, chunk_size_dist)
     
     # Select best k points
     best_indices = jnp.argsort(distance_refined)[:k]
@@ -500,7 +504,7 @@ def filter_and_refine(
     
     def batch_reproject(pts):
         n_pts = pts.shape[0]
-        chunk_size = 1250
+        chunk_size = chunk_size_refine
         if n_pts <= chunk_size:
             return vmapped_reproject(pts)
             
@@ -544,7 +548,7 @@ def filter_and_refine(
     )
     
     # Compute final distances
-    final_distances = compute_distances_batched(final_points, coeffs, psi)
+    final_distances = compute_distances_batched(final_points, coeffs, psi, chunk_size_dist)
     
     # Final convergence check
     repulsion_newton_check = True
