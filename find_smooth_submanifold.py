@@ -323,7 +323,7 @@ def compute_distances_batched(
     vmapped_dist = jax.vmap(dist_partial)
     
     # Process in chunks to prevent XLA OOM on large batches
-    chunk_size = 100000
+    chunk_size = 25000
     n_points = points.shape[0]
     
     if n_points <= chunk_size:
@@ -439,7 +439,7 @@ def filter_and_refine(
     
     def refine_batch(pts):
         n_pts = pts.shape[0]
-        chunk_size = 5000
+        chunk_size = 1250
         if n_pts <= chunk_size:
             return vmapped_refine(pts)
             
@@ -500,7 +500,7 @@ def filter_and_refine(
     
     def batch_reproject(pts):
         n_pts = pts.shape[0]
-        chunk_size = 5000
+        chunk_size = 1250
         if n_pts <= chunk_size:
             return vmapped_reproject(pts)
             
