@@ -149,7 +149,7 @@ def calculate_fitness_for_one_individual(
     fitness = jax.lax.cond(
         newton_check_pass,
         lambda points: compute_combined_fitness(
-            min_set_real, coeffs, psi, metric
+            min_set_real, coeffs, psi, metric, False, chunk_size_refine
         ),
         lambda points: jnp.float32(0.0),
         min_set_real
