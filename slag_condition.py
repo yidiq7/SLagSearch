@@ -468,12 +468,10 @@ def compute_combined_fitness(
     coeffs: jnp.ndarray, 
     psi: jnp.ndarray, 
     metric: str='FS', 
-    debug_mode: bool=False,
-    chunk_size: int=1250
+    debug_mode: bool=False
 ) -> jnp.float32:
     """
     Computes combined fitness with automatic patch detection and handling.
-    Uses chunking to dramatically lower VRAM requirements.
     
     Args:
         min_set_real: An (N, 10) array of points in real coordinates
@@ -481,75 +479,44 @@ def compute_combined_fitness(
         psi: Complex parameter for the quintic
         metric: 'FS' or 'k4_fermat'
         debug_mode: If True, return additional diagnostic information
-        chunk_size: Processing chunk size for points to stay within VRAM bounds
         
     Returns:
         If debug_mode=False: fitness scalar
         If debug_mode=True: tuple of (fitness, lagrangian_fitness, special_fitness, 
-                                      kahler_form_restricted, restriction, phases)
+                                      kahler_form_restricted, restriction, phases, patch_indices)
     """
 
-    n_pts = min_set_real.shape[0]
-    
-    def process_chunk(carry, chunk_points):
-        min_set = convert_real_to_complex_batch(chunk_points)
-        patch_indices = determine_patches_batch(min_set) 
+    min_set = convert_real_to_complex_batch(min_set_real)
+    patch_indices = determine_patches_batch(min_set) 
 
-        jacobians = vmap_compute_affine_jacobian(chunk_points, patch_indices, coeffs, psi)
-        restrictions = vmap_compute_restriction(jacobians)
+    jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
+    restrictions = vmap_compute_restriction(jacobians)
 
-        kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
+    kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
 
-        kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restrictions, restrictions)
-        frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
-        normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-        norms_normalized = frobenius_norms / normalization_factor  
+    lagrangian_fitness = compute_lagrangian_condition_fitness(
+        kahler_form_unrestricted, restrictions, k=10
+    )
 
-        phases = compute_holomorphic_form_restricted(
-            min_set, patch_indices, psi, restrictions, phase_only=True
-        )
-        
-        if debug_mode:
-            kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
-            return carry, (norms_normalized, phases, kahler_form_restricted_normalized, restrictions)
-        else:
-            return carry, (norms_normalized, phases)
-
-    if n_pts <= chunk_size:
-        _, results = process_chunk(None, min_set_real)
-        if debug_mode:
-            norms_normalized, phases, kahler_form_restricted_normalized, restrictions = results
-        else:
-            norms_normalized, phases = results
-    else:
-        n_chunks = (n_pts + chunk_size - 1) // chunk_size
-        pad_size = n_chunks * chunk_size - n_pts
-        padded_points = jnp.pad(min_set_real, ((0, pad_size), (0, 0)))
-        pts_reshaped = padded_points.reshape((n_chunks, chunk_size, -1))
-        
-        _, results_reshaped = jax.lax.scan(process_chunk, None, pts_reshaped)
-        
-        if debug_mode:
-            norms_normalized = results_reshaped[0].reshape(-1)[:n_pts]
-            phases = results_reshaped[1].reshape(-1)[:n_pts]
-            kahler_form_restricted_normalized = results_reshaped[2].reshape((-1, 8, 8))[:n_pts]
-            restrictions = results_reshaped[3].reshape((-1, 8, 3))[:n_pts]
-        else:
-            norms_normalized = results_reshaped[0].reshape(-1)[:n_pts]
-            phases = results_reshaped[1].reshape(-1)[:n_pts]
-
-    # Compute final metrics on the concatenated arrays
-    sorted_norms = jnp.sort(norms_normalized)
-    norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.99)]
-    kahler_form_loss = jnp.mean(norms_cut)
-    lagrangian_fitness = jnp.exp(-10 * kahler_form_loss)
+    phases = compute_holomorphic_form_restricted(
+        min_set, patch_indices, psi, restrictions, phase_only=True
+    )
 
     n_bins_val = 100
     special_fitness = compute_special_condition_fitness(phases, n_bins=n_bins_val)
    
+    #combined_fitness = special_fitness
     combined_fitness = lagrangian_fitness * special_fitness 
+    #combined_fitness = jnp.where(lagrangian_fitness > 0.98 , 1 + special_fitness, lagrangian_fitness)
 
     if debug_mode:
+        kahler_form_restricted = compute_kahler_form_restricted(min_set, restrictions, patch_indices, metric=metric)
+        normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
+        kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
+        # Test
+        #kahler_form_restricted_normalized = kahler_form_restricted 
+        #kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)
+        #return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_unrestricted, restrictions, phases
         return combined_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted_normalized, restrictions, phases
     else:
         return combined_fitness
