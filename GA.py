@@ -449,45 +449,14 @@ if __name__ == '__main__':
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
         num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
         
-        # Monitor initial memory
-        try:
-            device = jax.devices()[0]
-            stats = device.memory_stats()
-            if stats:
-                peak_gb = stats.get('peak_bytes_in_use', 0) / (1024**3)
-                print(f"  [VRAM] Pre-batch peak memory: {peak_gb:.2f} GB")
-        except Exception:
-            pass
-            
         for i in range(num_batches):
             start_idx = i * FITNESS_MINI_BATCH_SIZE
             end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
             pop_batch = population[start_idx:end_idx]
             
-            # Record VRAM before block execution
-            try:
-                stats = device.memory_stats()
-                if stats:
-                    current_gb = stats.get('bytes_in_use', 0) / (1024**3)
-                    print(f"  [VRAM] Batch {i} start memory: {current_gb:.2f} GB")
-            except Exception:
-                pass
-            
             fitness_batch = vmap_fitness_batch(
                 pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
             )
-            
-            # We must block to get accurate memory readings of the compiled execution
-            fitness_batch.block_until_ready()
-            
-            try:
-                stats = device.memory_stats()
-                if stats:
-                    current_gb = stats.get('bytes_in_use', 0) / (1024**3)
-                    peak_gb = stats.get('peak_bytes_in_use', 0) / (1024**3)
-                    print(f"  [VRAM] Batch {i} finished! Peak VRAM so far: {peak_gb:.2f} GB, Current: {current_gb:.2f} GB")
-            except Exception:
-                pass
 
             # Replace any potential NaN/inf values with 0 before storing them.
             safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
@@ -714,11 +683,20 @@ if __name__ == '__main__':
     # Sort the populated species by their best current fitness
     final_species_list.sort(key=lambda s: jnp.max(jnp.array(s.fitness_values)), reverse=True)
 
+    if final_species_list:
+        top_fitness_score = jnp.max(jnp.array(final_species_list[0].fitness_values))
+    else:
+        top_fitness_score = 0.0
+
     rank = 1
     for s in final_species_list:
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
         best_member = s.members[best_member_idx]
         best_fitness = s.fitness_values[best_member_idx]
+
+        if best_fitness < 0.5 * top_fitness_score:
+            print(f"\nStopping plot generation: Species {s.id} fitness ({best_fitness:.5f}) is below half of the top fitness ({top_fitness_score:.5f}).")
+            break
 
         print(f"\n--- Species {s.id} (Best Fitness: {best_fitness:.5f}) ---")
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
