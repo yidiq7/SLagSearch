@@ -89,11 +89,7 @@ SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 â
 SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
-FITNESS_MINI_BATCH_SIZE = POPULATION_SIZE
-MAX_PARALLEL_DIST = 2_500_000
-MAX_PARALLEL_REFINE = 125_000
-CHUNK_SIZE_DIST = MAX_PARALLEL_DIST // FITNESS_MINI_BATCH_SIZE
-CHUNK_SIZE_REFINE = MAX_PARALLEL_REFINE // FITNESS_MINI_BATCH_SIZE
+FITNESS_MINI_BATCH_SIZE = 100
 LOG_INTERVAL = 1
 
 # Checkpointing
@@ -111,16 +107,14 @@ key = jax.random.PRNGKey(1234)
 # -----------------------------------------------------------------------------
 # 2. CORE EVALUATION FUNCTIONS
 # -----------------------------------------------------------------------------
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'metric', 'chunk_size_dist', 'chunk_size_refine'))
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'metric'))
 def calculate_fitness_for_one_individual(
     coeffs: jnp.ndarray, 
     points_real: jnp.ndarray, 
     psi: jnp.ndarray, 
     k: int, 
     n_refine_steps: int, 
-    metric: str = 'FS',
-    chunk_size_dist: int = 25000,
-    chunk_size_refine: int = 1250
+    metric: str = 'FS'
 ) -> jnp.float32:
     """
     Calculate fitness for one individual with automatic patch handling.
@@ -132,16 +126,13 @@ def calculate_fitness_for_one_individual(
         k: Number of points to refine
         n_refine_steps: Newton iterations
         metric: 'FS' or 'k4_fermat'
-        chunk_size_dist: Safe chunk limit for computing distances
-        chunk_size_refine: Safe chunk limit for refining points
     
     Returns:
         Fitness value (0 if Newton's method fails to converge)
     """
  
     min_set_real, _, newton_check_pass = filter_and_refine(
-        points_real, coeffs, psi, k, n_refine_steps, filter_newton=True,
-        chunk_size_dist=chunk_size_dist, chunk_size_refine=chunk_size_refine
+        points_real, coeffs, psi, k, n_refine_steps, filter_newton=True
     )
 
     fitness = jax.lax.cond(
@@ -380,7 +371,7 @@ if __name__ == '__main__':
     # --- Create the vmapped fitness function ---
     vmap_fitness_batch = vmap(
         calculate_fitness_for_one_individual,
-        in_axes=(0, None, None, None, None, None, None, None), out_axes=0
+        in_axes=(0, None, None, None, None, None), out_axes=0
     )
 
     # --- Load from checkpoint or initialize ---
@@ -455,12 +446,19 @@ if __name__ == '__main__':
             territory_buffer = TERRITORY_BUFFER_EXPLOIT
             
         # 1. Calculate fitness for the entire population
-        fitness_batch = vmap_fitness_batch(
-            population, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC, CHUNK_SIZE_DIST, CHUNK_SIZE_REFINE
-        )
+        all_fitness_scores = jnp.zeros(POPULATION_SIZE)
+        num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
+        for i in range(num_batches):
+            start_idx = i * FITNESS_MINI_BATCH_SIZE
+            end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
+            pop_batch = population[start_idx:end_idx]
+            fitness_batch = vmap_fitness_batch(
+                pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+            )
 
-        # Replace any potential NaN/inf values with 0 before storing them.
-        all_fitness_scores = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
+            # Replace any potential NaN/inf values with 0 before storing them.
+            safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
+            all_fitness_scores = all_fitness_scores.at[start_idx:end_idx].set(safe_fitness_batch)
 
         # 2. Speciate the population
         for s in species_list: s.clear_members()
@@ -651,8 +649,14 @@ if __name__ == '__main__':
 
     # 1. Re-calculate fitness for the FINAL population to ensure it's up-to-date.
     print("Calculating final fitness scores...")
-    fitness_batch = vmap_fitness_batch(population, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC, CHUNK_SIZE_DIST, CHUNK_SIZE_REFINE)
-    final_fitness = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
+    final_fitness = jnp.zeros(POPULATION_SIZE)
+    num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
+    for i in range(num_batches):
+        start_idx = i * FITNESS_MINI_BATCH_SIZE
+        end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
+        population_batch = population[start_idx:end_idx]
+        fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC)
+        final_fitness = final_fitness.at[start_idx:end_idx].set(fitness_batch)
 
     # 2. Use the correct vectorized speciation to assign members.
     for s in species_list: s.clear_members()
