@@ -89,10 +89,11 @@ SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 â
 SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
+FITNESS_MINI_BATCH_SIZE = POPULATION_SIZE
 MAX_PARALLEL_DIST = 2_500_000
 MAX_PARALLEL_REFINE = 125_000
-CHUNK_SIZE_DIST = MAX_PARALLEL_DIST // POPULATION_SIZE
-CHUNK_SIZE_REFINE = MAX_PARALLEL_REFINE // POPULATION_SIZE
+CHUNK_SIZE_DIST = MAX_PARALLEL_DIST // FITNESS_MINI_BATCH_SIZE
+CHUNK_SIZE_REFINE = MAX_PARALLEL_REFINE // FITNESS_MINI_BATCH_SIZE
 LOG_INTERVAL = 1
 
 # Checkpointing
@@ -613,13 +614,7 @@ if __name__ == '__main__':
             avg_fitness = jnp.mean(all_fitness_scores)
             sigmas = [s.sigma for s in species_list if s.members]
             sigma_str = f"Sigma: {min(sigmas):.2f}/{max(sigmas):.2f}" if sigmas else "Sigma: -"
-            
-            # Fetch GPU Memory Stats
-            stats = jax.devices()[0].memory_stats()
-            peak_vram_gb = stats.get('peak_bytes_in_use', 0) / (1024**3)
-            current_vram_gb = stats.get('bytes_in_use', 0) / (1024**3)
-            
-            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Threshold: {current_speciation_threshold:.2f} | {sigma_str} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s | VRAM (Peak/Cur): {peak_vram_gb:.1f}G/{current_vram_gb:.1f}G")
+            print(f"Gen {gen+1:4d}/{end_gen} | Species: {len(species_list):2d} | Threshold: {current_speciation_threshold:.2f} | {sigma_str} | Max Fit: {max_fitness:.4f} | Avg Fit: {avg_fitness:.4f} | Avg Gen Time: {avg_time_per_gen:.2f}s")
         
             last_log_time = current_time # Reset timer for the next interval
         # 6. Checkpointing
