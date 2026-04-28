@@ -37,7 +37,7 @@ METRIC = 'k4_fermat'
 POPULATION_SIZE = 800
 GENOTYPE_SHAPE = (3, 250)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 100
+NUM_GENERATIONS = 40
 
 #TRANSITION_GENERATION = 1600
 TRANSITION_GENERATION = 999999
@@ -57,7 +57,7 @@ TERRITORY_BUFFER_EXPLOIT = 0.5
 
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
-MUTATION_RATE_EXPLORE = 2.5 / NUM_GENES  # Higher rate
+MUTATION_RATE_EXPLORE = 1 / NUM_GENES  # Higher rate
 ETA_MUTATION_EXPLORE = 10.0
 ETA_CROSSOVER_EXPLORE = 5.0
 #SPECIATION_THRESHOLD_EXPLORE = 2.5
@@ -82,11 +82,11 @@ SPECIES_ELITISM = 1        # Number of best individuals per species to carry ove
 
 # --- Adaptive Step Size (1/5th success rule per species) ---
 SIGMA_INIT = 1.0
-SIGMA_MIN = 0.1
+SIGMA_MIN = 0.001
 SIGMA_MAX = 5.0
 SIGMA_INCREASE = 1.3   # on improvement
 SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 ≈ 0.97)
-SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
+SIGMA_COOLDOWN = 3     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
 FITNESS_MINI_BATCH_SIZE = 100
