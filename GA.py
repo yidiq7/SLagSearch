@@ -448,13 +448,46 @@ if __name__ == '__main__':
         # 1. Calculate fitness for the entire population
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
         num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
+        
+        # Monitor initial memory
+        try:
+            device = jax.devices()[0]
+            stats = device.memory_stats()
+            if stats:
+                peak_gb = stats.get('peak_bytes_in_use', 0) / (1024**3)
+                print(f"  [VRAM] Pre-batch peak memory: {peak_gb:.2f} GB")
+        except Exception:
+            pass
+            
         for i in range(num_batches):
             start_idx = i * FITNESS_MINI_BATCH_SIZE
             end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
             pop_batch = population[start_idx:end_idx]
+            
+            # Record VRAM before block execution
+            try:
+                stats = device.memory_stats()
+                if stats:
+                    current_gb = stats.get('bytes_in_use', 0) / (1024**3)
+                    print(f"  [VRAM] Batch {i} start memory: {current_gb:.2f} GB")
+            except Exception:
+                pass
+            
             fitness_batch = vmap_fitness_batch(
                 pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
             )
+            
+            # We must block to get accurate memory readings of the compiled execution
+            fitness_batch.block_until_ready()
+            
+            try:
+                stats = device.memory_stats()
+                if stats:
+                    current_gb = stats.get('bytes_in_use', 0) / (1024**3)
+                    peak_gb = stats.get('peak_bytes_in_use', 0) / (1024**3)
+                    print(f"  [VRAM] Batch {i} finished! Peak VRAM so far: {peak_gb:.2f} GB, Current: {current_gb:.2f} GB")
+            except Exception:
+                pass
 
             # Replace any potential NaN/inf values with 0 before storing them.
             safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
