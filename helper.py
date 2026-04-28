@@ -274,8 +274,6 @@ def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi
     basis_d1 = generate_basis_single_point(point_complex) / norm_sq 
     basis_d2 = generate_basis_second_order_single_point(point_complex) / (norm_sq**2)
     eqs_vec = (coeffs[:, :25] @ basis_d1) + (coeffs[:, 25:] @ basis_d2)
-    basis = jnp.concatenate([basis_d1, basis_d2])
-    eqs_vec = coeffs @ basis # (3,)
     cy = jnp.sum(point_complex**5) + psi * jnp.prod(point_complex)
     return jnp.concatenate([jnp.array([jnp.real(cy), jnp.imag(cy)]), eqs_vec])
 
