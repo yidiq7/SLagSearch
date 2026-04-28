@@ -89,10 +89,7 @@ SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 â
 SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
-# Max operations (POPULATION_SIZE * chunk_size) GPU can process simultaneously.
-# 2.5M point-individual pairs fit safely in H200 VRAM for basic distance checks.
 MAX_PARALLEL_DIST = 2_500_000
-# 125K pairs fit safely for heavy Newton refinements (inverts large Jacobian matrices).
 MAX_PARALLEL_REFINE = 125_000
 CHUNK_SIZE_DIST = MAX_PARALLEL_DIST // POPULATION_SIZE
 CHUNK_SIZE_REFINE = MAX_PARALLEL_REFINE // POPULATION_SIZE
