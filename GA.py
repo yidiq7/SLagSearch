@@ -101,6 +101,15 @@ CHECKPOINT_INTERVAL = 100
 MINSET_SIZE = 10000
 NEWTON_STEPS = 40
 
+# Memory / Performance tuning hyperparameters
+# Controls how many points are processed in parallel during the distance calculation phase.
+# Max value is the total number of points in the point cloud (e.g. 1,000,000).
+DIST_CHUNK_SIZE = 25000
+
+# Controls how many points are processed in parallel during Newton's method refinement.
+# Max value is 2 * MINSET_SIZE (e.g. 20,000). Newton's method is memory intensive.
+REFINE_CHUNK_SIZE = 1250
+
 # JAX PRNG Key
 key = jax.random.PRNGKey(1234)
 
@@ -109,16 +118,16 @@ key = jax.random.PRNGKey(1234)
 # -----------------------------------------------------------------------------
 @partial(jit, static_argnames=('k', 'n_refine_steps', 'metric'))
 def calculate_fitness_for_one_individual(
-    coeffs: jnp.ndarray, 
-    points_real: jnp.ndarray, 
-    psi: jnp.ndarray, 
-    k: int, 
-    n_refine_steps: int, 
+    coeffs: jnp.ndarray,
+    points_real: jnp.ndarray,
+    psi: jnp.ndarray,
+    k: int,
+    n_refine_steps: int,
     metric: str = 'FS'
 ) -> jnp.float32:
     """
     Calculate fitness for one individual with automatic patch handling.
-    
+
     Args:
         coeffs: (3, 250) coefficient array
         points_real: (N, 10) array of sample points
@@ -126,15 +135,15 @@ def calculate_fitness_for_one_individual(
         k: Number of points to refine
         n_refine_steps: Newton iterations
         metric: 'FS' or 'k4_fermat'
-    
+
     Returns:
         Fitness value (0 if Newton's method fails to converge)
     """
- 
-    min_set_real, _, newton_check_pass = filter_and_refine(
-        points_real, coeffs, psi, k, n_refine_steps, filter_newton=True
-    )
 
+    min_set_real, _, newton_check_pass = filter_and_refine(
+        points_real, coeffs, psi, k, n_refine_steps, filter_newton=True,
+        dist_chunk_size=DIST_CHUNK_SIZE, refine_chunk_size=REFINE_CHUNK_SIZE
+    )
     fitness = jax.lax.cond(
         newton_check_pass,
         lambda points: compute_combined_fitness(
@@ -356,6 +365,10 @@ if __name__ == '__main__':
         '--job_id', type=str, nargs='?', const='0', default='0',
         help="Provide a label, e.g. slurm job id, for the current run."
     )
+    parser.add_argument(
+        '--preload_d1', action='store_true',
+        help="Preload the initial population with a good approximation from the d=1 case."
+    )
     args = parser.parse_args()
     print("--- Speciation-based GA with Adaptive Schedule ---")
     print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}")
@@ -418,7 +431,21 @@ if __name__ == '__main__':
             print(f"Warning: Checkpoint '{args.load_checkpoint}' not found.")
         print("\nNo valid checkpoint specified. Starting a new run.")
         key, subkey = jax.random.split(key)
-        population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
+        
+        if args.preload_d1:
+            print("Preloading population with d=1 coefficients and small perturbation...")
+            d1_coeffs = jnp.array([
+                [-0.2085878998041153, 0.08078225702047348, 0.12364989519119263, 0.42693421244621277, -0.4276507794857025, 0.05941963940858841, -0.19358153641223907, 0.2884068787097931, 0.2374262660741806, 0.17124612629413605, -0.03099866583943367, 0.07415380328893661, -0.22672683000564575, -0.1914607286453247, 0.09337177127599716, -0.053066715598106384, -0.06608302891254425, -0.3771730363368988, 0.05378381162881851, 0.0064529310911893845, 0.2938925623893738, 0.08852922171354294, 0.020463770255446434, 0.09666207432746887, -0.006990742404013872],
+                [-0.1065014973282814, 0.20087268948554993, 0.18935158848762512, -0.17352613806724548, 0.05884088575839996, -0.4646260440349579, -0.10628655552864075, -0.28338274359703064, -0.03379037603735924, 0.007989203557372093, -0.06132059171795845, -0.13810740411281586, 0.04504100978374481, 0.015115765854716301, -0.4030528962612152, -0.025872472673654556, -0.4061300754547119, -0.02022559940814972, -0.13893099129199982, 0.10193423181772232, 0.29334160685539246, 0.22542181611061096, -0.050897762179374695, 0.21366965770721436, -0.04277477413415909],
+                [0.054688308387994766, 0.07500440627336502, 0.060474496334791183, -0.3848169445991516, -0.3781052529811859, 0.38639041781425476, 0.021527282893657684, 0.4060642719268799, -0.15761728584766388, -0.1271764189004898, -0.01066557876765728, -0.13985656201839447, 0.1605837494134903, 0.15716029703617096, -0.32516127824783325, 0.016290534287691116, 0.2249980866909027, -0.2878168523311615, -0.12032820284366608, -0.04713383689522743, 0.025025269016623497, 0.08448748290538788, 0.05337755009531975, 0.05431513488292694, -0.03361976519227028]
+            ])
+            base_individual = jnp.zeros(GENOTYPE_SHAPE)
+            base_individual = base_individual.at[:, :25].set(d1_coeffs)
+            noise = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
+            population = base_individual + noise
+        else:
+            population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
+            
         population = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(population)
         species_list = []
     
