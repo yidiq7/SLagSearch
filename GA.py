@@ -381,11 +381,22 @@ if __name__ == '__main__':
     points_real = np.concatenate([np.real(points_real), np.imag(points_real)], axis=1)
     points_real = jax.device_put(jnp.asarray(points_real))
 
-    # --- Create the vmapped fitness function ---
+    # --- Create the vmapped/pmapped fitness function ---
+    num_devices = jax.local_device_count()
+    print(f"Detected {num_devices} GPU(s).")
+
     vmap_fitness_batch = vmap(
         calculate_fitness_for_one_individual,
         in_axes=(0, None, None, None, None, None), out_axes=0
     )
+
+    if num_devices > 1:
+        evaluate_fitness = jax.pmap(
+            vmap_fitness_batch,
+            in_axes=(0, None, None, None, None, None)
+        )
+    else:
+        evaluate_fitness = vmap_fitness_batch
 
     # --- Load from checkpoint or initialize ---
     start_gen = 0
@@ -481,9 +492,16 @@ if __name__ == '__main__':
             end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
             pop_batch = population[start_idx:end_idx]
             
-            fitness_batch = vmap_fitness_batch(
-                pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
-            )
+            if num_devices > 1:
+                pop_reshaped = pop_batch.reshape(num_devices, -1, *pop_batch.shape[1:])
+                fitness_reshaped = evaluate_fitness(
+                    pop_reshaped, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                )
+                fitness_batch = fitness_reshaped.reshape(-1)
+            else:
+                fitness_batch = evaluate_fitness(
+                    pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                )
 
             # Replace any potential NaN/inf values with 0 before storing them.
             safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
@@ -684,7 +702,16 @@ if __name__ == '__main__':
         start_idx = i * FITNESS_MINI_BATCH_SIZE
         end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
         population_batch = population[start_idx:end_idx]
-        fitness_batch = vmap_fitness_batch(population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC)
+        if num_devices > 1:
+            pop_reshaped = population_batch.reshape(num_devices, -1, *population_batch.shape[1:])
+            fitness_reshaped = evaluate_fitness(
+                pop_reshaped, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+            )
+            fitness_batch = fitness_reshaped.reshape(-1)
+        else:
+            fitness_batch = evaluate_fitness(
+                population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+            )
         final_fitness = final_fitness.at[start_idx:end_idx].set(fitness_batch)
 
     # 2. Use the correct vectorized speciation to assign members.
