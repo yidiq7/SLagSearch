@@ -380,7 +380,8 @@ if __name__ == '__main__':
     if num_devices > 1:
         evaluate_fitness = jax.pmap(
             vmap_fitness_batch,
-            in_axes=(0, None, None, None, None, None)
+            in_axes=(0, None, None, None, None, None),
+            static_broadcasted_argnums=(3, 4, 5)
         )
     else:
         evaluate_fitness = vmap_fitness_batch
