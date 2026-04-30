@@ -1,4 +1,3 @@
-import sympy as sp
 from typing import Optional, List
 import jax
 import jax.numpy as jnp
