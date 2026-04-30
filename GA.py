@@ -495,6 +495,8 @@ if __name__ == '__main__':
             
             if num_devices > 1:
                 pop_reshaped = pop_batch.reshape(num_devices, -1, *pop_batch.shape[1:])
+                # Transfer to host so pmap can distribute it across devices without sharding conflicts
+                pop_reshaped = jax.device_get(pop_reshaped)
                 fitness_reshaped = evaluate_fitness(
                     pop_reshaped, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
                 )
@@ -705,6 +707,8 @@ if __name__ == '__main__':
         population_batch = population[start_idx:end_idx]
         if num_devices > 1:
             pop_reshaped = population_batch.reshape(num_devices, -1, *population_batch.shape[1:])
+            # Transfer to host so pmap can distribute it across devices without sharding conflicts
+            pop_reshaped = jax.device_get(pop_reshaped)
             fitness_reshaped = evaluate_fitness(
                 pop_reshaped, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
             )
