@@ -1,0 +1,14 @@
+# Environment
+.DS_Store
+.claude/
+__pycache__/
+
+# Slurm
+*.out
+
+# Plots
+plots_slag_*
+
+# Data
+*.pkl
+checkpoints/
