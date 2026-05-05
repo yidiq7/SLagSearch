@@ -460,21 +460,23 @@ def filter_and_refine(
     batch_reproject = jax.vmap(reproject_fn)
     
     def repulsion_body_fn(i, points_state):
-        # Compute pairwise repulsion
-        diffs = points_state[:, None, :] - points_state[None, :, :]
-        dists_sq = jnp.sum(diffs**2, axis=-1)
-        
-        inv_dist_sq = 1.0 / (dists_sq + 1e-9)
-        forces = diffs * inv_dist_sq[..., None]
-        
+        # Pairwise sq-distances via matmul-trick: ||x-y||^2 = ||x||^2 + ||y||^2 - 2 x.y
+        # Replaces a (k, k, 10) broadcast with two (k, k) GEMMs that hit the tensor cores.
+        sq_norms = jnp.sum(points_state**2, axis=-1)
+        dists_sq = sq_norms[:, None] + sq_norms[None, :] - 2.0 * (points_state @ points_state.T)
+
         mask = (dists_sq < repulsion_radius**2) & (dists_sq > 1e-9)
-        net_force = jnp.sum(forces * mask[..., None], axis=1)
-        
+        W = jnp.where(mask, 1.0 / dists_sq, 0.0)
+
+        # sum_j W_ij (x_i - x_j) = x_i * sum_j W_ij - (W @ X)_i
+        sum_W = jnp.sum(W, axis=1)
+        net_force = sum_W[:, None] * points_state - W @ points_state
+
         # Apply force (no tangent projection for simplicity)
         tangent_norm = jnp.linalg.norm(net_force, axis=1, keepdims=True)
         unit_force = jnp.nan_to_num(net_force / (tangent_norm + 1e-9))
         moved_points = points_state + repulsion_strength * unit_force
-        
+
         # Reproject onto manifold
         return batch_reproject(moved_points)
  
