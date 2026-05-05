@@ -15,7 +15,7 @@ from slag_condition import compute_combined_fitness
 from helper import canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix
 from plots import make_fitness_plots
 
-jax.config.update('jax_default_matmul_precision', 'highest')
+jax.config.update('jax_default_matmul_precision', 'high')
 
 # -----------------------------------------------------------------------------
 # 1. HYPERPARAMETERS
@@ -496,11 +496,11 @@ if __name__ == '__main__':
             pop_batch = population[start_idx:end_idx]
             
             if num_devices > 1:
-                pop_reshaped = pop_batch.reshape(num_devices, -1, *pop_batch.shape[1:])
-                # Transfer to host so pmap can distribute it across devices without sharding conflicts
-                pop_reshaped = jax.device_get(pop_reshaped)
+                per_device = pop_batch.shape[0] // num_devices
+                pop_shards = [pop_batch[d * per_device:(d + 1) * per_device] for d in range(num_devices)]
+                pop_sharded = jax.device_put_sharded(pop_shards, jax.local_devices())
                 fitness_reshaped = evaluate_fitness(
-                    pop_reshaped, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                    pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
                 )
                 fitness_batch = fitness_reshaped.reshape(-1)
             else:
@@ -712,11 +712,11 @@ if __name__ == '__main__':
         end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
         population_batch = population[start_idx:end_idx]
         if num_devices > 1:
-            pop_reshaped = population_batch.reshape(num_devices, -1, *population_batch.shape[1:])
-            # Transfer to host so pmap can distribute it across devices without sharding conflicts
-            pop_reshaped = jax.device_get(pop_reshaped)
+            per_device = population_batch.shape[0] // num_devices
+            pop_shards = [population_batch[d * per_device:(d + 1) * per_device] for d in range(num_devices)]
+            pop_sharded = jax.device_put_sharded(pop_shards, jax.local_devices())
             fitness_reshaped = evaluate_fitness(
-                pop_reshaped, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
             )
             fitness_batch = fitness_reshaped.reshape(-1)
         else:
