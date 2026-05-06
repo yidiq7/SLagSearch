@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import jit, vmap
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from functools import partial
 import pickle
 import time
@@ -16,6 +17,15 @@ from helper import canonicalize_coeffs, format_array_with_commas, calculate_dist
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'high')
+
+
+def device_put_sharded(shards, devices):
+    """Drop-in replacement for the deprecated jax.device_put_sharded."""
+    mesh = Mesh(np.array(devices), ('x',))
+    sharding = NamedSharding(mesh, P('x'))
+    return jax.tree.map(
+        lambda *xs: jax.device_put(jnp.stack(xs), sharding), *shards
+    )
 
 # -----------------------------------------------------------------------------
 # 1. HYPERPARAMETERS
@@ -467,7 +477,7 @@ if __name__ == '__main__':
             if num_devices > 1:
                 per_device = pop_batch.shape[0] // num_devices
                 pop_shards = [pop_batch[d * per_device:(d + 1) * per_device] for d in range(num_devices)]
-                pop_sharded = jax.device_put_sharded(pop_shards, jax.local_devices())
+                pop_sharded = device_put_sharded(pop_shards, jax.local_devices())
                 fitness_reshaped = evaluate_fitness(
                     pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
                 )
@@ -679,7 +689,7 @@ if __name__ == '__main__':
         if num_devices > 1:
             per_device = population_batch.shape[0] // num_devices
             pop_shards = [population_batch[d * per_device:(d + 1) * per_device] for d in range(num_devices)]
-            pop_sharded = jax.device_put_sharded(pop_shards, jax.local_devices())
+            pop_sharded = device_put_sharded(pop_shards, jax.local_devices())
             fitness_reshaped = evaluate_fitness(
                 pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
             )
