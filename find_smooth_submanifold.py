@@ -236,40 +236,36 @@ def refine_point_iterative(
     Returns:
         Refined point in (10,) real representation
     """
-    alpha_init = 1.0
-    rho = 0.5
-    max_backtrack = 10
+    # Geometric damping schedule: alpha = 1, 1/2, ..., 1/2^(K-1).
+    # K=6 covers down to alpha=1/32; raise if hard points fail to converge.
+    K_DAMP = 6
+    DAMP_ALPHAS = jnp.array([0.5 ** i for i in range(K_DAMP)], dtype=jnp.float32)
 
     p_complex_init = convert_real_to_complex_single(p_10d_init)
     _, patch_index_init = determine_patch_and_rescale_single(p_complex_init)
     init_state = (p_10d_init, patch_index_init)
 
-    def backtracking_line_search(p_10d, delta_p_active, active_indices, 
-                                   f_vec, coeffs, psi):
-        """
-        Performs backtracking line search to find appropriate step size.
-        Returns: (alpha, p_10d_new, patch_index_new)
-        """
-        def search_body(carry):
-            alpha, k = carry
-            return (alpha * rho, k + 1)
-
-        def search_cond(carry):
-            alpha, k = carry
-            # Compute trial point
-            p_10d_trial = p_10d.at[active_indices].add(alpha * delta_p_active)
-            f_vec_trial = evaluate_equations_single_point(p_10d_trial, coeffs, psi)  
-            f_norm_trial = jnp.linalg.norm(f_vec_trial)
-
-            return (f_norm_trial >= f_norm_current) & (k < max_backtrack)
-
+    def damped_step(p_10d, delta_p_active, active_indices, f_vec, coeffs, psi):
+        # Under outer vmap over points, the original while_loop ran every lane
+        # to the worst-case backtrack count. Evaluating K alphas in parallel
+        # compiles to a single fused (points x K) kernel: same work upper
+        # bound, far fewer kernel launches.
         f_norm_current = jnp.linalg.norm(f_vec)
-        init_carry = (alpha_init, 0)
-        final_alpha, _ = jax.lax.while_loop(search_cond, search_body, init_carry)
 
-        p_10d_new = p_10d.at[active_indices].add(final_alpha * delta_p_active)
+        def trial(alpha):
+            p_try = p_10d.at[active_indices].add(alpha * delta_p_active)
+            f_try = evaluate_equations_single_point(p_try, coeffs, psi)
+            return p_try, jnp.linalg.norm(f_try)
 
-        return p_10d_new
+        ps, norms = jax.vmap(trial)(DAMP_ALPHAS)
+
+        # Pick the largest alpha that decreased the residual; if none did,
+        # fall through to the smallest tier (matches the original behavior
+        # of taking a tiny step in the descent direction).
+        improved = norms < f_norm_current
+        improved = improved.at[-1].set(True)
+        idx = jnp.argmax(improved)
+        return ps[idx]
 
     def body_fn(i, state):
         p_10d, patch_index = state
@@ -283,8 +279,7 @@ def refine_point_iterative(
         w = jnp.linalg.solve(JJT, -f_vec)
         delta_p_active = J.T @ w
 
-        #p_10d = p_10d.at[active_indices].add(delta_p_active)
-        p_10d = backtracking_line_search(p_10d, delta_p_active, active_indices, f_vec, coeffs, psi)
+        p_10d = damped_step(p_10d, delta_p_active, active_indices, f_vec, coeffs, psi)
 
         p_complex = convert_real_to_complex_single(p_10d)
         p_complex_rescaled, patch_index = determine_patch_and_rescale_single(p_complex)
