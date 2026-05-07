@@ -460,9 +460,18 @@ if __name__ == '__main__':
         key, subkey = jax.random.split(key)
         
         if args.preload_d1:
-            print("Preloading population with d=1 coefficients and small perturbation...")
-            noise = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
-            population = base_d1_individual + noise
+            print("Preloading population: 25% near d=1 baseline, 75% with wide d=2 perturbation...")
+            n_pure = POPULATION_SIZE // 4
+            n_wide = POPULATION_SIZE - n_pure
+            k_pure, k_wide = jax.random.split(subkey)
+            noise_pure = jax.random.uniform(k_pure, (n_pure, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
+            d2_wide = jax.random.uniform(k_wide, (n_wide, GENOTYPE_SHAPE[0], 225), minval=-0.2, maxval=0.2)
+            d1_wide = jnp.zeros((n_wide, GENOTYPE_SHAPE[0], 25))
+            noise_wide = jnp.concatenate([d1_wide, d2_wide], axis=2)
+            population = jnp.concatenate([
+                base_d1_individual + noise_pure,
+                base_d1_individual + noise_wide,
+            ], axis=0)
         else:
             population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
             
@@ -655,8 +664,17 @@ if __name__ == '__main__':
                  key, subkey = jax.random.split(key)
                  randoms_needed = POPULATION_SIZE - current_pop_size
                  if args.preload_d1:
-                     noise = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
-                     random_individuals = base_d1_individual + noise
+                     n_pure = randoms_needed // 4
+                     n_wide = randoms_needed - n_pure
+                     k_pure, k_wide = jax.random.split(subkey)
+                     noise_pure = jax.random.uniform(k_pure, (n_pure, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
+                     d2_wide = jax.random.uniform(k_wide, (n_wide, GENOTYPE_SHAPE[0], 225), minval=-0.2, maxval=0.2)
+                     d1_wide = jnp.zeros((n_wide, GENOTYPE_SHAPE[0], 25))
+                     noise_wide = jnp.concatenate([d1_wide, d2_wide], axis=2)
+                     random_individuals = jnp.concatenate([
+                         base_d1_individual + noise_pure,
+                         base_d1_individual + noise_wide,
+                     ], axis=0)
                  else:
                      random_individuals = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
                  random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
