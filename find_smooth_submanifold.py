@@ -409,17 +409,18 @@ def filter_and_refine(
         psi=psi,
         n_steps=n_refine_steps
     )
-    refine_batch = jax.vmap(refine_fn)
-    
+    vmapped_refine = jax.vmap(refine_fn)
+
     # Compute initial distances
     all_distances = compute_distances_batched(points, coeffs, psi)
-    
+
+
     # Select best 2k points
     best_2k_indices = jnp.argsort(all_distances)[:2*k]
     top_2k_points = points[best_2k_indices]
-    
+
     # Refine these points
-    refined_points_10d = refine_batch(top_2k_points)
+    refined_points_10d = vmapped_refine(top_2k_points)
     distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi)
     
     # Select best k points
@@ -445,15 +446,16 @@ def filter_and_refine(
         repulsion_strength = 0.3 * R_scale
     
     # Since now the points are much closer to the manifold,
-    # it would probably takes less refine steps.  
+    # it would probably takes less refine steps.
     reproject_fn = partial(
         refine_point_iterative,
         coeffs=coeffs,
         psi=psi,
         n_steps=10
     )
-    batch_reproject = jax.vmap(reproject_fn)
-    
+    vmapped_reproject = jax.vmap(reproject_fn)
+
+
     def repulsion_body_fn(i, points_state):
         # Pairwise sq-distances via matmul-trick: ||x-y||^2 = ||x||^2 + ||y||^2 - 2 x.y
         # Replaces a (k, k, 10) broadcast with two (k, k) GEMMs that hit the tensor cores.
@@ -473,7 +475,7 @@ def filter_and_refine(
         moved_points = points_state + repulsion_strength * unit_force
 
         # Reproject onto manifold
-        return batch_reproject(moved_points)
+        return vmapped_reproject(moved_points)
  
     # Run repulsion if requested
     final_points = jax.lax.cond(
