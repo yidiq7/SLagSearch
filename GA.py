@@ -114,11 +114,7 @@ NEWTON_STEPS = 40
 # Memory / Performance tuning hyperparameters
 # Controls how many points are processed in parallel during the distance calculation phase.
 # Max value is the total number of points in the point cloud (e.g. 1,000,000).
-DIST_CHUNK_SIZE = 25000
-
-# Controls how many points are processed in parallel during Newton's method refinement.
-# Max value is 2 * MINSET_SIZE (e.g. 20,000). Newton's method is memory intensive.
-REFINE_CHUNK_SIZE = 1250
+DIST_CHUNK_SIZE = 50000
 
 # JAX PRNG Key
 key = jax.random.PRNGKey(1234)
@@ -152,7 +148,7 @@ def calculate_fitness_for_one_individual(
 
     min_set_real, _, newton_check_pass = filter_and_refine(
         points_real, coeffs, psi, k, n_refine_steps, filter_newton=True,
-        dist_chunk_size=DIST_CHUNK_SIZE, refine_chunk_size=REFINE_CHUNK_SIZE
+        dist_chunk_size=DIST_CHUNK_SIZE
     )
     fitness = jax.lax.cond(
         newton_check_pass,

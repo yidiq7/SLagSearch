@@ -384,7 +384,7 @@ def _project_forces_to_tangent_space(
     return jnp.zeros_like(forces).at[:, active_indices].set(forces_tangent_active)
 
 
-@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps', 'dist_chunk_size', 'refine_chunk_size'))
+@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps', 'dist_chunk_size'))
 def filter_and_refine(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
@@ -395,8 +395,7 @@ def filter_and_refine(
     n_repulsion_steps: int = 15,
     repulsion_strength: Optional[float] = None,
     repulsion_radius: Optional[float] = None,
-    dist_chunk_size: int = 25000,
-    refine_chunk_size: int = 1250
+    dist_chunk_size: int = 50000
 ) -> tuple[jnp.ndarray, jnp.ndarray, bool]:
     """
     Filters and refines points with automatic patch handling.
@@ -434,34 +433,16 @@ def filter_and_refine(
         n_steps=n_refine_steps
     )
     vmapped_refine = jax.vmap(refine_fn)
-    
-    def refine_batch(pts):
-        n_pts = pts.shape[0]
-        chunk_size = refine_chunk_size
-        if n_pts <= chunk_size:
-            return vmapped_refine(pts)
-            
-        n_chunks = (n_pts + chunk_size - 1) // chunk_size
-        pad_size = n_chunks * chunk_size - n_pts
-        
-        padded_pts = jnp.pad(pts, ((0, pad_size), (0, 0)))
-        pts_reshaped = padded_pts.reshape((n_chunks, chunk_size, -1))
-        
-        def scan_body(carry, pts_chunk):
-            return carry, vmapped_refine(pts_chunk)
-            
-        _, refined_reshaped = jax.lax.scan(scan_body, None, pts_reshaped)
-        return refined_reshaped.reshape((-1, 10))[:n_pts]
-    
+
     # Compute initial distances
     all_distances = compute_distances_batched(points, coeffs, psi, chunk_size=dist_chunk_size)
-    
+
     # Select best 2k points
     best_2k_indices = jnp.argsort(all_distances)[:2*k]
     top_2k_points = points[best_2k_indices]
-    
+
     # Refine these points
-    refined_points_10d = refine_batch(top_2k_points)
+    refined_points_10d = vmapped_refine(top_2k_points)
     distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, chunk_size=dist_chunk_size)
     
     # Select best k points
@@ -487,7 +468,7 @@ def filter_and_refine(
         repulsion_strength = 0.3 * R_scale
     
     # Since now the points are much closer to the manifold,
-    # it would probably takes less refine steps.  
+    # it would probably takes less refine steps.
     reproject_fn = partial(
         refine_point_iterative,
         coeffs=coeffs,
@@ -495,25 +476,7 @@ def filter_and_refine(
         n_steps=10
     )
     vmapped_reproject = jax.vmap(reproject_fn)
-    
-    def batch_reproject(pts):
-        n_pts = pts.shape[0]
-        chunk_size = refine_chunk_size
-        if n_pts <= chunk_size:
-            return vmapped_reproject(pts)
-            
-        n_chunks = (n_pts + chunk_size - 1) // chunk_size
-        pad_size = n_chunks * chunk_size - n_pts
-        
-        padded_pts = jnp.pad(pts, ((0, pad_size), (0, 0)))
-        pts_reshaped = padded_pts.reshape((n_chunks, chunk_size, -1))
-        
-        def scan_body(carry, pts_chunk):
-            return carry, vmapped_reproject(pts_chunk)
-            
-        _, reprojected_reshaped = jax.lax.scan(scan_body, None, pts_reshaped)
-        return reprojected_reshaped.reshape((-1, 10))[:n_pts]
-    
+
     def repulsion_body_fn(i, points_state):
         # Pairwise sq-distances via matmul-trick: ||x-y||^2 = ||x||^2 + ||y||^2 - 2 x.y
         # Replaces a (k, k, 10) broadcast with two (k, k) GEMMs that hit the tensor cores.
@@ -533,7 +496,7 @@ def filter_and_refine(
         moved_points = points_state + repulsion_strength * unit_force
 
         # Reproject onto manifold
-        return batch_reproject(moved_points)
+        return vmapped_reproject(moved_points)
  
     # Run repulsion if requested
     final_points = jax.lax.cond(
