@@ -127,10 +127,10 @@ def _create_coefficient_mapping(exponents: jnp.ndarray):
 
 # --- Pre-compute constants at module load time for maximum performance ---
 
-# For degree=4 (k=4 Donaldson): 70 monomials, 5 canonical forms.
+# For degree=4 (k=4 Headrick-Nassar): 70 monomials, 5 canonical forms.
 #   (5, 5) array of the unique, sorted exponent structures.
 #   (70,) array of indices (0-4) mapping each monomial to its canonical form.
-# For degree=5 (k=5 Donaldson): 126 monomials, 7 canonical forms.
+# For degree=5 (k=5 Headrick-Nassar): 126 monomials, 7 canonical forms.
 #   (7, 5) array of the unique, sorted exponent structures.
 #   (126,) array of indices (0-6) mapping each monomial to its canonical form.
 _QUINTIC_EXPONENTS = generate_quintic_exponents(num_vars=5, degree=4)
@@ -149,7 +149,7 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     Returns:
         A (4, 4) complex array for the Hermitian metric g_ab_bar.
     """
-    # The unique_coeffs array holds the balanced metric coefficients, one per
+    # The unique_coeffs array holds the Headrick-Nassar metric coefficients, one per
     # canonical exponent form. Inspect `_CANONICAL_EXPONENT_FORMS` for the ordering.
     #
     # For degree=4 (current): 5 canonical forms, 70 monomials.
@@ -171,7 +171,7 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     # Inhomogeneous coordinates (zeta) are the other 4 coordinates
     zeta = delete_index(z, patch_index)
 
-    # Balanced metric coefficients for the Fermat quintic.
+    # Headrick-Nassar metric coefficients for the Fermat quintic.
     # degree=5 (commented out):
     #unique_coeffs = jnp.array([-4.79909*240, -75.298664*12, -83.726102*8, -103.669506*8, -39.049639*12, -33.852379*12, 1.0*(-180)])
     # degree=4 (active):
