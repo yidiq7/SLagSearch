@@ -243,12 +243,14 @@ def main():
     history = []
 
     # Initial mining + loss eval, before any optimizer step.
-    min_set_real, _, newton_check_pass = filter_and_refine(
+    min_set_real, distances, _ = filter_and_refine(
         points_real, coeffs, psi,
         args.minset_size, args.newton_steps, filter_newton=True,
     )
-    if not bool(newton_check_pass):
-        print("  [warn] Newton check failed during initial mining")
+    mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
+    print(f"  [mining] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
+    if mean_d > 1e-4:
+        print(f"  [warn] mean Newton distance > 1e-4 -- points may not be on the manifold")
     (init_loss, (init_lag, init_spec)), _ = loss_value_and_grad(
         coeffs, min_set_real, psi, args.inner_newton_steps, args.metric
     )
@@ -275,12 +277,14 @@ def main():
         # Skip step==0: just mined for the initial eval. Mining schedule
         # then fires at step==mine_interval, 2*mine_interval, etc.
         if step > 0 and step % args.mine_interval == 0:
-            min_set_real, _, newton_check_pass = filter_and_refine(
+            min_set_real, distances, _ = filter_and_refine(
                 points_real, coeffs, psi,
                 args.minset_size, args.newton_steps, filter_newton=True,
             )
-            if not bool(newton_check_pass):
-                print(f"  [warn] Newton check failed during mining at step {step}")
+            mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
+            print(f"  [mining @ step {step}] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
+            if mean_d > 1e-4:
+                print(f"  [warn] mean Newton distance > 1e-4 -- points may not be on the manifold")
 
         (loss_val, (lag_loss, spec_loss)), grads = loss_value_and_grad(
             coeffs, min_set_real, psi, args.inner_newton_steps, args.metric
