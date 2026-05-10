@@ -39,6 +39,8 @@ from helper import (
 from slag_condition import (
     compute_holomorphic_form_restricted,
     compute_kahler_form_unrestricted,
+    compute_lagrangian_condition_fitness,
+    compute_special_condition_fitness,
     compute_special_condition_fitness_smooth,
     vmap_compute_affine_jacobian,
     vmap_compute_restriction,
@@ -117,6 +119,38 @@ def compute_losses_on_fixed_points(
     special_loss = 1.0 - order_parameter
 
     return lagrangian_loss, special_loss
+
+
+def compute_ga_fitness(
+    min_set_real: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    metric: str,
+):
+    """GA-comparable (lag_fit, spec_fit) on the given points. No extra Newton.
+
+    Uses the same conventions as compute_combined_fitness in slag_condition.py:
+    lagrangian_fitness = exp(-10 * mean of bottom-99% restricted Frobenius norms),
+    special_fitness    = histogram Shannon-entropy fitness (n_bins=100).
+    """
+    min_set = convert_real_to_complex_batch(min_set_real)
+    patch_indices = determine_patches_batch(min_set)
+
+    jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
+    restrictions = vmap_compute_restriction(jacobians)
+
+    kahler_form_unrestricted = compute_kahler_form_unrestricted(
+        min_set, patch_indices, metric=metric
+    )
+    lag_fit = compute_lagrangian_condition_fitness(
+        kahler_form_unrestricted, restrictions, k=10
+    )
+
+    phases = compute_holomorphic_form_restricted(
+        min_set, patch_indices, psi, restrictions, phase_only=True
+    )
+    spec_fit = compute_special_condition_fitness(phases, n_bins=100)
+    return lag_fit, spec_fit
 
 
 def make_total_loss(loss_kind: str):
@@ -198,6 +232,7 @@ def main():
         jax.value_and_grad(total_loss, argnums=0, has_aux=True),
         static_argnames=("n_refine_steps", "metric"),
     )
+    ga_fitness_jit = jax.jit(compute_ga_fitness, static_argnames=("metric",))
 
     psi = jnp.asarray(args.psi, dtype=jnp.complex128)
     history = []
@@ -212,12 +247,13 @@ def main():
     (init_loss, (init_lag, init_spec)), _ = loss_value_and_grad(
         coeffs, min_set_real, psi, args.inner_newton_steps, args.metric
     )
-    init_lag_fit = float(jnp.exp(-10.0 * init_lag))
-    init_spec_fit = 1.0 - float(init_spec)
+    init_lag_fit, init_spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
+    init_lag_fit = float(init_lag_fit)
+    init_spec_fit = float(init_spec_fit)
     print(
         f"initial     | loss {float(init_loss):.6f} | "
-        f"lag_loss {float(init_lag):.6f} (fit {init_lag_fit:.4f}) | "
-        f"spec_loss {float(init_spec):.6f} (fit {init_spec_fit:.4f})"
+        f"lag_loss {float(init_lag):.6f} | spec_loss {float(init_spec):.6f} | "
+        f"lag_fit {init_lag_fit:.4f} | spec_fit {init_spec_fit:.4f}"
     )
     history.append({
         "step": 0,
@@ -249,15 +285,17 @@ def main():
         coeffs = optax.apply_updates(coeffs, updates)
         coeffs = normalize_coeffs(coeffs)
 
+        # GA-comparable fitness on the post-update coeffs and (un-inner-Newton'd) min_set.
+        lag_fit, spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
+        lag_fit = float(lag_fit)
+        spec_fit = float(spec_fit)
+
         gnorm = float(jnp.linalg.norm(grads))
-        # Match GA's fitness conventions for easy comparison.
-        lag_fit = float(jnp.exp(-10.0 * lag_loss))
-        spec_fit = 1.0 - float(spec_loss)
         dt = time.time() - t0
         print(
             f"step {step+1:5d} | loss {float(loss_val):.6f} | "
-            f"lag_loss {float(lag_loss):.6f} (fit {lag_fit:.4f}) | "
-            f"spec_loss {float(spec_loss):.6f} (fit {spec_fit:.4f}) | "
+            f"lag_loss {float(lag_loss):.6f} | spec_loss {float(spec_loss):.6f} | "
+            f"lag_fit {lag_fit:.4f} | spec_fit {spec_fit:.4f} | "
             f"|grad| {gnorm:.2e} | {dt:.2f}s"
         )
         history.append({
