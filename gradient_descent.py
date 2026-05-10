@@ -153,17 +153,17 @@ def compute_ga_fitness(
     return lag_fit, spec_fit
 
 
-def make_total_loss(loss_kind: str):
+def make_total_loss(loss_kind: str, lag_weight: float, spec_weight: float):
     def total_loss(coeffs, min_set_real, psi, n_refine_steps, metric):
         lag, spec = compute_losses_on_fixed_points(
             coeffs, min_set_real, psi, n_refine_steps, metric
         )
         if loss_kind == "lag":
-            total = lag
+            total = lag_weight * lag
         elif loss_kind == "spec":
-            total = spec
+            total = spec_weight * spec
         elif loss_kind == "both":
-            total = lag + spec
+            total = lag_weight * lag + spec_weight * spec
         else:
             raise ValueError(f"Unknown loss kind {loss_kind}")
         return total, (lag, spec)
@@ -199,6 +199,10 @@ def main():
                         choices=["FS", "k4_fermat"])
     parser.add_argument("--loss", type=str, default="both",
                         choices=["lag", "spec", "both"])
+    parser.add_argument("--lag_weight", type=float, default=1.0,
+                        help="Weight on Lagrangian loss (used when --loss is 'lag' or 'both').")
+    parser.add_argument("--spec_weight", type=float, default=1.0,
+                        help="Weight on special loss (used when --loss is 'spec' or 'both').")
     parser.add_argument("--init", type=str, default="d1_zeropad",
                         choices=["scratch", "d1_zeropad", "pkl"])
     parser.add_argument("--init_pkl", type=str, default=None,
@@ -212,6 +216,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     print("=== GD for sLag search (d=1+2) ===")
     print(f"job_id={args.job_id} init={args.init} loss={args.loss} "
+          f"(lag_w={args.lag_weight} spec_w={args.spec_weight}) "
           f"lr={args.lr} steps={args.steps}")
     print(f"mine_interval={args.mine_interval} minset_size={args.minset_size} "
           f"newton_steps={args.newton_steps} inner_newton_steps={args.inner_newton_steps}")
@@ -227,7 +232,7 @@ def main():
     optimizer = optax.adam(learning_rate=args.lr)
     opt_state = optimizer.init(coeffs)
 
-    total_loss = make_total_loss(args.loss)
+    total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight)
     loss_value_and_grad = jax.jit(
         jax.value_and_grad(total_loss, argnums=0, has_aux=True),
         static_argnames=("n_refine_steps", "metric"),
