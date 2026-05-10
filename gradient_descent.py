@@ -200,12 +200,40 @@ def main():
     )
 
     psi = jnp.asarray(args.psi, dtype=jnp.complex128)
-    min_set_real = None
     history = []
+
+    # Initial mining + loss eval, before any optimizer step.
+    min_set_real, _, newton_check_pass = filter_and_refine(
+        points_real, coeffs, psi,
+        args.minset_size, args.newton_steps, filter_newton=True,
+    )
+    if not bool(newton_check_pass):
+        print("  [warn] Newton check failed during initial mining")
+    (init_loss, (init_lag, init_spec)), _ = loss_value_and_grad(
+        coeffs, min_set_real, psi, args.inner_newton_steps, args.metric
+    )
+    init_lag_fit = float(jnp.exp(-10.0 * init_lag))
+    init_spec_fit = 1.0 - float(init_spec)
+    print(
+        f"initial     | loss {float(init_loss):.6f} | "
+        f"lag_loss {float(init_lag):.6f} (fit {init_lag_fit:.4f}) | "
+        f"spec_loss {float(init_spec):.6f} (fit {init_spec_fit:.4f})"
+    )
+    history.append({
+        "step": 0,
+        "loss": float(init_loss),
+        "lag_loss": float(init_lag),
+        "spec_loss": float(init_spec),
+        "lag_fit": init_lag_fit,
+        "spec_fit": init_spec_fit,
+        "gnorm": None,
+    })
 
     for step in range(args.steps):
         t0 = time.time()
-        if step % args.mine_interval == 0:
+        # Skip step==0: just mined for the initial eval. Mining schedule
+        # then fires at step==mine_interval, 2*mine_interval, etc.
+        if step > 0 and step % args.mine_interval == 0:
             min_set_real, _, newton_check_pass = filter_and_refine(
                 points_real, coeffs, psi,
                 args.minset_size, args.newton_steps, filter_newton=True,
