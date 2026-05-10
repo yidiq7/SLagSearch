@@ -1,0 +1,21 @@
+[project]
+name = "slagsearch"
+version = "0.1.0"
+description = "Special Lagrangian search in the Fermat quintic Calabi-Yau threefold (GA + gradient descent)."
+requires-python = ">=3.12"
+dependencies = [
+    # Core numerics. JAX 0.10 series; cuda12 extras pull in jaxlib, jax-cuda12-pjrt/plugin,
+    # and the nvidia-cu12 wheels. Pinning to the 0.10.x line so a minor bump doesn't break
+    # sharding / partitioning APIs we rely on.
+    "jax[cuda12]>=0.10,<0.11",
+    "numpy>=2.0,<3",
+    "scipy>=1.17,<2",
+    # Optimizers used by gradient_descent.py (Adam).
+    "optax>=0.2.4",
+    # Plots.
+    "matplotlib>=3.10,<4",
+]
+
+[tool.uv]
+# Keep transitive resolution stable across machines.
+managed = true
