@@ -731,11 +731,20 @@ if __name__ == '__main__':
     # Sort the populated species by their best current fitness
     final_species_list.sort(key=lambda s: jnp.max(jnp.array(s.fitness_values)), reverse=True)
 
+    if final_species_list:
+        top_fitness_score = jnp.max(jnp.array(final_species_list[0].fitness_values))
+    else:
+        top_fitness_score = 0.0
+
     rank = 1
     for s in final_species_list:
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
         best_member = s.members[best_member_idx]
         best_fitness = s.fitness_values[best_member_idx]
+
+        if best_fitness < 0.5 * top_fitness_score:
+            print(f"\nStopping plot generation: Species {s.id} fitness ({best_fitness:.5f}) is below half of the top fitness ({top_fitness_score:.5f}).")
+            break
 
         print(f"\n--- Species {s.id} (Best Fitness: {best_fitness:.5f}) ---")
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
