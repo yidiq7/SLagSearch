@@ -125,7 +125,8 @@ def make_fitness_plots(
     if not compare_with_random:
         # Plot the Kahler form loss
         plt.figure(figsize=(10, 6))
-        plt.hist(frobenius_norms, bins=200, alpha=0.7, label='Potential sLag', color='skyblue', density=True)
+        plt.hist(frobenius_norms, bins=200, range=(0, 3), alpha=0.7, label='Potential sLag', color='skyblue', density=True)
+        plt.xlim(0, 3)
         plt.xlabel('Frobenius norm')
         plt.ylabel('Probability density')
         plt.title('Distribution of the norm of the Kahler form')
@@ -178,8 +179,9 @@ def make_fitness_plots(
         )
 
         plt.figure(figsize=(10, 6))
-        plt.hist(frobenius_norms, bins=200, alpha=0.7, label='Potential sLag', color='skyblue', density=True)
-        plt.hist(frobenius_norms_random, bins=200, alpha=0.7, label='Random intersection', color='orange', density=True)
+        plt.hist(frobenius_norms, bins=200, range=(0, 3), alpha=0.7, label='Potential sLag', color='skyblue', density=True)
+        plt.hist(frobenius_norms_random, bins=200, range=(0, 3), alpha=0.7, label='Random intersection', color='orange', density=True)
+        plt.xlim(0, 3)
         plt.xlabel('Frobenius norm')
         plt.ylabel('Probability density')
         plt.title('Distribution of the norm of the Kahler form')
