@@ -39,7 +39,7 @@ CYPOINTSFILE = f'1mil_patch_all_psi{PSI}_seed1024.pkl'
 
 # Metric used when compute the kahler form
 # Options are 1. FS - Fubini-Study metric
-#             2. k4_fermat - Ricci-flat metric with k = 4 in Donaldson's construction. Fermat only.
+#             2. k4_fermat - Ricci-flat metric with k = 4 from Headrick-Nassar energy-functional minimization. Fermat only.
 #METRIC = 'FS'
 METRIC = 'k4_fermat'
 
