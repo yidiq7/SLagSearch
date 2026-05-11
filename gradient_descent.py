@@ -36,6 +36,7 @@ from helper import (
     determine_patches_batch,
     format_array_with_commas,
 )
+from plots import make_fitness_plots
 from slag_condition import (
     compute_holomorphic_form_restricted,
     compute_kahler_form_unrestricted,
@@ -215,6 +216,17 @@ def main():
                         help="Path to a full checkpoint pkl to resume from. "
                              "Overrides --init and restores coeffs, opt_state, "
                              "step counter, and training history.")
+    parser.add_argument("--make_plots", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Call make_fitness_plots on the final coeffs "
+                             "(same plots as GA.py). Use --no-make_plots to skip.")
+    parser.add_argument("--plots_only", action="store_true",
+                        help="Skip training. Load --resume <ckpt>, run "
+                             "make_fitness_plots, exit.")
+    parser.add_argument("--plot_k", type=int, default=100000,
+                        help="Point cloud size for the final plots.")
+    parser.add_argument("--plot_newton_steps", type=int, default=100,
+                        help="Newton refinement steps for the final plots.")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -227,6 +239,24 @@ def main():
 
     points_real, src_path = load_points(args.psi)
     print(f"Loaded {len(points_real)} points from {src_path}")
+    psi = jnp.asarray(args.psi, dtype=jnp.complex128)
+
+    if args.plots_only:
+        if args.resume is None:
+            raise ValueError("--plots_only requires --resume <ckpt.pkl>")
+        with open(args.resume, "rb") as f:
+            ckpt = pickle.load(f)
+        coeffs = jnp.asarray(ckpt["coeffs"], dtype=jnp.float64)
+        parent_folder = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
+        print(f"=== Plots only: coeffs from {args.resume} -> {parent_folder} ===")
+        make_fitness_plots(
+            points_real, coeffs, psi,
+            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+            metric=args.metric, compare_with_random=True,
+            parent_folder=parent_folder,
+        )
+        print("Done.")
+        return
 
     optimizer = optax.adam(learning_rate=args.lr)
     start_step = 0
@@ -263,8 +293,6 @@ def main():
         static_argnames=("n_refine_steps", "metric"),
     )
     ga_fitness_jit = jax.jit(compute_ga_fitness, static_argnames=("metric",))
-
-    psi = jnp.asarray(args.psi, dtype=jnp.complex128)
 
     # Initial mining + loss eval (also re-runs on resume to repopulate min_set_real).
     min_set_real, distances, _ = filter_and_refine(
@@ -360,6 +388,16 @@ def main():
 
     print("\nFinal coeffs:")
     print(format_array_with_commas(coeffs))
+
+    if args.make_plots:
+        parent_folder = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
+        print(f"\n=== Plotting final coeffs -> {parent_folder} ===")
+        make_fitness_plots(
+            points_real, coeffs, psi,
+            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+            metric=args.metric, compare_with_random=True,
+            parent_folder=parent_folder,
+        )
 
 
 if __name__ == "__main__":
