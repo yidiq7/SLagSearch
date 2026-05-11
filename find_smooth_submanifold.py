@@ -237,8 +237,8 @@ def refine_point_iterative(
         Refined point in (10,) real representation
     """
     # Geometric damping schedule: alpha = 1, 1/2, ..., 1/2^(K-1).
-    # K=6 covers down to alpha=1/32; raise if hard points fail to converge.
-    K_DAMP = 6
+    # K=8 covers down to alpha=1/128 for hard points near singular Jacobians.
+    K_DAMP = 8
     DAMP_ALPHAS = jnp.array([0.5 ** i for i in range(K_DAMP)], dtype=jnp.float32)
 
     p_complex_init = convert_real_to_complex_single(p_10d_init)
