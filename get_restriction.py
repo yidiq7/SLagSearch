@@ -77,7 +77,7 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
     """
     Processes a 5x8 JAX array according to the specified steps:
     1. Finds the combination of 5 columns that forms a 5x5 submatrix
-       with the largest determinant.
+       with the largest |determinant|.
     2. Creates an 8x8 identity matrix and replaces rows corresponding
        to the chosen column indices with the rows of the input matrix.
     3. Computes the inverse of this new 8x8 matrix.
@@ -114,10 +114,10 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
     # a nan instead. Convert these cases to 0 first.
     all_determinants = jnp.nan_to_num(all_determinants, nan=0.0)
 
-    # --- Step 2: Find the combination with the largest determinant ---
-    # Get the index of the maximum determinant.
-    largest_det_idx = jnp.argmax(all_determinants)
-    # Retrieve the actual column indices for the combination with the largest determinant.
+    # --- Step 2: Find the combination with the largest |determinant| ---
+    # Get the index of the maximum |determinant|.
+    largest_det_idx = jnp.argmax(jnp.abs(all_determinants))
+    # Retrieve the actual column indices for the combination with the largest |determinant|.
     ignored_coords = ALL_COMBINATIONS[largest_det_idx] # This is a 1D array of 5 indices
 
     # --- Step 3: Create an 8x8 identity matrix ---
@@ -152,18 +152,31 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
 
 def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray):
     """
-    Computes the restriction applied to the holomorphic 3-form from the full restriction
+    Computes the restriction applied to the holomorphic 3-form from the full restriction.
+
+    Applies a basis-orientation correction by comparing the chosen basis (from
+    compute_restriction's argmax|det|) to a fixed canonical reference within
+    each patch: C = (0, 1, 2), i.e., parametrize the tangent space by the first
+    3 affine real coords. The change-of-basis matrix from chosen K-basis to
+    canonical C-basis has entries M_change[i, j] = v_j[C[i]] = restriction[i, j]
+    for i in {0, 1, 2}. So M_change is just the first 3 rows of the restriction
+    matrix. Multiplying det(M) by sign(det(M_change)) flips the chosen basis to
+    align with the canonical orientation, removing the basis-orientation noise
+    that causes {theta, theta+pi} bimodality. Combined with the (-1)^(I + d)
+    factor in compute_holomorphic_form, this gives globally consistent Omega
+    phases across patches.
+
+    Degenerate case: when |det(M_change)| < epsilon (canonical basis is
+    near-degenerate at the point), the sign defaults to +1.
 
     Args:
-        restriction: An (N, 8, 8) array of the numerical restriction matrices.
-        Omega_coord: The index of the affine coordinates used to represent the holomorphic
-                     3-form. For example, With z_4 being the dependent coordinate,
-                     this list would be [0, 1, 2]. If z_3 is chosen as the dependent coordinate,
-                     then the list would be [0, 1, 3]. It doesn't depend on patch
-                     (which coordinate set to 1.)
+        restriction: (N, 8, 3) array of restriction matrices.
+        Omega_coord: (N, 3) array of the 3 affine-complex-coord indices for
+                     the holomorphic-3-form wedge.
 
     Return:
-        An (N,) array of the determinant of the jacobian.
+        An (N,) complex array: phase carrier of Omega restricted to L,
+        with the basis orientation aligned to canonical C = (0, 1, 2).
     """
     Omega_coord_y = Omega_coord + 4
     N = restriction.shape[0]
@@ -174,6 +187,16 @@ def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray
     safe_max_vals = jnp.where(max_abs_vals == 0, 1.0, max_abs_vals)
     scaling_factors = safe_max_vals[:, None, None]
     jacobian_scaled = jacobian / scaling_factors
-    return jnp.linalg.det(jacobian_scaled)
+    det_M = jnp.linalg.det(jacobian_scaled)
+
+    # Orientation correction: change-of-basis det from chosen K-basis to
+    # canonical C = (0, 1, 2) basis = det of restriction's first 3 rows.
+    M_change = restriction[:, :3, :]
+    change_det = jnp.linalg.det(M_change)
+    sign_correction = jnp.where(
+        jnp.abs(change_det) < 1e-12, 1.0, jnp.sign(change_det)
+    )
+
+    return det_M * sign_correction
 
 

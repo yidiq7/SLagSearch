@@ -427,11 +427,18 @@ def filter_and_refine(
     best_indices = jnp.argsort(distance_refined)[:k]
     top_k_points = refined_points_10d[best_indices]
     
-    # Check convergence if requested
+    # Check convergence if requested. Old check tripped a `> 1e-16` lower bound
+    # spuriously under FP64 (where the Newton residual can hit the precision
+    # floor on a true sLag). New check: catch only genuinely bad convergence
+    # (mean > 1e-4) or NaN/inf in the distances.
     initial_newton_check = True
     if filter_newton:
-        mean_distance = jnp.nan_to_num(jnp.mean(distance_refined[best_indices]))
-        initial_newton_check = (mean_distance <= 1e-4) & (mean_distance > 1e-16)
+        finite_mask = jnp.isfinite(distance_refined[best_indices])
+        all_finite = jnp.all(finite_mask)
+        mean_distance = jnp.where(
+            all_finite, jnp.mean(distance_refined[best_indices]), jnp.inf
+        )
+        initial_newton_check = (mean_distance <= 1e-4) & all_finite
     
     # --- STEP 2: Repulsion for uniform distribution ---
     # Compute scale for repulsion parameters

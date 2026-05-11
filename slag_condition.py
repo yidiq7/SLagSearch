@@ -349,19 +349,34 @@ def compute_holomorphic_form(
     dfdz_func = jax.jacrev(cy_hypersurface, argnums=0, holomorphic=True)
     
     def compute_omega_single(point: jnp.ndarray, patch_idx: int, psi: jnp.ndarray):
-        """Compute Omega for a single point in a specific patch."""
+        """Compute Omega for a single point in a specific patch.
+
+        Sign convention: an overall (-1)^max_idx factor.
+          - (-1)^max_idx: Poincare residue. Moving dw_max_idx to the front of
+            the ambient affine 4-form before taking the residue introduces
+            (-1)^max_idx, which is needed for different max_idx choices within
+            a patch to give the same Omega value.
+
+        Note: the (-1)^patch_idx factor (Levi-Civita Euler form restriction)
+        was previously included here, but causes a (-1)^I cross-patch parity
+        when combined with the basis-orientation correction in
+        compute_Omega_restriction (which implicitly accounts for the
+        cross-patch change-of-basis sign between patch-local canonical
+        references). Dropping it gives globally consistent phases.
+        """
         # Get the 4 affine coordinates (excluding the patch coordinate)
         affine_coords = delete_index(point, patch_idx)
-        
+
         dfdz = dfdz_func(affine_coords, psi)
-        
-        # Choose the one with smallest magnitude
+
+        # Choose the one with the largest magnitude
         max_idx = jnp.argmax(jnp.abs(dfdz))
-        Omega = 1 / dfdz[max_idx]
-        
+        sign = jnp.where(max_idx % 2 == 0, 1.0, -1.0)
+        Omega = sign / dfdz[max_idx]
+
         # Get the coordinate indices in the affine system
         Omega_coord = get_Omega_coord(max_idx)
-       
+
         return Omega, max_idx, Omega_coord
     
     vmapped_compute = jax.vmap(compute_omega_single, in_axes=(0, 0, None))
@@ -379,13 +394,13 @@ def compute_holomorphic_form_restricted(
 ) -> jnp.ndarray:
     """
     Computes the restricted holomorphic form with patch-aware phase corrections.
-    
+
     Args:
         points_complex: An (N, 5) complex array
         patch_indices: An (N,) integer array
         restriction: An (N, 8, 3) array
         phase_only: If True, return only phases; if False, return full Omega
-        
+
     Returns:
         If phase_only=True: An (N,) array of phases in [0, 2π)
         If phase_only=False: An (N,) complex array
@@ -393,7 +408,7 @@ def compute_holomorphic_form_restricted(
     Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form(
         points_complex, patch_indices, psi
     )
-    
+
     Omega_restriction = compute_Omega_restriction(restriction, Omega_coord)
     
     if phase_only:
@@ -413,18 +428,24 @@ def compute_holomorphic_form_restricted(
 @partial(jax.jit, static_argnames=('n_bins',))
 def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp.float32:
     """
-    Calculates fitness based on the concentration of angles.
+    Polar phase-concentration fitness.
+
+    Phases are already reduced to [0, 2*pi) by compute_holomorphic_form_restricted,
+    so we histogram over the full circle. A true sLag has all phases at one value
+    of theta in [0, 2*pi); the previous mod-pi reduction was washing out the
+    geometric distinction between theta and theta+pi (which arises naturally for
+    real-locus-type Lagrangians like the d=1 ansatz). Polar matches the smooth
+    Kuramoto loss used for gradient descent.
 
     Args:
-        angles: A jnp.array of angles in the range [0, pi].
-        n_bins: The number of bins to use for the histogram.
+        phases: jnp.array of angles in [0, 2*pi).
+        n_bins: number of histogram bins on [0, 2*pi).
 
     Returns:
-        A scalar fitness value. High fitness means high concentration.
+        Scalar in [0, 1]. High fitness == high concentration in [0, 2*pi).
     """
     # Create a histogram to approximate the distribution
-    phases = phases % jnp.pi
-    counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, jnp.pi))
+    counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, 2 * jnp.pi))
 
     # Calculate the probability distribution
     probs = counts / jnp.sum(counts)
@@ -438,7 +459,7 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
     max_entropy = jnp.log(n_bins)
 
     #fitness = max_entropy - entropy
-    fitness = 1 - entropy / max_entropy 
+    fitness = 1 - entropy / max_entropy
     # For RP^3 the max fitness is around 2.37.
     # With a perturbation of 0.001 the fitness is around 0.788
 
