@@ -8,13 +8,14 @@ import matplotlib.pyplot as plt
 from functools import partial
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from slag_condition import (
-    compute_holomorphic_form_restricted,
+    compute_holomorphic_form,
     compute_kahler_form_restricted,
     compute_kahler_form_unrestricted,
     compute_special_condition_fitness,
     vmap_compute_affine_jacobian,
     vmap_compute_restriction,
 )
+from get_restriction import compute_Omega_restriction
 from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
 from typing import Optional
 
@@ -26,8 +27,10 @@ def _per_chunk_diagnostics(
     psi: jnp.ndarray,
     metric: str,
 ):
-    """Returns per-point (frobenius_norms_plot, norms_for_fitness, phases).
+    """Returns per-point (frobenius_norms_plot, norms_for_fitness, phases_2pi).
 
+    Phases are returned on [0, 2*pi) for plotting (so the user can see the
+    raw distribution, not the mod-pi reduction used by training).
     frobenius_norms_plot mirrors compute_combined_fitness debug-mode output:
       ||K_restricted||_F / sqrt(||K_unrestricted||_F)
     norms_for_fitness is what compute_lagrangian_condition_fitness uses:
@@ -43,10 +46,12 @@ def _per_chunk_diagnostics(
     norms_restricted = jnp.linalg.norm(kahler_restricted, axis=(1, 2))
     frobenius_norms_plot = norms_restricted / jnp.sqrt(norms_unrestricted)
     norms_for_fitness = norms_restricted / norms_unrestricted
-    phases = compute_holomorphic_form_restricted(
-        min_set, patch_indices, psi, restrictions, phase_only=True
-    )
-    return frobenius_norms_plot, norms_for_fitness, phases
+    # Bypass compute_holomorphic_form_restricted so we can use mod 2*pi for the
+    # plot; training/fitness still use the mod-pi reduction (applied below).
+    Omega, _, Omega_coord = compute_holomorphic_form(min_set, patch_indices, psi)
+    Omega_restriction = compute_Omega_restriction(restrictions, Omega_coord)
+    phases_2pi = jnp.angle(Omega * Omega_restriction) % (2 * jnp.pi)
+    return frobenius_norms_plot, norms_for_fitness, phases_2pi
 
 
 def _chunked_diagnostics(
@@ -108,7 +113,10 @@ def make_fitness_plots(
     sorted_nf = np.sort(norms_for_fitness)
     cutoff = int(sorted_nf.shape[0] * 0.99)
     lagrangian_fitness = float(np.exp(-10.0 * np.mean(sorted_nf[:cutoff])))
-    special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases), n_bins=100))
+    # special_fitness is computed on mod-pi phases (consistent with what
+    # training optimized); the histograms below use the raw mod-2pi phases.
+    phases_mod_pi = phases % np.pi
+    special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases_mod_pi), n_bins=100))
 
     print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, Mean: {jnp.mean(distances)}")
     print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
