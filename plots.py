@@ -85,14 +85,18 @@ def make_fitness_plots(
     parent_folder: Optional[str] = 'plots_slag',
     patch_index: Optional[int] = None,
     chunk_size: int = 10000,
+    n_repulsion_steps: int = 0,
     ) -> None:
 
     # Create the folder for the plots
     os.makedirs(parent_folder, exist_ok=True)
 
-    # Compute the norms and phases
+    # Compute the norms and phases. Skip repulsion by default: it does a
+    # (k, k) pairwise distance matmul (~80 GB FP64 at k=100k) that's only
+    # useful for spreading points during GA mining, not for visualizing.
     min_set_real, distances, _ = filter_and_refine(
-        points_real, coeffs, psi, k, n_refine_steps
+        points_real, coeffs, psi, k, n_refine_steps,
+        n_repulsion_steps=n_repulsion_steps,
     )
 
     if patch_index:
@@ -164,7 +168,10 @@ def make_fitness_plots(
         coeffs_random =  canonicalize_coeffs(coeffs_random)
         coeffs_random =  normalize_coeffs(coeffs_random)
 
-        min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps)
+        min_set_real_random, distances_random, _ = filter_and_refine(
+            points_real, coeffs_random, psi, k, n_refine_steps,
+            n_repulsion_steps=n_repulsion_steps,
+        )
         frobenius_norms_random, _, phases_random = _chunked_diagnostics(
             min_set_real_random, coeffs_random, psi, metric, chunk_size
         )
