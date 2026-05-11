@@ -296,16 +296,18 @@ def refine_point_iterative(
 def compute_distances_batched(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
-    psi: jnp.ndarray
+    psi: jnp.ndarray,
+    chunk_size: int = 50000
 ) -> jnp.ndarray:
     """
     Computes distances for a batch of points with automatic patch handling.
-    
+
     Args:
         points: An (N, 10) real array
         coeffs: A (3, 25) coefficient array
         psi: Complex parameter
-        
+        chunk_size: Processing chunk size to prevent XLA OOM
+
     Returns:
         An (N,) array of distances
     """
@@ -314,8 +316,26 @@ def compute_distances_batched(
         coeffs=coeffs,
         psi=psi
     )
-    
-    return jax.jit(jax.vmap(dist_partial))(points)
+
+    vmapped_dist = jax.vmap(dist_partial)
+
+    n_points = points.shape[0]
+    if n_points <= chunk_size:
+        return vmapped_dist(points)
+
+    n_chunks = (n_points + chunk_size - 1) // chunk_size
+    pad_size = n_chunks * chunk_size - n_points
+
+    padded_points = jnp.pad(points, ((0, pad_size), (0, 0)))
+    points_reshaped = padded_points.reshape((n_chunks, chunk_size, -1))
+
+    def scan_body(carry, points_chunk):
+        return carry, vmapped_dist(points_chunk)
+
+    _, dists_reshaped = jax.lax.scan(scan_body, None, points_reshaped)
+    dists = dists_reshaped.reshape(-1)
+
+    return dists[:n_points]
 
 
 @partial(jax.jit, static_argnames=('constant_coord',))
@@ -362,7 +382,7 @@ def _project_forces_to_tangent_space(
     return jnp.zeros_like(forces).at[:, active_indices].set(forces_tangent_active)
 
 
-@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps'))
+@partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps', 'dist_chunk_size'))
 def filter_and_refine(
     points: jnp.ndarray,
     coeffs: jnp.ndarray,
@@ -372,7 +392,8 @@ def filter_and_refine(
     filter_newton: bool = False,
     n_repulsion_steps: int = 15,
     repulsion_strength: Optional[float] = None,
-    repulsion_radius: Optional[float] = None
+    repulsion_radius: Optional[float] = None,
+    dist_chunk_size: int = 50000
 ) -> tuple[jnp.ndarray, jnp.ndarray, bool]:
     """
     Filters and refines points with automatic patch handling.
@@ -412,7 +433,7 @@ def filter_and_refine(
     vmapped_refine = jax.vmap(refine_fn)
 
     # Compute initial distances
-    all_distances = compute_distances_batched(points, coeffs, psi)
+    all_distances = compute_distances_batched(points, coeffs, psi, chunk_size=dist_chunk_size)
 
 
     # Select best 2k points
@@ -421,7 +442,7 @@ def filter_and_refine(
 
     # Refine these points
     refined_points_10d = vmapped_refine(top_2k_points)
-    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi)
+    distance_refined = compute_distances_batched(refined_points_10d, coeffs, psi, chunk_size=dist_chunk_size)
     
     # Select best k points
     best_indices = jnp.argsort(distance_refined)[:k]
