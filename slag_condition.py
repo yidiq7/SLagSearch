@@ -402,7 +402,7 @@ def compute_holomorphic_form_restricted(
         phase_only: If True, return only phases; if False, return full Omega
 
     Returns:
-        If phase_only=True: An (N,) array of phases in [0, 2π)
+        If phase_only=True: An (N,) array of phases in [0, π)
         If phase_only=False: An (N,) complex array
     """
     Omega, Omega_min_indices, Omega_coord = compute_holomorphic_form(
@@ -410,11 +410,11 @@ def compute_holomorphic_form_restricted(
     )
 
     Omega_restriction = compute_Omega_restriction(restriction, Omega_coord)
-    
+
     if phase_only:
         phase = jnp.angle(Omega * Omega_restriction)
-        # Normalize to [0, 2π)
-        phase = phase % (2 * jnp.pi)
+        # Reduce mod pi: identify theta and theta+pi (sLag vs anti-sLag).
+        phase = phase % jnp.pi
 
         return phase
     else:
@@ -428,24 +428,22 @@ def compute_holomorphic_form_restricted(
 @partial(jax.jit, static_argnames=('n_bins',))
 def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp.float32:
     """
-    Polar phase-concentration fitness.
+    Phase-concentration fitness on the half-circle.
 
-    Phases are already reduced to [0, 2*pi) by compute_holomorphic_form_restricted,
-    so we histogram over the full circle. A true sLag has all phases at one value
-    of theta in [0, 2*pi); the previous mod-pi reduction was washing out the
-    geometric distinction between theta and theta+pi (which arises naturally for
-    real-locus-type Lagrangians like the d=1 ansatz). Polar matches the smooth
-    Kuramoto loss used for gradient descent.
+    Phases are already reduced to [0, pi) by compute_holomorphic_form_restricted,
+    so we histogram over the half-circle (theta identified with theta+pi). This
+    counts sLag and anti-sLag together — appropriate when we only care about
+    locating a Lagrangian whose Omega phase is constant up to sign.
 
     Args:
-        phases: jnp.array of angles in [0, 2*pi).
-        n_bins: number of histogram bins on [0, 2*pi).
+        phases: jnp.array of angles in [0, pi).
+        n_bins: number of histogram bins on [0, pi).
 
     Returns:
-        Scalar in [0, 1]. High fitness == high concentration in [0, 2*pi).
+        Scalar in [0, 1]. High fitness == high concentration in [0, pi).
     """
     # Create a histogram to approximate the distribution
-    counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, 2 * jnp.pi))
+    counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, jnp.pi))
 
     # Calculate the probability distribution
     probs = counts / jnp.sum(counts)
@@ -468,17 +466,18 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
 @jax.jit
 def compute_special_condition_fitness_smooth(phases: jnp.array) -> jnp.float32:
     """
-    Calculates a differentiable fitness based on the Kuramoto order parameter.
-    Measures phase coherence/clustering.
-    
+    Differentiable fitness based on the Kuramoto order parameter on the half-circle.
+
+    Phases are in [0, pi) (sLag and anti-sLag identified). We use exp(2i*theta)
+    so that uniform-on-[0,pi) gives order parameter ~ 0 and perfectly concentrated
+    phases give 1, matching the standard Kuramoto normalization.
+
     Returns:
-        Scalar value in [0, 1]. 
-        1.0 = perfectly identical phases (max concentration)
-        0.0 = uniform distribution
+        Scalar value in [0, 1].
+        1.0 = perfectly identical phases mod pi (max concentration)
+        0.0 = uniform distribution on [0, pi)
     """
-    # Calculate the complex order parameter R = |mean(e^(i*theta))|
-    # This is fully differentiable.
-    order_parameter = jnp.abs(jnp.mean(jnp.exp(1j * phases)))
+    order_parameter = jnp.abs(jnp.mean(jnp.exp(2j * phases)))
     return order_parameter
 
 vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))
