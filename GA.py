@@ -758,5 +758,5 @@ if __name__ == '__main__':
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with_random=True, parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", parent_folder=parent_folder)
         rank += 1
