@@ -241,8 +241,8 @@ def _run_all_plots(points_real, coeffs, psi, args):
         compare_with=d1_coeffs_full,
         primary_label="GD result",
         compare_label="d=1 baseline",
-        primary_color="navy",
-        compare_color="cornflowerblue",
+        primary_color="steelblue",
+        compare_color="skyblue",
         fix_kahler_x_range=False,
         parent_folder=vs_d1_folder,
     )
