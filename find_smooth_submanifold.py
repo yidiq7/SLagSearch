@@ -514,7 +514,7 @@ def filter_and_refine(
     )
     
     # Compute final distances
-    final_distances = compute_distances_batched(final_points, coeffs, psi)
+    final_distances = compute_distances_batched(final_points, coeffs, psi, chunk_size=dist_chunk_size)
     
     # Final convergence check
     repulsion_newton_check = True
