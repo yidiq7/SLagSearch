@@ -211,6 +211,10 @@ def main():
     parser.add_argument("--job_id", type=str, default="0")
     parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument("--out_dir", type=str, default="./gd_runs")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to a full checkpoint pkl to resume from. "
+                             "Overrides --init and restores coeffs, opt_state, "
+                             "step counter, and training history.")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -224,13 +228,34 @@ def main():
     points_real, src_path = load_points(args.psi)
     print(f"Loaded {len(points_real)} points from {src_path}")
 
-    key = jax.random.PRNGKey(args.seed)
-    key, sub = jax.random.split(key)
-    coeffs = init_coeffs(args.init, args.init_pkl, sub)
-    coeffs = normalize_coeffs(coeffs)
-
     optimizer = optax.adam(learning_rate=args.lr)
-    opt_state = optimizer.init(coeffs)
+    start_step = 0
+    if args.resume is not None:
+        with open(args.resume, "rb") as f:
+            ckpt = pickle.load(f)
+        if "opt_state" not in ckpt or "step" not in ckpt:
+            raise ValueError(
+                f"Checkpoint {args.resume} is missing opt_state/step "
+                "(probably a pre-resume checkpoint). Use --init pkl with "
+                "the extracted coeffs instead."
+            )
+        coeffs = jnp.asarray(ckpt["coeffs"], dtype=jnp.float64)
+        opt_state = jax.tree.map(jnp.asarray, ckpt["opt_state"])
+        history = list(ckpt["history"])
+        start_step = int(ckpt["step"])
+        print(f"=== Resumed from {args.resume} at step {start_step} ===")
+        if start_step >= args.steps:
+            raise ValueError(
+                f"Checkpoint is at step {start_step} but --steps is {args.steps}. "
+                "Pass a larger --steps to continue training."
+            )
+    else:
+        key = jax.random.PRNGKey(args.seed)
+        key, sub = jax.random.split(key)
+        coeffs = init_coeffs(args.init, args.init_pkl, sub)
+        coeffs = normalize_coeffs(coeffs)
+        opt_state = optimizer.init(coeffs)
+        history = []
 
     total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight)
     loss_value_and_grad = jax.jit(
@@ -240,9 +265,8 @@ def main():
     ga_fitness_jit = jax.jit(compute_ga_fitness, static_argnames=("metric",))
 
     psi = jnp.asarray(args.psi, dtype=jnp.complex128)
-    history = []
 
-    # Initial mining + loss eval, before any optimizer step.
+    # Initial mining + loss eval (also re-runs on resume to repopulate min_set_real).
     min_set_real, distances, _ = filter_and_refine(
         points_real, coeffs, psi,
         args.minset_size, args.newton_steps, filter_newton=True,
@@ -257,22 +281,24 @@ def main():
     init_lag_fit, init_spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
     init_lag_fit = float(init_lag_fit)
     init_spec_fit = float(init_spec_fit)
+    label = "resumed   " if args.resume is not None else "initial   "
     print(
-        f"initial     | loss {float(init_loss):.6f} | "
+        f"{label}  | loss {float(init_loss):.6f} | "
         f"lag_loss {float(init_lag):.6f} | spec_loss {float(init_spec):.6f} | "
         f"lag_fit {init_lag_fit:.4f} | spec_fit {init_spec_fit:.4f}"
     )
-    history.append({
-        "step": 0,
-        "loss": float(init_loss),
-        "lag_loss": float(init_lag),
-        "spec_loss": float(init_spec),
-        "lag_fit": init_lag_fit,
-        "spec_fit": init_spec_fit,
-        "gnorm": None,
-    })
+    if args.resume is None:
+        history.append({
+            "step": 0,
+            "loss": float(init_loss),
+            "lag_loss": float(init_lag),
+            "spec_loss": float(init_spec),
+            "lag_fit": init_lag_fit,
+            "spec_fit": init_spec_fit,
+            "gnorm": None,
+        })
 
-    for step in range(args.steps):
+    for step in range(start_step, args.steps):
         t0 = time.time()
         # Skip step==0: just mined for the initial eval. Mining schedule
         # then fires at step==mine_interval, 2*mine_interval, etc.
@@ -319,12 +345,17 @@ def main():
 
         if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
             ckpt = os.path.join(args.out_dir, f"gd_{args.job_id}_step{step+1}.pkl")
-            with open(ckpt, "wb") as f:
-                pickle.dump(
-                    {"coeffs": np.asarray(coeffs), "history": history,
-                     "args": vars(args)},
-                    f,
-                )
+            payload = {
+                "coeffs": np.asarray(coeffs),
+                "opt_state": jax.tree.map(np.asarray, opt_state),
+                "history": history,
+                "step": step + 1,
+                "args": vars(args),
+            }
+            tmp = ckpt + ".tmp"
+            with open(tmp, "wb") as f:
+                pickle.dump(payload, f)
+            os.replace(tmp, ckpt)
             print(f"  [save] wrote {ckpt}")
 
     print("\nFinal coeffs:")
