@@ -13,6 +13,25 @@ Init modes:
 - scratch:    random Uniform over (3, 250)
 - d1_zeropad: GA.py canonical d=1 baseline, zero-padded to (3, 250)
 - pkl:        load a (3, 250) array from a pickle (e.g. GA's best individual)
+
+Examples:
+    # Train; plots auto-emit at the end to {out_dir}/plots_slag_{job_id}/.
+    python gradient_descent.py --job_id run1 --steps 2000
+
+    # Train but skip the plot run.
+    python gradient_descent.py --job_id run1 --steps 2000 --no-make_plots
+
+    # Resume from a checkpoint and keep training (Adam moments restored).
+    python gradient_descent.py --job_id run1_cont \
+        --resume gd_runs/gd_run1_step2000.pkl --steps 4000
+
+    # Just plot from an existing checkpoint, no training.
+    python gradient_descent.py --job_id run1_plots \
+        --resume gd_runs/gd_run1_step2000.pkl --plots_only
+
+    # Smaller/faster plot mining.
+    python gradient_descent.py --job_id run1 --steps 2000 \
+        --plot_k 20000 --plot_newton_steps 50
 """
 
 import argparse
