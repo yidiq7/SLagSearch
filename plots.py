@@ -5,10 +5,74 @@ import os
 import re
 import pickle
 import matplotlib.pyplot as plt
+from functools import partial
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
-from slag_condition import compute_combined_fitness
+from slag_condition import (
+    compute_holomorphic_form_restricted,
+    compute_kahler_form_restricted,
+    compute_kahler_form_unrestricted,
+    compute_special_condition_fitness,
+    vmap_compute_affine_jacobian,
+    vmap_compute_restriction,
+)
 from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
 from typing import Optional
+
+
+@partial(jax.jit, static_argnames=('metric',))
+def _per_chunk_diagnostics(
+    min_set_real_chunk: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    metric: str,
+):
+    """Returns per-point (frobenius_norms_plot, norms_for_fitness, phases).
+
+    frobenius_norms_plot mirrors compute_combined_fitness debug-mode output:
+      ||K_restricted||_F / sqrt(||K_unrestricted||_F)
+    norms_for_fitness is what compute_lagrangian_condition_fitness uses:
+      ||K_restricted||_F / ||K_unrestricted||_F
+    """
+    min_set = convert_real_to_complex_batch(min_set_real_chunk)
+    patch_indices = determine_patches_batch(min_set)
+    jacobians = vmap_compute_affine_jacobian(min_set_real_chunk, patch_indices, coeffs, psi)
+    restrictions = vmap_compute_restriction(jacobians)
+    kahler_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
+    kahler_restricted = compute_kahler_form_restricted(min_set, restrictions, patch_indices, metric=metric)
+    norms_unrestricted = jnp.linalg.norm(kahler_unrestricted, axis=(1, 2))
+    norms_restricted = jnp.linalg.norm(kahler_restricted, axis=(1, 2))
+    frobenius_norms_plot = norms_restricted / jnp.sqrt(norms_unrestricted)
+    norms_for_fitness = norms_restricted / norms_unrestricted
+    phases = compute_holomorphic_form_restricted(
+        min_set, patch_indices, psi, restrictions, phase_only=True
+    )
+    return frobenius_norms_plot, norms_for_fitness, phases
+
+
+def _chunked_diagnostics(
+    min_set_real: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    metric: str,
+    chunk_size: int,
+):
+    """Loops _per_chunk_diagnostics over points, transferring each chunk to
+    host memory as numpy so GPU memory only ever holds one chunk's intermediates.
+    """
+    N = min_set_real.shape[0]
+    fn_chunks, ff_chunks, ph_chunks = [], [], []
+    for i in range(0, N, chunk_size):
+        fn, ff, ph = _per_chunk_diagnostics(
+            min_set_real[i:i + chunk_size], coeffs, psi, metric
+        )
+        fn_chunks.append(np.asarray(fn))
+        ff_chunks.append(np.asarray(ff))
+        ph_chunks.append(np.asarray(ph))
+    return (
+        np.concatenate(fn_chunks),
+        np.concatenate(ff_chunks),
+        np.concatenate(ph_chunks),
+    )
 
 def make_fitness_plots(
     points_real: jnp.ndarray,
@@ -19,7 +83,8 @@ def make_fitness_plots(
     metric: str = 'FS',
     compare_with_random: bool = False,
     parent_folder: Optional[str] = 'plots_slag',
-    patch_index: Optional[int] = None
+    patch_index: Optional[int] = None,
+    chunk_size: int = 10000,
     ) -> None:
 
     # Create the folder for the plots
@@ -29,16 +94,22 @@ def make_fitness_plots(
     min_set_real, distances, _ = filter_and_refine(
         points_real, coeffs, psi, k, n_refine_steps
     )
-   
-    if patch_index: 
-        patch_indices = determine_patches_batch(convert_real_to_complex_batch(min_set_real)) 
+
+    if patch_index:
+        patch_indices = determine_patches_batch(convert_real_to_complex_batch(min_set_real))
         idx = jnp.where(patch_indices==patch_index)
         min_set_real = min_set_real[idx]
         distances = distances[idx]
 
-    total_fitness, lagrangian_fitness, special_fitness, kahler_form_restricted, restriction, phases = compute_combined_fitness(min_set_real, coeffs, psi, metric, debug_mode=True)
+    frobenius_norms, norms_for_fitness, phases = _chunked_diagnostics(
+        min_set_real, coeffs, psi, metric, chunk_size
+    )
+    # Scalar fitnesses derived from the concatenated per-point arrays.
+    sorted_nf = np.sort(norms_for_fitness)
+    cutoff = int(sorted_nf.shape[0] * 0.99)
+    lagrangian_fitness = float(np.exp(-10.0 * np.mean(sorted_nf[:cutoff])))
+    special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases), n_bins=100))
 
-    frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, Mean: {jnp.mean(distances)}")
     print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
     
@@ -94,8 +165,9 @@ def make_fitness_plots(
         coeffs_random =  normalize_coeffs(coeffs_random)
 
         min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps)
-        total_fitness_random, lagrangian_fitness_random, special_fitness_random, kahler_form_restricted_random, restriction_random, phases_random = compute_combined_fitness(min_set_real_random, coeffs_random, psi, metric, debug_mode=True)
-        frobenius_norms_random = jnp.linalg.norm(kahler_form_restricted_random, axis=(1, 2))
+        frobenius_norms_random, _, phases_random = _chunked_diagnostics(
+            min_set_real_random, coeffs_random, psi, metric, chunk_size
+        )
 
         plt.figure(figsize=(10, 6))
         plt.hist(frobenius_norms, bins=200, alpha=0.7, label='Potential sLag', color='skyblue', density=True)
