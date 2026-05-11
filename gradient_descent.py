@@ -286,7 +286,7 @@ def main():
     parser.add_argument("--plots_only", action="store_true",
                         help="Skip training. Load --resume <ckpt>, run "
                              "make_fitness_plots, exit.")
-    parser.add_argument("--plot_k", type=int, default=100000,
+    parser.add_argument("--plot_k", type=int, default=80000,
                         help="Point cloud size for the final plots.")
     parser.add_argument("--plot_newton_steps", type=int, default=100,
                         help="Newton refinement steps for the final plots.")
