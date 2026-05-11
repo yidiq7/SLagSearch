@@ -204,6 +204,50 @@ def load_points(psi: int):
     raise FileNotFoundError(f"No CY point cloud at {cluster} or {local}")
 
 
+def _run_all_plots(points_real, coeffs, psi, args):
+    """Three plot folders, all driven by make_fitness_plots:
+      plots_slag_{job_id}/        GD coeffs vs random   (fixed x-range)
+      plots_slag_{job_id}_d1/     d=1 baseline vs random (fixed x-range)
+      plots_slag_{job_id}_vs_d1/  GD vs d=1 baseline    (auto x-range, blue/blue)
+    """
+    d1_coeffs_full = jnp.zeros(GENOTYPE_SHAPE).at[:, :25].set(D1_COEFFS)
+    d1_coeffs_full = normalize_coeffs(d1_coeffs_full)
+
+    base = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
+    print(f"\n=== Plotting GD coeffs vs random -> {base} ===")
+    make_fitness_plots(
+        points_real, coeffs, psi,
+        k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+        metric=args.metric, compare_with="random",
+        parent_folder=base,
+    )
+
+    d1_folder = base + "_d1"
+    print(f"\n=== Plotting d=1 baseline vs random -> {d1_folder} ===")
+    make_fitness_plots(
+        points_real, d1_coeffs_full, psi,
+        k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+        metric=args.metric, compare_with="random",
+        parent_folder=d1_folder,
+        primary_label="d=1 baseline",
+    )
+
+    vs_d1_folder = base + "_vs_d1"
+    print(f"\n=== Plotting GD vs d=1 baseline -> {vs_d1_folder} ===")
+    make_fitness_plots(
+        points_real, coeffs, psi,
+        k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+        metric=args.metric,
+        compare_with=d1_coeffs_full,
+        primary_label="GD result",
+        compare_label="d=1 baseline",
+        primary_color="navy",
+        compare_color="cornflowerblue",
+        fix_kahler_x_range=False,
+        parent_folder=vs_d1_folder,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="GD for sLag search (d=1+2)")
     parser.add_argument("--psi", type=int, default=0)
@@ -266,14 +310,8 @@ def main():
         with open(args.resume, "rb") as f:
             ckpt = pickle.load(f)
         coeffs = jnp.asarray(ckpt["coeffs"], dtype=jnp.float64)
-        parent_folder = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
-        print(f"=== Plots only: coeffs from {args.resume} -> {parent_folder} ===")
-        make_fitness_plots(
-            points_real, coeffs, psi,
-            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-            metric=args.metric, compare_with_random=True,
-            parent_folder=parent_folder,
-        )
+        print(f"=== Plots only: coeffs from {args.resume} ===")
+        _run_all_plots(points_real, coeffs, psi, args)
         print("Done.")
         return
 
@@ -409,14 +447,7 @@ def main():
     print(format_array_with_commas(coeffs))
 
     if args.make_plots:
-        parent_folder = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
-        print(f"\n=== Plotting final coeffs -> {parent_folder} ===")
-        make_fitness_plots(
-            points_real, coeffs, psi,
-            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-            metric=args.metric, compare_with_random=True,
-            parent_folder=parent_folder,
-        )
+        _run_all_plots(points_real, coeffs, psi, args)
 
 
 if __name__ == "__main__":

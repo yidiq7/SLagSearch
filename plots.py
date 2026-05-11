@@ -86,139 +86,126 @@ def make_fitness_plots(
     k: int = 100000,
     n_refine_steps: int = 100,
     metric: str = 'FS',
-    compare_with_random: bool = False,
+    compare_with=None,
     parent_folder: Optional[str] = 'plots_slag',
     patch_index: Optional[int] = None,
     chunk_size: int = 10000,
+    primary_label: str = 'Potential sLag',
+    compare_label: str = 'Random intersection',
+    primary_color: str = 'skyblue',
+    compare_color: str = 'orange',
+    fix_kahler_x_range: bool = True,
     ) -> None:
+    """Plot Kahler-norm and Omega-phase distributions for `coeffs`, optionally
+    overlaid with a comparison distribution.
 
-    # Create the folder for the plots
+    compare_with:
+        None         -- primary only
+        "random"     -- generate random coeffs (matching `coeffs.shape`) and overlay
+        jnp.ndarray  -- use these coeffs as the comparison set
+
+    primary_color / compare_color / primary_label / compare_label tune the
+    histograms; fix_kahler_x_range=True pins both the bin range and xlim to [0, 3].
+    """
     os.makedirs(parent_folder, exist_ok=True)
 
-    # Compute the norms and phases
+    # --- Primary set ---
     min_set_real, distances, _ = filter_and_refine(
         points_real, coeffs, psi, k, n_refine_steps
     )
-
     if patch_index:
         patch_indices = determine_patches_batch(convert_real_to_complex_batch(min_set_real))
-        idx = jnp.where(patch_indices==patch_index)
+        idx = jnp.where(patch_indices == patch_index)
         min_set_real = min_set_real[idx]
         distances = distances[idx]
 
     frobenius_norms, norms_for_fitness, phases = _chunked_diagnostics(
         min_set_real, coeffs, psi, metric, chunk_size
     )
-    # Scalar fitnesses derived from the concatenated per-point arrays.
     sorted_nf = np.sort(norms_for_fitness)
     cutoff = int(sorted_nf.shape[0] * 0.99)
     lagrangian_fitness = float(np.exp(-10.0 * np.mean(sorted_nf[:cutoff])))
-    # special_fitness is computed on mod-pi phases (consistent with what
-    # training optimized); the histograms below use the raw mod-2pi phases.
+    # special_fitness uses mod-pi phases (consistent with training);
+    # the histograms below use the raw mod-2pi phases.
     phases_mod_pi = phases % np.pi
     special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases_mod_pi), n_bins=100))
 
     print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, Mean: {jnp.mean(distances)}")
     print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
-    
-    # Fitness plot
-    if not compare_with_random:
-        # Plot the Kahler form loss
-        plt.figure(figsize=(10, 6))
-        plt.hist(frobenius_norms, bins=200, range=(0, 3), alpha=0.7, label='Potential sLag', color='skyblue', density=True)
-        plt.xlim(0, 3)
-        plt.xlabel('Frobenius norm')
-        plt.ylabel('Probability density')
-        plt.title('Distribution of the norm of the Kahler form')
-        plt.legend()
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(parent_folder, f'Kahler_form_loss_histogram.png'))
-        plt.close()
 
-        # Plot the phase of Omega
-        number_of_bins = 1000
-        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
-
-        # Define the width of each bar
-        width = 2 * np.pi / number_of_bins
-        counts, bin_edges = np.histogram(phases, bins=number_of_bins, range=(0, 2 * np.pi))
-        angles = bin_edges[:-1]
-
-        # --- Set baseline dynamically to half the max peak height ---
-        max_count = counts.max()
-        baseline_radius = max_count / 2
-
-        ax.bar(angles, counts, width=width, alpha=0.7, color='skyblue', label='Potential sLag', bottom=baseline_radius)
-        
-        # --- Format the plot ---
-        ax.set_theta_zero_location('E')
-        ax.set_theta_direction(1)
-        ax.set_xticks([0, np.pi/2, np.pi, 3*np.pi/2])
-        ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=12)
-        radial_grid_values = [baseline_radius, baseline_radius + max_count * 0.5]
-        ax.set_rgrids(radial_grid_values, angle=22.5)
-        ax.set_yticklabels([]) 
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.set_rlim(0, baseline_radius + max_count * 1.05)
-        ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
-        ax.legend(bbox_to_anchor=(1.1, 1.05))
-        plt.savefig(os.path.join(parent_folder, f'circular_phase_histogram.png'), bbox_inches='tight')
-        plt.close()
-
-       # The option to plot both slag and random manifold in one plot for comparison
-    elif compare_with_random:
-        seed = 1230
-        key = jax.random.PRNGKey(seed)
-        coeffs_random = jax.random.uniform(key, (3, 250), minval=-1, maxval=1)
-        coeffs_random =  canonicalize_coeffs(coeffs_random)
-        coeffs_random =  normalize_coeffs(coeffs_random)
-
-        min_set_real_random, distances_random, _ = filter_and_refine(points_real, coeffs_random, psi, k, n_refine_steps)
-        frobenius_norms_random, _, phases_random = _chunked_diagnostics(
-            min_set_real_random, coeffs_random, psi, metric, chunk_size
+    # --- Comparison set ---
+    has_compare = compare_with is not None
+    if has_compare:
+        if isinstance(compare_with, str):
+            if compare_with != "random":
+                raise ValueError(f"compare_with={compare_with!r}; expected None, 'random', or an ndarray.")
+            key = jax.random.PRNGKey(1230)
+            cmp_coeffs = jax.random.uniform(key, coeffs.shape, minval=-1, maxval=1)
+            cmp_coeffs = canonicalize_coeffs(cmp_coeffs)
+            cmp_coeffs = normalize_coeffs(cmp_coeffs)
+        else:
+            cmp_coeffs = compare_with
+        min_set_real_cmp, _, _ = filter_and_refine(
+            points_real, cmp_coeffs, psi, k, n_refine_steps
+        )
+        frobenius_norms_cmp, _, phases_cmp = _chunked_diagnostics(
+            min_set_real_cmp, cmp_coeffs, psi, metric, chunk_size
         )
 
-        plt.figure(figsize=(10, 6))
-        plt.hist(frobenius_norms, bins=200, range=(0, 3), alpha=0.7, label='Potential sLag', color='skyblue', density=True)
-        plt.hist(frobenius_norms_random, bins=200, range=(0, 3), alpha=0.7, label='Random intersection', color='orange', density=True)
+    # --- Kahler-form histogram ---
+    plt.figure(figsize=(10, 6))
+    hist_kwargs = dict(bins=200, alpha=0.7, density=True)
+    if fix_kahler_x_range:
+        hist_kwargs['range'] = (0, 3)
+    plt.hist(frobenius_norms, label=primary_label, color=primary_color, **hist_kwargs)
+    if has_compare:
+        plt.hist(frobenius_norms_cmp, label=compare_label, color=compare_color, **hist_kwargs)
+    if fix_kahler_x_range:
         plt.xlim(0, 3)
-        plt.xlabel('Frobenius norm')
-        plt.ylabel('Probability density')
-        plt.title('Distribution of the norm of the Kahler form')
-        plt.legend()
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(parent_folder, f'Kahler_form_loss_histogram.png'))
-        plt.close()
+    plt.xlabel('Frobenius norm')
+    plt.ylabel('Probability density')
+    plt.title('Distribution of the norm of the Kahler form')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.savefig(os.path.join(parent_folder, 'Kahler_form_loss_histogram.png'))
+    plt.close()
 
-        number_of_bins = 1000
-        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
+    # --- Phase histogram (polar, always [0, 2*pi)) ---
+    number_of_bins = 1000
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
+    width = 2 * np.pi / number_of_bins
+    counts, bin_edges = np.histogram(phases, bins=number_of_bins, range=(0, 2 * np.pi))
+    angles = bin_edges[:-1]
+    max_count = int(counts.max())
+    if has_compare:
+        counts_cmp, _ = np.histogram(phases_cmp, bins=number_of_bins, range=(0, 2 * np.pi))
+        max_count = max(max_count, int(counts_cmp.max()))
+    baseline_radius = max_count / 2
 
-        width = 2 * np.pi / number_of_bins
-        counts_A, bin_edges_A = np.histogram(phases, bins=number_of_bins, range=(0, 2 * np.pi))
-        angles_A = bin_edges_A[:-1]
+    ax.bar(angles, counts, width=width, alpha=0.7, color=primary_color,
+           label=primary_label, bottom=baseline_radius)
+    if has_compare:
+        ax.bar(angles, counts_cmp, width=width, alpha=0.7, color=compare_color,
+               label=compare_label, bottom=baseline_radius)
 
-        counts_B, bin_edges_B = np.histogram(phases_random, bins=number_of_bins, range=(0, 2 * np.pi))
-        angles_B = bin_edges_B[:-1]
-
-        max_count = counts_A.max()
-        baseline_radius = max_count / 2
-
-        ax.bar(angles_A, counts_A, width=width, alpha=0.7, color='skyblue', label='Potential sLag', bottom=baseline_radius)
-        ax.bar(angles_B, counts_B, width=width, alpha=0.7, color='orange', label='Random intersection', bottom=baseline_radius)
-
-        ax.set_theta_zero_location('E')
-        ax.set_theta_direction(1)
-        ax.set_xticks([0, np.pi/2, np.pi, 3*np.pi/2])
-        ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=12)
-        radial_grid_values = [baseline_radius + max_count * 0.25, baseline_radius + max_count * 0.5, baseline_radius + max_count*0.75]
-        ax.set_rgrids(radial_grid_values, angle=22.5)
-        ax.set_yticklabels([])
-        ax.grid(True, linestyle='--', alpha=0.6)
-        ax.set_rlim(0, baseline_radius + max_count * 1.05)
-        ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
-        ax.legend(bbox_to_anchor=(1.1, 1.05))
-        plt.savefig(os.path.join(parent_folder, f'circular_phase_histogram.png'), bbox_inches='tight')
-        plt.close()
+    ax.set_theta_zero_location('E')
+    ax.set_theta_direction(1)
+    ax.set_xticks([0, np.pi/2, np.pi, 3*np.pi/2])
+    ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=12)
+    if has_compare:
+        radial_grid_values = [baseline_radius + max_count * 0.25,
+                              baseline_radius + max_count * 0.5,
+                              baseline_radius + max_count * 0.75]
+    else:
+        radial_grid_values = [baseline_radius, baseline_radius + max_count * 0.5]
+    ax.set_rgrids(radial_grid_values, angle=22.5)
+    ax.set_yticklabels([])
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.set_rlim(0, baseline_radius + max_count * 1.05)
+    ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
+    ax.legend(bbox_to_anchor=(1.1, 1.05))
+    plt.savefig(os.path.join(parent_folder, 'circular_phase_histogram.png'), bbox_inches='tight')
+    plt.close()
 
     make_scatter_plots(min_set_real, frobenius_norms, parent_folder)
     save_min_set(min_set_real, parent_folder)
