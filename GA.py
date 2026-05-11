@@ -92,7 +92,7 @@ SPECIES_ELITISM = 1        # Number of best individuals per species to carry ove
 
 # --- Adaptive Step Size (1/5th success rule per species) ---
 SIGMA_INIT = 1.0
-SIGMA_MIN = 0.1
+SIGMA_MIN = 0.01
 SIGMA_MAX = 5.0
 SIGMA_INCREASE = 1.3   # on improvement
 SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 ≈ 0.97)
