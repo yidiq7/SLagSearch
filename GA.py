@@ -99,7 +99,7 @@ SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 â
 SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
-FITNESS_MINI_BATCH_SIZE = 50
+FITNESS_MINI_BATCH_SIZE = 200
 LOG_INTERVAL = 10
 
 # Checkpointing
@@ -727,7 +727,7 @@ if __name__ == '__main__':
     final_species_list = [s for s in species_list if s.members]
     
     print(f"\nFound {len(final_species_list)} distinct species with members in the final population.")
-    
+
     # Sort the populated species by their best current fitness
     final_species_list.sort(key=lambda s: jnp.max(jnp.array(s.fitness_values)), reverse=True)
 
@@ -758,5 +758,5 @@ if __name__ == '__main__':
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=50000, n_refine_steps=80, metric=METRIC, compare_with_random=True, parent_folder=parent_folder)
         rank += 1
