@@ -73,6 +73,14 @@ all_column_indices_range = jnp.arange(8)
 combinations_list = list(itertools.combinations(all_column_indices_range.tolist(), 5))
 ALL_COMBINATIONS = jnp.array(combinations_list, dtype=jnp.int32) # Shape (56, 5)
 
+# All 56 combinations of 3 row indices from 0 to 7. Used as candidate canonical
+# 3-tuples for the orientation correction in compute_Omega_restriction.
+ALL_3_TUPLES = jnp.array(
+    list(itertools.combinations(range(8), 3)), dtype=jnp.int32
+)  # Shape (56, 3)
+
+NUM_PATCHES = 5
+
 def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
     """
     Processes a 5x8 JAX array according to the specified steps:
@@ -150,38 +158,45 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
 
     return restriction
 
-def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray):
+def compute_Omega_restriction(
+    restriction: jnp.ndarray,
+    Omega_coord: jnp.ndarray,
+    patch_indices: jnp.ndarray,
+):
     """
     Computes the restriction applied to the holomorphic 3-form from the full restriction.
 
-    Applies a basis-orientation correction by comparing the chosen basis (from
-    compute_restriction's argmax|det|) to a fixed canonical reference within
-    each patch: C = (0, 1, 2), i.e., parametrize the tangent space by the first
-    3 affine real coords. The change-of-basis matrix from chosen K-basis to
-    canonical C-basis has entries M_change[i, j] = v_j[C[i]] = restriction[i, j]
-    for i in {0, 1, 2}. So M_change is just the first 3 rows of the restriction
-    matrix. Multiplying det(M) by sign(det(M_change)) flips the chosen basis to
-    align with the canonical orientation, removing the basis-orientation noise
-    that causes {theta, theta+pi} bimodality. Combined with the (-1)^(I + d)
-    factor in compute_holomorphic_form, this gives globally consistent Omega
-    phases across patches.
+    Applies a basis-orientation correction by comparing the chosen K-basis (from
+    compute_restriction's argmax|det| over 56 column-combinations) to a canonical
+    reference 3-tuple C_p of the 8 real ambient coords, chosen *per patch* to be
+    the one that is most uniformly transverse to L across the points-in-patch.
 
-    Degenerate case: when |det(M_change)| < epsilon (canonical basis is
-    near-degenerate at the point), the sign defaults to +1.
+    Concretely: for each candidate 3-tuple C (56 total), |det(restriction[:, C, :])|
+    is the absolute size of the projection of L's tangent 3-plane onto coords C.
+    For each patch p we pick
+        C_p = argmax_C  min_{i: patch_indices[i]==p}  |det(restriction[i, C, :])|
+    i.e., the 3-tuple whose worst-case projection over that patch's data is
+    largest. This avoids the codim-1 orientation flips that a fixed reference
+    like C=(0,1,2) suffers when the projection L -> (Re z_0, Re z_1, Re z_2)
+    degenerates somewhere on L.
+
+    Per-point sign correction is then sign(det(restriction[i, C_{p(i)}, :])).
 
     Args:
         restriction: (N, 8, 3) array of restriction matrices.
         Omega_coord: (N, 3) array of the 3 affine-complex-coord indices for
                      the holomorphic-3-form wedge.
+        patch_indices: (N,) integer array in [0, NUM_PATCHES) giving the patch
+                       of each point. Used to select C_p per patch.
 
     Return:
-        An (N,) complex array: phase carrier of Omega restricted to L,
-        with the basis orientation aligned to canonical C = (0, 1, 2).
+        An (N,) complex array: phase carrier of Omega restricted to L, with the
+        basis orientation aligned to the per-patch canonical reference C_p.
     """
     Omega_coord_y = Omega_coord + 4
     N = restriction.shape[0]
     row = jnp.arange(N)[:, None]
-    jacobian = restriction[row, Omega_coord] + 1j*restriction[row, Omega_coord_y]
+    jacobian = restriction[row, Omega_coord] + 1j * restriction[row, Omega_coord_y]
     # Rescale the jacobian in case the determinant blows up
     max_abs_vals = jnp.max(jnp.abs(jacobian), axis=(-2, -1))
     safe_max_vals = jnp.where(max_abs_vals == 0, 1.0, max_abs_vals)
@@ -189,10 +204,28 @@ def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray
     jacobian_scaled = jacobian / scaling_factors
     det_M = jnp.linalg.det(jacobian_scaled)
 
-    # Orientation correction: change-of-basis det from chosen K-basis to
-    # canonical C = (0, 1, 2) basis = det of restriction's first 3 rows.
-    M_change = restriction[:, :3, :]
-    change_det = jnp.linalg.det(M_change)
+    # --- Per-patch canonical 3-tuple selection ---
+    # det_all[i, c] = det(restriction[i, ALL_3_TUPLES[c], :]) for each candidate.
+    # Shape: (N, 56)
+    det_all = jax.vmap(
+        lambda C: jnp.linalg.det(restriction[:, C, :])
+    )(ALL_3_TUPLES).T  # vmap over 56 -> (56, N), transpose -> (N, 56)
+    abs_det_all = jnp.abs(det_all)
+
+    # For each patch p in [0, NUM_PATCHES) and each candidate c in [0, 56),
+    # compute min_{i in patch p} |det_all[i, c]|. Points not in patch p
+    # are masked to +inf so they don't affect the min.
+    # mask: (NUM_PATCHES, N), broadcast with abs_det_all to (NUM_PATCHES, N, 56).
+    patch_arange = jnp.arange(NUM_PATCHES)
+    mask = patch_indices[None, :] == patch_arange[:, None]  # (NUM_PATCHES, N)
+    masked = jnp.where(mask[:, :, None], abs_det_all[None, :, :], jnp.inf)
+    min_per_patch = jnp.min(masked, axis=1)  # (NUM_PATCHES, 56)
+    # If a patch has zero points, all entries are +inf; argmax falls back to 0.
+    C_p_idx = jnp.argmax(min_per_patch, axis=1)  # (NUM_PATCHES,)
+
+    # Per-point: look up the chosen 3-tuple index, then the signed det at it.
+    c_of_point = C_p_idx[patch_indices]  # (N,)
+    change_det = det_all[jnp.arange(N), c_of_point]  # (N,)
     sign_correction = jnp.where(
         jnp.abs(change_det) < 1e-12, 1.0, jnp.sign(change_det)
     )
