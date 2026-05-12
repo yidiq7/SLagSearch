@@ -360,9 +360,9 @@ def compute_holomorphic_form(
         Note: the (-1)^patch_idx factor (Levi-Civita Euler form restriction)
         was previously included here, but causes a (-1)^I cross-patch parity
         when combined with the basis-orientation correction in
-        compute_Omega_restriction (which implicitly accounts for the
-        cross-patch change-of-basis sign between patch-local canonical
-        references). Dropping it gives globally consistent phases.
+        compute_Omega_restriction (which picks a per-patch canonical 3-tuple
+        C_p and absorbs the change-of-basis sign there). Dropping it gives
+        globally consistent phases.
         """
         # Get the 4 affine coordinates (excluding the patch coordinate)
         affine_coords = delete_index(point, patch_idx)
@@ -409,7 +409,7 @@ def compute_holomorphic_form_restricted(
         points_complex, patch_indices, psi
     )
 
-    Omega_restriction = compute_Omega_restriction(restriction, Omega_coord)
+    Omega_restriction = compute_Omega_restriction(restriction, Omega_coord, patch_indices)
     
     if phase_only:
         phase = jnp.angle(Omega * Omega_restriction)
