@@ -1,7 +1,11 @@
-"""Gradient descent for sLag search with the d=1+2 ansatz (3, 250 coeffs).
+"""Gradient descent for sLag search with d=1, d=1+2, or d=1+2+3 ansatz.
 
-Ported from the `gradient-descent` branch and generalized from (3, 25) to
-(3, 250). The optimization alternates:
+Genotype width is set by --max_degree:
+  1 -> (3, 25)     (d=1 only)
+  2 -> (3, 250)    (d=1 + d=2, default)
+  3 -> (3, 1475)   (d=1 + d=2 + d=3)
+
+The optimization alternates:
 
 1. (Re-)mining: every `mine_interval` steps, `filter_and_refine` produces a
    fresh point cloud on the current submanifold. This is NOT differentiated.
@@ -9,17 +13,19 @@ Ported from the `gradient-descent` branch and generalized from (3, 25) to
    Newton refinement (differentiable through `refine_point_iterative`) and
    evaluate Lagrangian / special losses on the refined points.
 
-Init modes:
-- scratch:    random Uniform over (3, 250)
-- d1_zeropad: GA.py canonical d=1 baseline, zero-padded to (3, 250)
-- pkl:        load a (3, 250) array from a pickle (e.g. GA's best individual)
+Init:
+- --init scratch     : random Uniform over the current genotype shape
+- --init d1_zeropad  : GA.py canonical d=1 baseline, zero-padded (default)
+- --init_pkl <path>  : load a (3, w) array; if w < current width, right-pad
+                       with zeros. Overrides --init.
 
 Examples:
-    # Train; plots auto-emit at the end to {out_dir}/plots_slag_{job_id}/.
+    # d=1+2 default; plots auto-emit at the end.
     python gradient_descent.py --job_id run1 --steps 2000
 
-    # Train but skip the plot run.
-    python gradient_descent.py --job_id run1 --steps 2000 --no-make_plots
+    # d=1+2+3, preloading d=1+2 best as init.
+    python gradient_descent.py --job_id run1_d3 --max_degree 3 --steps 2000 \
+        --init_pkl gd_runs/gd_A_baseline_step10000.pkl
 
     # Resume from a checkpoint and keep training (Adam moments restored).
     python gradient_descent.py --job_id run1_cont \
@@ -68,7 +74,18 @@ from slag_condition import (
 
 jax.config.update("jax_enable_x64", True)
 
-GENOTYPE_SHAPE = (3, 250)
+# Width per max-degree. Matches the static dispatch in
+# helper.evaluate_equations_single_point.
+GENOTYPE_WIDTHS = {1: 25, 2: 250, 3: 1475}
+# Default exported for back-compat with other modules (e.g. diagnose_phases).
+GENOTYPE_SHAPE = (3, GENOTYPE_WIDTHS[2])
+
+
+def genotype_shape(max_degree: int) -> tuple[int, int]:
+    if max_degree not in GENOTYPE_WIDTHS:
+        raise ValueError(f"max_degree must be one of {sorted(GENOTYPE_WIDTHS)}, got {max_degree}")
+    return (3, GENOTYPE_WIDTHS[max_degree])
+
 
 # Canonical d=1 baseline. Mirrors GA.py:409 d1_coeffs.
 D1_COEFFS = jnp.array([
@@ -78,22 +95,31 @@ D1_COEFFS = jnp.array([
 ])
 
 
-def init_coeffs(mode: str, init_pkl, key) -> jnp.ndarray:
-    if mode == "scratch":
-        coeffs = jax.random.uniform(key, GENOTYPE_SHAPE, minval=-0.1, maxval=0.1)
-    elif mode == "d1_zeropad":
-        coeffs = jnp.zeros(GENOTYPE_SHAPE)
-        coeffs = coeffs.at[:, :25].set(D1_COEFFS)
-    elif mode == "pkl":
-        if init_pkl is None:
-            raise ValueError("--init pkl requires --init_pkl <path>")
+def init_coeffs(mode: str, init_pkl, shape: tuple[int, int], key) -> jnp.ndarray:
+    """Build initial coefficients of `shape`.
+
+    Precedence: if `init_pkl` is set, load + right-pad (overrides `mode`).
+    Otherwise dispatch on `mode`.
+    """
+    if init_pkl is not None:
         with open(init_pkl, "rb") as f:
-            arr = jnp.asarray(pickle.load(f))
-        if arr.shape != GENOTYPE_SHAPE:
+            raw = pickle.load(f)
+        # Accept either a bare array or a checkpoint dict with a "coeffs" key.
+        if isinstance(raw, dict) and "coeffs" in raw:
+            arr = jnp.asarray(raw["coeffs"])
+        else:
+            arr = jnp.asarray(raw)
+        if arr.ndim != 2 or arr.shape[0] != shape[0] or arr.shape[1] > shape[1]:
             raise ValueError(
-                f"Expected pickle to contain a {GENOTYPE_SHAPE} array, got {arr.shape}"
+                f"--init_pkl: expected a ({shape[0]}, w) array with w <= {shape[1]}, "
+                f"got {arr.shape}"
             )
-        coeffs = arr
+        coeffs = jnp.zeros(shape).at[:, :arr.shape[1]].set(arr)
+        print(f"  [init] loaded {arr.shape} from {init_pkl}, padded to {shape}")
+    elif mode == "scratch":
+        coeffs = jax.random.uniform(key, shape, minval=-0.1, maxval=0.1)
+    elif mode == "d1_zeropad":
+        coeffs = jnp.zeros(shape).at[:, :25].set(D1_COEFFS)
     else:
         raise ValueError(f"Unknown init mode {mode}")
     return jnp.asarray(coeffs, dtype=jnp.float64)
@@ -210,7 +236,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
       plots_slag_{job_id}_d1/     d=1 baseline vs random (fixed x-range)
       plots_slag_{job_id}_vs_d1/  GD vs d=1 baseline    (auto x-range, blue/blue)
     """
-    d1_coeffs_full = jnp.zeros(GENOTYPE_SHAPE).at[:, :25].set(D1_COEFFS)
+    d1_coeffs_full = jnp.zeros(coeffs.shape).at[:, :25].set(D1_COEFFS)
     d1_coeffs_full = normalize_coeffs(d1_coeffs_full)
 
     base = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
@@ -267,10 +293,16 @@ def main():
                         help="Weight on Lagrangian loss (used when --loss is 'lag' or 'both').")
     parser.add_argument("--spec_weight", type=float, default=1.0,
                         help="Weight on special loss (used when --loss is 'spec' or 'both').")
+    parser.add_argument("--max_degree", type=int, default=2,
+                        choices=sorted(GENOTYPE_WIDTHS),
+                        help="Ansatz max degree: 1 -> (3,25), 2 -> (3,250), 3 -> (3,1475).")
     parser.add_argument("--init", type=str, default="d1_zeropad",
-                        choices=["scratch", "d1_zeropad", "pkl"])
+                        choices=["scratch", "d1_zeropad"],
+                        help="Synthetic init mode. Ignored if --init_pkl is set.")
     parser.add_argument("--init_pkl", type=str, default=None,
-                        help="Path to a pkl with a (3, 250) array (use with --init pkl).")
+                        help="Path to a pkl with a (3, w) array or a checkpoint dict; "
+                             "right-padded with zeros to the current genotype width. "
+                             "Overrides --init.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--job_id", type=str, default="0")
     parser.add_argument("--save_every", type=int, default=50)
@@ -293,8 +325,10 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    print("=== GD for sLag search (d=1+2) ===")
-    print(f"job_id={args.job_id} init={args.init} loss={args.loss} "
+    shape = genotype_shape(args.max_degree)
+    init_desc = f"init_pkl={args.init_pkl}" if args.init_pkl is not None else f"init={args.init}"
+    print(f"=== GD for sLag search (max_degree={args.max_degree}, shape={shape}) ===")
+    print(f"job_id={args.job_id} {init_desc} loss={args.loss} "
           f"(lag_w={args.lag_weight} spec_w={args.spec_weight}) "
           f"lr={args.lr} steps={args.steps}")
     print(f"mine_interval={args.mine_interval} minset_size={args.minset_size} "
@@ -323,10 +357,16 @@ def main():
         if "opt_state" not in ckpt or "step" not in ckpt:
             raise ValueError(
                 f"Checkpoint {args.resume} is missing opt_state/step "
-                "(probably a pre-resume checkpoint). Use --init pkl with "
-                "the extracted coeffs instead."
+                "(probably a pre-resume checkpoint). Use --init_pkl <path> "
+                "to load bare coeffs instead."
             )
         coeffs = jnp.asarray(ckpt["coeffs"], dtype=jnp.float64)
+        if coeffs.shape != shape:
+            raise ValueError(
+                f"Checkpoint coeffs shape {coeffs.shape} does not match "
+                f"--max_degree {args.max_degree} (expects {shape}). Resume "
+                "uses the checkpoint shape as-is; pass --max_degree to match."
+            )
         opt_state = jax.tree.map(jnp.asarray, ckpt["opt_state"])
         history = list(ckpt["history"])
         start_step = int(ckpt["step"])
@@ -339,7 +379,7 @@ def main():
     else:
         key = jax.random.PRNGKey(args.seed)
         key, sub = jax.random.split(key)
-        coeffs = init_coeffs(args.init, args.init_pkl, sub)
+        coeffs = init_coeffs(args.init, args.init_pkl, shape, sub)
         coeffs = normalize_coeffs(coeffs)
         opt_state = optimizer.init(coeffs)
         history = []
