@@ -95,14 +95,20 @@ def make_fitness_plots(
     primary_color: str = 'skyblue',
     compare_color: str = 'orange',
     fix_kahler_x_range: bool = True,
+    extra_comparisons: Optional[list] = None,
     ) -> None:
     """Plot Kahler-norm and Omega-phase distributions for `coeffs`, optionally
-    overlaid with a comparison distribution.
+    overlaid with one or more comparison distributions.
 
     compare_with:
         None         -- primary only
         "random"     -- generate random coeffs (matching `coeffs.shape`) and overlay
         jnp.ndarray  -- use these coeffs as the comparison set
+
+    extra_comparisons: optional list of dicts {"coeffs", "label", "color"} adding
+    further overlays beyond compare_with. Their coeffs are run through
+    filter_and_refine + diagnostics separately (any shape compatible with the
+    static dispatch in evaluate_equations_single_point is accepted).
 
     primary_color / compare_color / primary_label / compare_label tune the
     histograms; fix_kahler_x_range=True pins both the bin range and xlim to [0, 3].
@@ -133,9 +139,9 @@ def make_fitness_plots(
     print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, Mean: {jnp.mean(distances)}")
     print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
 
-    # --- Comparison set ---
-    has_compare = compare_with is not None
-    if has_compare:
+    # --- Collect comparison overlays (compare_with first, then extra_comparisons in order) ---
+    overlays = []  # list of dicts {fnorms, phases, label, color}
+    if compare_with is not None:
         if isinstance(compare_with, str):
             if compare_with != "random":
                 raise ValueError(f"compare_with={compare_with!r}; expected None, 'random', or an ndarray.")
@@ -148,9 +154,22 @@ def make_fitness_plots(
         min_set_real_cmp, _, _ = filter_and_refine(
             points_real, cmp_coeffs, psi, k, n_refine_steps
         )
-        frobenius_norms_cmp, _, phases_cmp = _chunked_diagnostics(
+        fnorms_cmp, _, phases_cmp = _chunked_diagnostics(
             min_set_real_cmp, cmp_coeffs, psi, metric, chunk_size
         )
+        overlays.append({"fnorms": fnorms_cmp, "phases": phases_cmp,
+                         "label": compare_label, "color": compare_color})
+    if extra_comparisons:
+        for ex in extra_comparisons:
+            ex_coeffs = ex["coeffs"]
+            min_set_real_ex, _, _ = filter_and_refine(
+                points_real, ex_coeffs, psi, k, n_refine_steps
+            )
+            fnorms_ex, _, phases_ex = _chunked_diagnostics(
+                min_set_real_ex, ex_coeffs, psi, metric, chunk_size
+            )
+            overlays.append({"fnorms": fnorms_ex, "phases": phases_ex,
+                             "label": ex["label"], "color": ex["color"]})
 
     # --- Kahler-form histogram ---
     plt.figure(figsize=(10, 6))
@@ -158,8 +177,8 @@ def make_fitness_plots(
     if fix_kahler_x_range:
         hist_kwargs['range'] = (0, 3)
     plt.hist(frobenius_norms, label=primary_label, color=primary_color, **hist_kwargs)
-    if has_compare:
-        plt.hist(frobenius_norms_cmp, label=compare_label, color=compare_color, **hist_kwargs)
+    for ov in overlays:
+        plt.hist(ov["fnorms"], label=ov["label"], color=ov["color"], **hist_kwargs)
     if fix_kahler_x_range:
         plt.xlim(0, 3)
     plt.xlabel('Frobenius norm')
@@ -177,22 +196,24 @@ def make_fitness_plots(
     counts, bin_edges = np.histogram(phases, bins=number_of_bins, range=(0, 2 * np.pi))
     angles = bin_edges[:-1]
     max_count = int(counts.max())
-    if has_compare:
-        counts_cmp, _ = np.histogram(phases_cmp, bins=number_of_bins, range=(0, 2 * np.pi))
-        max_count = max(max_count, int(counts_cmp.max()))
+    overlay_counts = []
+    for ov in overlays:
+        c, _ = np.histogram(ov["phases"], bins=number_of_bins, range=(0, 2 * np.pi))
+        overlay_counts.append(c)
+        max_count = max(max_count, int(c.max()))
     baseline_radius = max_count / 2
 
     ax.bar(angles, counts, width=width, alpha=0.7, color=primary_color,
            label=primary_label, bottom=baseline_radius)
-    if has_compare:
-        ax.bar(angles, counts_cmp, width=width, alpha=0.7, color=compare_color,
-               label=compare_label, bottom=baseline_radius)
+    for ov, c in zip(overlays, overlay_counts):
+        ax.bar(angles, c, width=width, alpha=0.7, color=ov["color"],
+               label=ov["label"], bottom=baseline_radius)
 
     ax.set_theta_zero_location('E')
     ax.set_theta_direction(1)
     ax.set_xticks([0, np.pi/2, np.pi, 3*np.pi/2])
     ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=12)
-    if has_compare:
+    if overlays:
         radial_grid_values = [baseline_radius + max_count * 0.25,
                               baseline_radius + max_count * 0.5,
                               baseline_radius + max_count * 0.75]

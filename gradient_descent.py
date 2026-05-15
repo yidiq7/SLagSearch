@@ -231,10 +231,15 @@ def load_points(psi: int):
 
 
 def _run_all_plots(points_real, coeffs, psi, args):
-    """Three plot folders, all driven by make_fitness_plots:
-      plots_slag_{job_id}/        GD coeffs vs random   (fixed x-range)
-      plots_slag_{job_id}_d1/     d=1 baseline vs random (fixed x-range)
-      plots_slag_{job_id}_vs_d1/  GD vs d=1 baseline    (auto x-range, blue/blue)
+    """Driven by make_fitness_plots:
+      plots_slag_{job_id}/           GD coeffs vs random       (fixed x-range)
+      plots_slag_{job_id}_d1/        d=1 baseline vs random    (fixed x-range)
+      plots_slag_{job_id}_vs_d1/     GD vs d=1 canonical       (auto x-range, blue/blue)
+
+    Additionally, when coeffs encodes a d=1+2+3 ansatz (shape (3, 1475)):
+      plots_slag_{job_id}_d2_vs_d3/  d=3 (full) vs d=2 truncation (coeffs[:, :250]), steel/sky blue
+      plots_slag_{job_id}_d1_d2_d3/  three-way: d=3 (steel) vs d=2 (sky) vs d=1 truncation (light blue)
+    The d=2/d=1 truncations slice the GD result and re-normalize each row.
     """
     d1_coeffs_full = jnp.zeros(coeffs.shape).at[:, :25].set(D1_COEFFS)
     d1_coeffs_full = normalize_coeffs(d1_coeffs_full)
@@ -272,6 +277,45 @@ def _run_all_plots(points_real, coeffs, psi, args):
         fix_kahler_x_range=False,
         parent_folder=vs_d1_folder,
     )
+
+    if coeffs.shape[1] == GENOTYPE_WIDTHS[3]:
+        d2_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[2]])
+        d1_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[1]])
+
+        d2_vs_d3_folder = base + "_d2_vs_d3"
+        print(f"\n=== Plotting d=3 vs d=2 truncation -> {d2_vs_d3_folder} ===")
+        make_fitness_plots(
+            points_real, coeffs, psi,
+            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+            metric=args.metric,
+            compare_with=d2_truncated,
+            primary_label="d=3",
+            compare_label="d=2",
+            primary_color="steelblue",
+            compare_color="skyblue",
+            fix_kahler_x_range=False,
+            parent_folder=d2_vs_d3_folder,
+        )
+
+        d1_d2_d3_folder = base + "_d1_d2_d3"
+        print(f"\n=== Plotting d=1 vs d=2 vs d=3 -> {d1_d2_d3_folder} ===")
+        make_fitness_plots(
+            points_real, coeffs, psi,
+            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+            metric=args.metric,
+            compare_with=d2_truncated,
+            primary_label="d=3",
+            compare_label="d=2",
+            primary_color="steelblue",
+            compare_color="skyblue",
+            fix_kahler_x_range=False,
+            extra_comparisons=[{
+                "coeffs": d1_truncated,
+                "label": "d=1",
+                "color": "lightblue",
+            }],
+            parent_folder=d1_d2_d3_folder,
+        )
 
 
 def main():
