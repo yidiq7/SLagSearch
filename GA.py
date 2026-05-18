@@ -249,13 +249,16 @@ def polynomial_mutation(key, individual, prob_mut, eta, sigma=1.0):
 def generate_padded_offspring_batch_with_crossover(key, members, fitness, max_offspring, k_tournament, p_mut, eta_cross, eta_mut, sigma=1.0):
     """Generates a fixed-size batch of offspring and we slice from it later."""
 
-    # Create 4 master keys, one for each stochastic operation.
-    key_p1, key_p2, key_cross, key_mut = jax.random.split(key, 4)
+    # Create 5 master keys: one per stochastic op plus a dedicated key for the
+    # keep-crossover-result decision (must be independent of cross_keys, which
+    # parameterize the crossover itself).
+    key_p1, key_p2, key_cross, key_mask, key_mut = jax.random.split(key, 5)
 
     # Split each master key into a batch of size max_offspring
     p1_keys = jax.random.split(key_p1, max_offspring)
     p2_keys = jax.random.split(key_p2, max_offspring)
     cross_keys = jax.random.split(key_cross, max_offspring)
+    mask_keys = jax.random.split(key_mask, max_offspring)
     mut_keys = jax.random.split(key_mut, max_offspring)
 
     # VMAP to perform batched tournament selection
@@ -268,7 +271,7 @@ def generate_padded_offspring_batch_with_crossover(key, members, fitness, max_of
     offspring1_batch, offspring2_batch = vmap(crossover_fn)(cross_keys, parent1_batch, parent2_batch)
 
     # Decide which children to keep based on crossover rate
-    crossover_mask = vmap(jax.random.uniform)(cross_keys).reshape(-1, 1, 1) < CROSSOVER_RATE
+    crossover_mask = vmap(jax.random.uniform)(mask_keys).reshape(-1, 1, 1) < CROSSOVER_RATE
     child_batch = jnp.where(crossover_mask, offspring1_batch, parent1_batch)
 
     # VMAP to perform batched mutation with adaptive step size
@@ -680,7 +683,7 @@ if __name__ == '__main__':
                  random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
                  next_generation_population.extend(random_individuals)
 
-        population = jnp.array(next_generation_population[:POPULATION_SIZE])
+        population = jnp.stack(next_generation_population[:POPULATION_SIZE])
         
         # 5. Logging
         if (gen + 1) % LOG_INTERVAL == 0:
@@ -733,7 +736,7 @@ if __name__ == '__main__':
     num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
     for i in range(num_batches):
         start_idx = i * FITNESS_MINI_BATCH_SIZE
-        end_idx = jnp.minimum(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
+        end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
         population_batch = population[start_idx:end_idx]
         if num_devices > 1:
             per_device = population_batch.shape[0] // num_devices
@@ -747,7 +750,8 @@ if __name__ == '__main__':
             fitness_batch = evaluate_fitness(
                 population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
             )
-        final_fitness = final_fitness.at[start_idx:end_idx].set(fitness_batch)
+        safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
+        final_fitness = final_fitness.at[start_idx:end_idx].set(safe_fitness_batch)
 
     # 2. Use the correct vectorized speciation to assign members.
     for s in species_list: s.clear_members()

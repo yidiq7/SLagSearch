@@ -119,7 +119,7 @@ def make_fitness_plots(
     min_set_real, distances, _ = filter_and_refine(
         points_real, coeffs, psi, k, n_refine_steps
     )
-    if patch_index:
+    if patch_index is not None:
         patch_indices = determine_patches_batch(convert_real_to_complex_batch(min_set_real))
         idx = jnp.where(patch_indices == patch_index)
         min_set_real = min_set_real[idx]

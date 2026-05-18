@@ -18,11 +18,11 @@ PATCH_ACTIVE_MASKS = jnp.array([
 
 
 PATCH_ACTIVE_INDICES = jnp.array([
-    [1, 2, 3, 4, 6, 7, 8, 9],  # patch=0: skip 0,6
+    [1, 2, 3, 4, 6, 7, 8, 9],  # patch=0: skip 0,5
     [0, 2, 3, 4, 5, 7, 8, 9],  # patch=1: skip 1,6
-    [0, 1, 3, 4, 5, 6, 8, 9],  # patch=2: skip 2,6
-    [0, 1, 2, 4, 5, 6, 7, 9],  # patch=3: skip 3,6
-    [0, 1, 2, 3, 5, 6, 7, 8],  # patch=4: skip 4,6
+    [0, 1, 3, 4, 5, 6, 8, 9],  # patch=2: skip 2,7
+    [0, 1, 2, 4, 5, 6, 7, 9],  # patch=3: skip 3,8
+    [0, 1, 2, 3, 5, 6, 7, 8],  # patch=4: skip 4,9
 ], dtype=jnp.int32)
 
 # Enable 64-bit precision for complex numbers
@@ -340,50 +340,6 @@ def compute_distances_batched(
     return dists[:n_points]
 
 
-@partial(jax.jit, static_argnames=('constant_coord',))
-def _project_forces_to_tangent_space(
-    points: jnp.ndarray,
-    forces: jnp.ndarray,
-    coeffs: jnp.ndarray,
-    psi: jnp.ndarray,
-    constant_coord: int
-) -> jnp.ndarray:
-    """
-    Projects a batch of 10D force vectors onto the tangent spaces at each point.
-    This is a helper function for the repulsion algorithm.
-    """
-    # 1. Get Jacobians for all points in the batch using vmap
-    batch_jacobian_fn = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))
-    jacobians = batch_jacobian_fn(points, coeffs, psi, constant_coord)  # Shape: (k, 5, 8)
-
-    # 2. Extract the 8 active components from the 10D force vectors
-    active_indices = jnp.concatenate([
-        jnp.arange(0, constant_coord),
-        jnp.arange(constant_coord + 1, 5),
-        jnp.arange(5, constant_coord + 5),
-        jnp.arange(constant_coord + 6, 10)
-    ])
-    forces_active = forces[:, active_indices]  # Shape: (k, 8)
-
-    # 3. Project forces onto the tangent space (v_tangent = v - v_normal)
-    # --- FIX STARTS HERE ---
-    # The original string 'kmi,km->ki' had a label mismatch.
-    # This corrected string 'kmi,ki->km' correctly performs the batch multiplication
-    # of the Jacobians (k, 5, 8) with forces_active (k, 8).
-    J_forces_active = jnp.einsum('kmi,ki->km', jacobians, forces_active)  # Shape: (k, 5)
-    # --- FIX ENDS HERE ---
-    
-    JJT = jnp.einsum('kmi,kni->kmn', jacobians, jacobians) + 1e-6 * jnp.eye(5)
-
-    w = jnp.linalg.solve(JJT, J_forces_active[..., None]).squeeze(axis=-1)
-    # This calculation for the normal component is correct.
-    forces_normal_active = jnp.einsum('kmi,km->ki', jacobians, w)  # Shape: (k, 8)
-    forces_tangent_active = forces_active - forces_normal_active
-
-    # 4. Embed the 8D tangent forces back into 10D vectors
-    return jnp.zeros_like(forces).at[:, active_indices].set(forces_tangent_active)
-
-
 @partial(jax.jit, static_argnames=('k', 'n_refine_steps', 'filter_newton', 'n_repulsion_steps', 'dist_chunk_size'))
 def filter_and_refine(
     points: jnp.ndarray,
@@ -516,11 +472,15 @@ def filter_and_refine(
     # Compute final distances
     final_distances = compute_distances_batched(final_points, coeffs, psi, chunk_size=dist_chunk_size)
     
-    # Final convergence check
+    # Final convergence check. Same logic as the initial check: only reject
+    # genuinely bad convergence or NaN/inf. No lower bound — under FP64 a true
+    # sLag can hit the precision floor.
     repulsion_newton_check = True
     if filter_newton:
-        mean_distance = jnp.nan_to_num(jnp.mean(final_distances))
-        repulsion_newton_check = (mean_distance <= 1e-4) & (mean_distance > 1e-16)
+        finite_mask = jnp.isfinite(final_distances)
+        all_finite = jnp.all(finite_mask)
+        mean_distance = jnp.where(all_finite, jnp.mean(final_distances), jnp.inf)
+        repulsion_newton_check = (mean_distance <= 1e-4) & all_finite
     
     newton_check_pass = initial_newton_check & repulsion_newton_check
     
