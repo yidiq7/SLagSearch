@@ -236,11 +236,11 @@ print('First 5000 distances: ', distances_sorted[:5000])
 print('Last 20 distances: ', distances_sorted[-20:])
 
 PATCH_ACTIVE_INDICES = jnp.array([
-    [1, 2, 3, 4, 6, 7, 8, 9],  # patch=0: skip 0,6
+    [1, 2, 3, 4, 6, 7, 8, 9],  # patch=0: skip 0,5
     [0, 2, 3, 4, 5, 7, 8, 9],  # patch=1: skip 1,6
-    [0, 1, 3, 4, 5, 6, 8, 9],  # patch=2: skip 2,6
-    [0, 1, 2, 4, 5, 6, 7, 9],  # patch=3: skip 3,6
-    [0, 1, 2, 3, 5, 6, 7, 8],  # patch=4: skip 4,6
+    [0, 1, 3, 4, 5, 6, 8, 9],  # patch=2: skip 2,7
+    [0, 1, 2, 4, 5, 6, 7, 9],  # patch=3: skip 3,8
+    [0, 1, 2, 3, 5, 6, 7, 8],  # patch=4: skip 4,9
 ], dtype=jnp.int32)
 
 from get_restriction import compute_affine_jacobian

@@ -234,8 +234,14 @@ def _assemble_kahler_form(g_complex: jnp.ndarray) -> jnp.ndarray:
 # --- Vmapped Single-Point Computers ---
 
 def _compute_metric_for_single_point(z: jnp.ndarray, patch_index: int, metric: str) -> jnp.ndarray:
-    """Computes the Fubini-Study metric tensor G for a single point."""
-    return _assemble_metric_tensor(calculate_complex_metric_k4(z, patch_index))
+    """Computes the real metric tensor G for a single point under `metric`."""
+    if metric == 'FS':
+        g_complex = calculate_complex_metric_FS(z, patch_index)
+    elif metric == 'k4_fermat':
+        g_complex = calculate_complex_metric_k4(z, patch_index)
+    else:
+        raise ValueError(f"Unsupported metric: '{metric}'")
+    return _assemble_metric_tensor(g_complex)
 
 
 def compute_kahler_form(
@@ -272,33 +278,28 @@ def compute_kahler_form(
 
 
 def compute_kahler_form_restricted(
-    points: jnp.ndarray, 
-    restriction: jnp.ndarray, 
-    patch_indices: jnp.ndarray, 
+    points: jnp.ndarray,
+    restriction: jnp.ndarray,
+    patch_indices: jnp.ndarray,
     metric: str = 'FS'
 ) -> jnp.ndarray:
-
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2,))
-    kahler_form = jit_compute_kahler_form(points, patch_indices, metric)
-    kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
-    return kahler_form_restricted
+    kahler_form = compute_kahler_form(points, patch_indices, metric)
+    return jnp.einsum('nij,nik,njl->nkl', kahler_form, restriction, restriction)
 
 
 def compute_kahler_form_unrestricted(
-    points: jnp.ndarray, 
-    patch_indices: jnp.ndarray, 
+    points: jnp.ndarray,
+    patch_indices: jnp.ndarray,
     metric: str = 'FS'
 ) -> jnp.ndarray:
-
-    jit_compute_kahler_form = jax.jit(compute_kahler_form, static_argnums=(2,))
-    return jit_compute_kahler_form(points, patch_indices, metric)
+    return compute_kahler_form(points, patch_indices, metric)
 
 
 def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray, k: int=10):
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restriction, restriction)
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-    norms_normalized = frobenius_norms / normalization_factor  
+    norms_normalized = frobenius_norms / (normalization_factor + 1e-9)
     # Remove the potential blow-up
     sorted_norms = jnp.sort(norms_normalized)
     norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.99)]
