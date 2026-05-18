@@ -413,7 +413,7 @@ def main():
                              "make_fitness_plots, exit.")
     parser.add_argument("--plot_k", type=int, default=80000,
                         help="Point cloud size for the final plots.")
-    parser.add_argument("--plot_newton_steps", type=int, default=100,
+    parser.add_argument("--plot_newton_steps", type=int, default=80,
                         help="Newton refinement steps for the final plots.")
     args = parser.parse_args()
 
