@@ -309,17 +309,67 @@ def generate_basis_third_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([imag_basis, real_basis])
 
 
+# All (i, j, k, l) quadruples with i <= j <= k <= l from {0,...,4}. C(5+3, 4) = 70.
+_QUARTIC_QUADRUPLES = jnp.array(
+    [(i, j, k, l)
+     for i in range(5)
+     for j in range(i, 5)
+     for k in range(j, 5)
+     for l in range(k, 5)],
+    dtype=jnp.int32,
+)
+
+
+def generate_basis_fourth_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
+    """
+    Generate fourth-order basis functions from points on Fermat quintic.
+    These are polynomials of degree (4, 4): z_i z_j z_k z_l * conj of same.
+
+    Args:
+        point: (5,) complex array of points on the quintic
+
+    Returns:
+        basis: (4900,) real array of basis functions
+               - 2415 Imaginary parts of (u_A * u_B_bar) for A < B
+               - 2485 Real parts of (u_A * u_B_bar) for A <= B
+               Where u is the vector of 70 quartic monomials z_i z_j z_k z_l
+               (i <= j <= k <= l).
+    """
+    # 1. Construct the vector of quartic monomials u_A = z_i * z_j * z_k * z_l.
+    u = (point[_QUARTIC_QUADRUPLES[:, 0]]
+         * point[_QUARTIC_QUADRUPLES[:, 1]]
+         * point[_QUARTIC_QUADRUPLES[:, 2]]
+         * point[_QUARTIC_QUADRUPLES[:, 3]])  # (70,)
+
+    # 2. Construct the (70, 70) Hermitian matrix of (u_A * u_B_bar).
+    M = u[:, None] * jnp.conj(u[None, :])
+
+    # 3. Extract independent real basis functions.
+    # Imag parts: strict upper triangle (k=1). Count: 70 * 69 / 2 = 2415.
+    triu_indices_imag = jnp.triu_indices(70, k=1)
+    imag_basis = jnp.imag(M[triu_indices_imag[0], triu_indices_imag[1]])
+
+    # Real parts: upper triangle + diagonal (k=0). Count: 70 * 71 / 2 = 2485.
+    triu_indices_real = jnp.triu_indices(70, k=0)
+    real_basis = jnp.real(M[triu_indices_real[0], triu_indices_real[1]])
+
+    # Total size: 2415 + 2485 = 4900.
+    return jnp.concatenate([imag_basis, real_basis])
+
+
 # Genotype widths per max-degree. Switch is by coeffs.shape[1] (static under jit).
 _D1_END = 25
 _D2_END = 250    # 25 + 225
 _D3_END = 1475   # 250 + 1225
+_D4_END = 6375   # 1475 + 4900
 
 
 def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray) -> jnp.ndarray:
     """Evaluate the five equations. The input points are real.
 
-    The coefficient matrix may be (3, 25), (3, 250), or (3, 1475), selecting
-    d=1, d=1+2, or d=1+2+3 ansatz respectively. Dispatch is by static shape.
+    The coefficient matrix may be (3, 25), (3, 250), (3, 1475), or (3, 6375),
+    selecting d=1, d=1+2, d=1+2+3, or d=1+2+3+4 ansatz respectively. Dispatch
+    is by static shape.
     """
     point_complex = point[:5] + 1j * point[5:]
     norm_sq = jnp.vdot(point_complex, point_complex).real
@@ -335,6 +385,10 @@ def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi
     if n_coeffs >= _D3_END:
         basis_d3 = generate_basis_third_order_single_point(point_complex) / (norm_sq ** 3)
         eqs_vec = eqs_vec + coeffs[:, _D2_END:_D3_END] @ basis_d3
+
+    if n_coeffs >= _D4_END:
+        basis_d4 = generate_basis_fourth_order_single_point(point_complex) / (norm_sq ** 4)
+        eqs_vec = eqs_vec + coeffs[:, _D3_END:_D4_END] @ basis_d4
 
     cy = jnp.sum(point_complex**5) + psi * jnp.prod(point_complex)
     return jnp.concatenate([jnp.array([jnp.real(cy), jnp.imag(cy)]), eqs_vec])

@@ -1,9 +1,10 @@
-"""Gradient descent for sLag search with d=1, d=1+2, or d=1+2+3 ansatz.
+"""Gradient descent for sLag search with d=1, d=1+2, d=1+2+3, or d=1+2+3+4 ansatz.
 
 Genotype width is set by --max_degree:
   1 -> (3, 25)     (d=1 only)
   2 -> (3, 250)    (d=1 + d=2, default)
   3 -> (3, 1475)   (d=1 + d=2 + d=3)
+  4 -> (3, 6375)   (d=1 + d=2 + d=3 + d=4)
 
 The optimization alternates:
 
@@ -26,6 +27,10 @@ Examples:
     # d=1+2+3, preloading d=1+2 best as init.
     python gradient_descent.py --job_id run1_d3 --max_degree 3 --steps 2000 \
         --init_pkl gd_runs/gd_A_baseline_step10000.pkl
+
+    # d=1+2+3+4, preloading d=1+2+3 best as init.
+    python gradient_descent.py --job_id run1_d4 --max_degree 4 --steps 2000 \
+        --init_pkl gd_runs/gd_run1_d3_step2000.pkl
 
     # Resume from a checkpoint and keep training (Adam moments restored).
     python gradient_descent.py --job_id run1_cont \
@@ -76,7 +81,7 @@ jax.config.update("jax_enable_x64", True)
 
 # Width per max-degree. Matches the static dispatch in
 # helper.evaluate_equations_single_point.
-GENOTYPE_WIDTHS = {1: 25, 2: 250, 3: 1475}
+GENOTYPE_WIDTHS = {1: 25, 2: 250, 3: 1475, 4: 6375}
 # Default exported for back-compat with other modules (e.g. diagnose_phases).
 GENOTYPE_SHAPE = (3, GENOTYPE_WIDTHS[2])
 
@@ -240,6 +245,10 @@ def _run_all_plots(points_real, coeffs, psi, args):
       plots_slag_{job_id}_d2_vs_d3/  d=3 (full) vs d=2 truncation (coeffs[:, :250]), steel/sky blue
       plots_slag_{job_id}_d1_d2_d3/  three-way: d=3 (steel) vs d=2 (sky) vs d=1 truncation (light blue)
     The d=2/d=1 truncations slice the GD result and re-normalize each row.
+
+    When coeffs encodes a d=1+2+3+4 ansatz (shape (3, 6375)):
+      plots_slag_{job_id}_d3_vs_d4/     d=4 (full) vs d=3 truncation
+      plots_slag_{job_id}_d1_d2_d3_d4/  four-way: d=4 (steel) vs d=3 (sky) vs d=2 (light blue) vs d=1 (lightsteelblue)
     """
     d1_coeffs_full = jnp.zeros(coeffs.shape).at[:, :25].set(D1_COEFFS)
     d1_coeffs_full = normalize_coeffs(d1_coeffs_full)
@@ -317,6 +326,45 @@ def _run_all_plots(points_real, coeffs, psi, args):
             parent_folder=d1_d2_d3_folder,
         )
 
+    if coeffs.shape[1] == GENOTYPE_WIDTHS[4]:
+        d3_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[3]])
+        d2_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[2]])
+        d1_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[1]])
+
+        d3_vs_d4_folder = base + "_d3_vs_d4"
+        print(f"\n=== Plotting d=4 vs d=3 truncation -> {d3_vs_d4_folder} ===")
+        make_fitness_plots(
+            points_real, coeffs, psi,
+            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+            metric=args.metric,
+            compare_with=d3_truncated,
+            primary_label="d=4",
+            compare_label="d=3",
+            primary_color="steelblue",
+            compare_color="skyblue",
+            fix_kahler_x_range=False,
+            parent_folder=d3_vs_d4_folder,
+        )
+
+        d1_d2_d3_d4_folder = base + "_d1_d2_d3_d4"
+        print(f"\n=== Plotting d=1 vs d=2 vs d=3 vs d=4 -> {d1_d2_d3_d4_folder} ===")
+        make_fitness_plots(
+            points_real, coeffs, psi,
+            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
+            metric=args.metric,
+            compare_with=d3_truncated,
+            primary_label="d=4",
+            compare_label="d=3",
+            primary_color="steelblue",
+            compare_color="skyblue",
+            fix_kahler_x_range=False,
+            extra_comparisons=[
+                {"coeffs": d2_truncated, "label": "d=2", "color": "lightblue"},
+                {"coeffs": d1_truncated, "label": "d=1", "color": "lightsteelblue"},
+            ],
+            parent_folder=d1_d2_d3_d4_folder,
+        )
+
 
 def main():
     parser = argparse.ArgumentParser(description="GD for sLag search (d=1+2)")
@@ -339,7 +387,8 @@ def main():
                         help="Weight on special loss (used when --loss is 'spec' or 'both').")
     parser.add_argument("--max_degree", type=int, default=2,
                         choices=sorted(GENOTYPE_WIDTHS),
-                        help="Ansatz max degree: 1 -> (3,25), 2 -> (3,250), 3 -> (3,1475).")
+                        help="Ansatz max degree: 1 -> (3,25), 2 -> (3,250), "
+                             "3 -> (3,1475), 4 -> (3,6375).")
     parser.add_argument("--init", type=str, default="d1_zeropad",
                         choices=["scratch", "d1_zeropad"],
                         help="Synthetic init mode. Ignored if --init_pkl is set.")
