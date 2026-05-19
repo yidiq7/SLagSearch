@@ -7,6 +7,7 @@ import pickle
 import matplotlib.pyplot as plt
 from functools import partial
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
+from sharding import shard_leading_axis
 from slag_condition import (
     compute_holomorphic_form,
     compute_kahler_form_restricted,
@@ -18,6 +19,55 @@ from slag_condition import (
 from get_restriction import compute_Omega_restriction
 from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
 from typing import Optional
+
+
+def _pmap_filter_and_refine_factory(num_devices: int):
+    """Build a pmapped filter_and_refine. Per-device runs on its points shard
+    with k_per_device = k // num_devices. Memoized via lru_cache-style by
+    caller to avoid re-tracing across multiple invocations."""
+
+    def per_device(points_shard, coeffs, psi, k_per_dev, n_refine_steps):
+        return filter_and_refine(points_shard, coeffs, psi, k_per_dev, n_refine_steps)
+
+    pmapped = jax.pmap(
+        per_device,
+        axis_name="x",
+        in_axes=(0, None, None, None, None),
+        static_broadcasted_argnums=(3, 4),
+    )
+    return pmapped
+
+
+def _mine_on_one_or_many(
+    points_real: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    k: int,
+    n_refine_steps: int,
+    num_devices: int,
+):
+    """Wrapper: single-device filter_and_refine, or sharded across `num_devices`.
+    Returns (min_set_real, distances) as host-side numpy arrays."""
+    if num_devices <= 1:
+        min_set_real, distances, _ = filter_and_refine(
+            points_real, coeffs, psi, k, n_refine_steps,
+        )
+        return np.asarray(min_set_real), np.asarray(distances)
+    if k % num_devices != 0:
+        raise ValueError(
+            f"plot k={k} not divisible by num_devices={num_devices}"
+        )
+    k_per_dev = k // num_devices
+    n_keep = (points_real.shape[0] // num_devices) * num_devices
+    points_sharded = shard_leading_axis(points_real[:n_keep], num_devices)
+    pmapped = _pmap_filter_and_refine_factory(num_devices)
+    min_set_sharded, distances_sharded, _ = pmapped(
+        points_sharded, coeffs, psi, k_per_dev, n_refine_steps,
+    )
+    return (
+        np.asarray(min_set_sharded).reshape(-1, 10),
+        np.asarray(distances_sharded).reshape(-1),
+    )
 
 
 @partial(jax.jit, static_argnames=('metric',))
@@ -96,6 +146,7 @@ def make_fitness_plots(
     compare_color: str = 'orange',
     fix_kahler_x_range: bool = True,
     extra_comparisons: Optional[list] = None,
+    num_devices: int = 1,
     ) -> None:
     """Plot Kahler-norm and Omega-phase distributions for `coeffs`, optionally
     overlaid with one or more comparison distributions.
@@ -112,21 +163,27 @@ def make_fitness_plots(
 
     primary_color / compare_color / primary_label / compare_label tune the
     histograms; fix_kahler_x_range=True pins both the bin range and xlim to [0, 3].
+
+    num_devices > 1 shards filter_and_refine across GPUs (per-device mines
+    k/num_devices points from its slice of points_real). Diagnostics still
+    use the host-side chunked loop on the gathered (k, 10) min_set_real,
+    which is memory-safe at d=4 because chunk_size bounds per-call VRAM.
     """
     os.makedirs(parent_folder, exist_ok=True)
 
     # --- Primary set ---
-    min_set_real, distances, _ = filter_and_refine(
-        points_real, coeffs, psi, k, n_refine_steps
+    min_set_real, distances = _mine_on_one_or_many(
+        points_real, coeffs, psi, k, n_refine_steps, num_devices,
     )
     if patch_index is not None:
-        patch_indices = determine_patches_batch(convert_real_to_complex_batch(min_set_real))
-        idx = jnp.where(patch_indices == patch_index)
-        min_set_real = min_set_real[idx]
-        distances = distances[idx]
+        patch_indices = np.asarray(determine_patches_batch(
+            convert_real_to_complex_batch(jnp.asarray(min_set_real))))
+        mask = patch_indices == patch_index
+        min_set_real = min_set_real[mask]
+        distances = distances[mask]
 
     frobenius_norms, norms_for_fitness, phases = _chunked_diagnostics(
-        min_set_real, coeffs, psi, metric, chunk_size
+        jnp.asarray(min_set_real), coeffs, psi, metric, chunk_size
     )
     sorted_nf = np.sort(norms_for_fitness)
     cutoff = int(sorted_nf.shape[0] * 0.99)
@@ -136,7 +193,7 @@ def make_fitness_plots(
     phases_mod_pi = phases % np.pi
     special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases_mod_pi), n_bins=100))
 
-    print(f"min_set_distance: Min: {jnp.min(distances)}, Max: {jnp.max(distances)}, Mean: {jnp.mean(distances)}")
+    print(f"min_set_distance: Min: {distances.min()}, Max: {distances.max()}, Mean: {distances.mean()}")
     print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
 
     # --- Collect comparison overlays (compare_with first, then extra_comparisons in order) ---
@@ -151,22 +208,22 @@ def make_fitness_plots(
             cmp_coeffs = normalize_coeffs(cmp_coeffs)
         else:
             cmp_coeffs = compare_with
-        min_set_real_cmp, _, _ = filter_and_refine(
-            points_real, cmp_coeffs, psi, k, n_refine_steps
+        min_set_real_cmp, _ = _mine_on_one_or_many(
+            points_real, cmp_coeffs, psi, k, n_refine_steps, num_devices,
         )
         fnorms_cmp, _, phases_cmp = _chunked_diagnostics(
-            min_set_real_cmp, cmp_coeffs, psi, metric, chunk_size
+            jnp.asarray(min_set_real_cmp), cmp_coeffs, psi, metric, chunk_size
         )
         overlays.append({"fnorms": fnorms_cmp, "phases": phases_cmp,
                          "label": compare_label, "color": compare_color})
     if extra_comparisons:
         for ex in extra_comparisons:
             ex_coeffs = ex["coeffs"]
-            min_set_real_ex, _, _ = filter_and_refine(
-                points_real, ex_coeffs, psi, k, n_refine_steps
+            min_set_real_ex, _ = _mine_on_one_or_many(
+                points_real, ex_coeffs, psi, k, n_refine_steps, num_devices,
             )
             fnorms_ex, _, phases_ex = _chunked_diagnostics(
-                min_set_real_ex, ex_coeffs, psi, metric, chunk_size
+                jnp.asarray(min_set_real_ex), ex_coeffs, psi, metric, chunk_size
             )
             overlays.append({"fnorms": fnorms_ex, "phases": phases_ex,
                              "label": ex["label"], "color": ex["color"]})

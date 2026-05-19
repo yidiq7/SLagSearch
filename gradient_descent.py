@@ -67,6 +67,7 @@ from helper import (
     format_array_with_commas,
 )
 from plots import make_fitness_plots
+from sharding import device_put_sharded, shard_leading_axis, take_replicated
 from slag_condition import (
     compute_holomorphic_form_restricted,
     compute_kahler_form_unrestricted,
@@ -222,6 +223,132 @@ def make_total_loss(loss_kind: str, lag_weight: float, spec_weight: float):
     return total_loss
 
 
+# ---------------------------------------------------------------------------
+# Data-parallel wrappers. Each device computes a local loss/fitness on its
+# shard of min_set_real with coeffs/psi replicated; we pmean losses and
+# gradients across the device axis. Per-shard reductions (bottom-99% mean of
+# Lagrangian norms; Kuramoto |mean exp(2i theta)|) are computed locally then
+# averaged. At minset_size//num_devices >= ~1000 the bias vs the true global
+# loss is negligible and gradient noise dominates.
+# ---------------------------------------------------------------------------
+
+
+def make_parallel_loss_and_grad(total_loss_fn, num_devices: int):
+    """Build the (loss, grad) function. Single-device or pmap'd identically."""
+    value_and_grad = jax.value_and_grad(total_loss_fn, argnums=0, has_aux=True)
+
+    if num_devices <= 1:
+        return jax.jit(value_and_grad, static_argnames=("n_refine_steps", "metric"))
+
+    def per_device(coeffs, min_set_shard, psi, n_refine_steps, metric):
+        (total, (lag, spec)), grads = value_and_grad(
+            coeffs, min_set_shard, psi, n_refine_steps, metric
+        )
+        total = jax.lax.pmean(total, axis_name="x")
+        lag = jax.lax.pmean(lag, axis_name="x")
+        spec = jax.lax.pmean(spec, axis_name="x")
+        grads = jax.lax.pmean(grads, axis_name="x")
+        return (total, (lag, spec)), grads
+
+    pmapped = jax.pmap(
+        per_device,
+        axis_name="x",
+        in_axes=(None, 0, None, None, None),
+        static_broadcasted_argnums=(3, 4),
+    )
+
+    def fn(coeffs, min_set_sharded, psi, n_refine_steps, metric):
+        (total, (lag, spec)), grads = pmapped(
+            coeffs, min_set_sharded, psi, n_refine_steps, metric
+        )
+        # pmean'd outputs are replicated along the device axis; collapse it.
+        return (
+            (take_replicated(total), (take_replicated(lag), take_replicated(spec))),
+            take_replicated(grads),
+        )
+
+    return fn
+
+
+def make_parallel_ga_fitness(num_devices: int):
+    """Same shape as compute_ga_fitness but sharded over min_set_real."""
+    if num_devices <= 1:
+        return jax.jit(compute_ga_fitness, static_argnames=("metric",))
+
+    def per_device(min_set_shard, coeffs, psi, metric):
+        lag_fit, spec_fit = compute_ga_fitness(min_set_shard, coeffs, psi, metric)
+        return (
+            jax.lax.pmean(lag_fit, axis_name="x"),
+            jax.lax.pmean(spec_fit, axis_name="x"),
+        )
+
+    pmapped = jax.pmap(
+        per_device,
+        axis_name="x",
+        in_axes=(0, None, None, None),
+        static_broadcasted_argnums=(3,),
+    )
+
+    def fn(min_set_sharded, coeffs, psi, metric):
+        lag_fit, spec_fit = pmapped(min_set_sharded, coeffs, psi, metric)
+        return take_replicated(lag_fit), take_replicated(spec_fit)
+
+    return fn
+
+
+def make_parallel_mining(num_devices: int):
+    """Sharded filter_and_refine. Each device mines its own slice of points_real
+    for k_per_device = k // num_devices points; outputs are concatenated.
+
+    The repulsion step inside filter_and_refine runs intra-shard only (it
+    cannot see cross-shard neighbors). This is a small approximation of the
+    single-device uniformity heuristic — fine when each shard has >> 100
+    points.
+
+    Inputs:
+      points_sharded: (D, M, 10) device-sharded array of CY points
+      coeffs, psi: replicated (broadcast)
+      k: TOTAL desired output size; must be divisible by num_devices
+      n_refine_steps: passed through (static)
+    Returns:
+      min_set_sharded: (D, k/D, 10) sharded
+      distances: (D, k/D) sharded
+      check: scalar host bool (AND across all devices)
+    """
+    if num_devices <= 1:
+        def fn(points, coeffs, psi, k, n_refine_steps):
+            return filter_and_refine(
+                points, coeffs, psi, k, n_refine_steps, filter_newton=True,
+            )
+        return fn
+
+    def per_device(points_shard, coeffs, psi, k_per_dev, n_refine_steps):
+        return filter_and_refine(
+            points_shard, coeffs, psi, k_per_dev, n_refine_steps, filter_newton=True,
+        )
+
+    pmapped = jax.pmap(
+        per_device,
+        axis_name="x",
+        in_axes=(0, None, None, None, None),
+        static_broadcasted_argnums=(3, 4),
+    )
+
+    def fn(points_sharded, coeffs, psi, k, n_refine_steps):
+        if k % num_devices != 0:
+            raise ValueError(
+                f"minset/plot k={k} not divisible by num_devices={num_devices}"
+            )
+        k_per_dev = k // num_devices
+        min_set_sharded, distances_sharded, check_per_dev = pmapped(
+            points_sharded, coeffs, psi, k_per_dev, n_refine_steps,
+        )
+        # check_per_dev shape (D,); AND across devices.
+        return min_set_sharded, distances_sharded, jnp.all(check_per_dev)
+
+    return fn
+
+
 def load_points(psi: int):
     """Try cluster path first, fall back to repo-local pkl."""
     cluster = f"/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{psi}_seed1024.pkl"
@@ -235,7 +362,7 @@ def load_points(psi: int):
     raise FileNotFoundError(f"No CY point cloud at {cluster} or {local}")
 
 
-def _run_all_plots(points_real, coeffs, psi, args):
+def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
     """Driven by make_fitness_plots:
       plots_slag_{job_id}/           GD coeffs vs random       (fixed x-range)
       plots_slag_{job_id}_d1/        d=1 baseline vs random    (fixed x-range)
@@ -249,6 +376,9 @@ def _run_all_plots(points_real, coeffs, psi, args):
     When coeffs encodes a d=1+2+3+4 ansatz (shape (3, 6375)):
       plots_slag_{job_id}_d3_vs_d4/     d=4 (full) vs d=3 truncation
       plots_slag_{job_id}_d1_d2_d3_d4/  four-way: d=4 (steel) vs d=3 (sky) vs d=2 (light blue) vs d=1 (lightsteelblue)
+
+    num_devices > 1 routes filter_and_refine and the per-point diagnostics
+    through a pmap'd path inside make_fitness_plots (see plots.py).
     """
     d1_coeffs_full = jnp.zeros(coeffs.shape).at[:, :25].set(D1_COEFFS)
     d1_coeffs_full = normalize_coeffs(d1_coeffs_full)
@@ -260,6 +390,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
         k=args.plot_k, n_refine_steps=args.plot_newton_steps,
         metric=args.metric, compare_with="random",
         parent_folder=base,
+        num_devices=num_devices,
     )
 
     d1_folder = base + "_d1"
@@ -270,6 +401,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
         metric=args.metric, compare_with="random",
         parent_folder=d1_folder,
         primary_label="d=1 baseline",
+        num_devices=num_devices,
     )
 
     vs_d1_folder = base + "_vs_d1"
@@ -285,6 +417,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
         compare_color="skyblue",
         fix_kahler_x_range=False,
         parent_folder=vs_d1_folder,
+        num_devices=num_devices,
     )
 
     if coeffs.shape[1] == GENOTYPE_WIDTHS[3]:
@@ -304,6 +437,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
             compare_color="skyblue",
             fix_kahler_x_range=False,
             parent_folder=d2_vs_d3_folder,
+            num_devices=num_devices,
         )
 
         d1_d2_d3_folder = base + "_d1_d2_d3"
@@ -324,6 +458,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
                 "color": "lightblue",
             }],
             parent_folder=d1_d2_d3_folder,
+            num_devices=num_devices,
         )
 
     if coeffs.shape[1] == GENOTYPE_WIDTHS[4]:
@@ -344,6 +479,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
             compare_color="skyblue",
             fix_kahler_x_range=False,
             parent_folder=d3_vs_d4_folder,
+            num_devices=num_devices,
         )
 
         d1_d2_d3_d4_folder = base + "_d1_d2_d3_d4"
@@ -363,6 +499,7 @@ def _run_all_plots(points_real, coeffs, psi, args):
                 {"coeffs": d1_truncated, "label": "d=1", "color": "lightsteelblue"},
             ],
             parent_folder=d1_d2_d3_d4_folder,
+            num_devices=num_devices,
         )
 
 
@@ -431,6 +568,29 @@ def main():
     print(f"Loaded {len(points_real)} points from {src_path}")
     psi = jnp.asarray(args.psi, dtype=jnp.complex128)
 
+    num_devices = jax.local_device_count()
+    print(f"Detected {num_devices} GPU(s).")
+    if num_devices > 1:
+        # Truncate points_real to a multiple of num_devices once, then shard.
+        n_keep = (points_real.shape[0] // num_devices) * num_devices
+        if n_keep != points_real.shape[0]:
+            print(f"  [shard] truncating {points_real.shape[0]} -> {n_keep} "
+                  f"points to be divisible by {num_devices} GPUs")
+            points_real = points_real[:n_keep]
+        points_sharded = shard_leading_axis(points_real, num_devices)
+        if args.minset_size % num_devices != 0:
+            raise ValueError(
+                f"--minset_size {args.minset_size} not divisible by "
+                f"num_devices={num_devices}"
+            )
+        if args.plot_k % num_devices != 0:
+            raise ValueError(
+                f"--plot_k {args.plot_k} not divisible by "
+                f"num_devices={num_devices}"
+            )
+    else:
+        points_sharded = None  # single-device path uses points_real directly
+
     if args.plots_only:
         if args.resume is None:
             raise ValueError("--plots_only requires --resume <ckpt.pkl>")
@@ -438,7 +598,7 @@ def main():
             ckpt = pickle.load(f)
         coeffs = jnp.asarray(ckpt["coeffs"], dtype=jnp.float64)
         print(f"=== Plots only: coeffs from {args.resume} ===")
-        _run_all_plots(points_real, coeffs, psi, args)
+        _run_all_plots(points_real, coeffs, psi, args, num_devices=num_devices)
         print("Done.")
         return
 
@@ -478,16 +638,18 @@ def main():
         history = []
 
     total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight)
-    loss_value_and_grad = jax.jit(
-        jax.value_and_grad(total_loss, argnums=0, has_aux=True),
-        static_argnames=("n_refine_steps", "metric"),
-    )
-    ga_fitness_jit = jax.jit(compute_ga_fitness, static_argnames=("metric",))
+    loss_value_and_grad = make_parallel_loss_and_grad(total_loss, num_devices)
+    ga_fitness_jit = make_parallel_ga_fitness(num_devices)
+    mining_fn = make_parallel_mining(num_devices)
+
+    # In multi-GPU mode, min_set_real is a (D, k/D, 10) sharded array that we
+    # carry directly between mining and the loss/fitness call — no host
+    # round-trip. In single-GPU mode it's the usual (k, 10) array.
+    points_in = points_sharded if num_devices > 1 else points_real
 
     # Initial mining + loss eval (also re-runs on resume to repopulate min_set_real).
-    min_set_real, distances, _ = filter_and_refine(
-        points_real, coeffs, psi,
-        args.minset_size, args.newton_steps, filter_newton=True,
+    min_set_real, distances, _ = mining_fn(
+        points_in, coeffs, psi, args.minset_size, args.newton_steps,
     )
     mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
     print(f"  [mining] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
@@ -521,9 +683,8 @@ def main():
         # Skip step==0: just mined for the initial eval. Mining schedule
         # then fires at step==mine_interval, 2*mine_interval, etc.
         if step > 0 and step % args.mine_interval == 0:
-            min_set_real, distances, _ = filter_and_refine(
-                points_real, coeffs, psi,
-                args.minset_size, args.newton_steps, filter_newton=True,
+            min_set_real, distances, _ = mining_fn(
+                points_in, coeffs, psi, args.minset_size, args.newton_steps,
             )
             mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
             print(f"  [mining @ step {step}] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
@@ -580,7 +741,7 @@ def main():
     print(format_array_with_commas(coeffs))
 
     if args.make_plots:
-        _run_all_plots(points_real, coeffs, psi, args)
+        _run_all_plots(points_real, coeffs, psi, args, num_devices=num_devices)
 
 
 if __name__ == "__main__":
