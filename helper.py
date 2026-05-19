@@ -1,5 +1,65 @@
+import os
+
 import jax
 import jax.numpy as jnp
+
+
+# ----------------------------------------------------------------------------
+# Point-cloud data location.
+#
+# POINTS_DIR is the one directory every Dwork-family helper resolves against.
+# Each consumer script has a single POINTS_FILE variable at the top — edit
+# that line (or override --points_file on the CLI) to point at any pickle.
+#
+# dwork_points_path / dwork_filename are scoped to the one-parameter Dwork
+# pencil of the quintic (Σ z_i^5 + ψ · Π z_i = 0). For CICY / other families,
+# either write a parallel constructor or just assign
+#     POINTS_FILE = "your_data.pkl"
+# directly in the consumer script — there is nothing magic about going
+# through dwork_points_path.
+# ----------------------------------------------------------------------------
+
+POINTS_DIR = "."  # default: current working directory
+
+
+def dwork_filename(psi, seed: int) -> str:
+    """Filename for a Dwork-family point cloud at (psi, seed).
+
+    Integer-real psi keeps the legacy 'psi0', 'psi10' form. Fractional real
+    and complex psi extend without colliding: 'psi0.5', 'psi1+2j', 'psi-1.5j'.
+    """
+    psi = complex(psi)
+    if psi.imag == 0:
+        if psi.real == int(psi.real):
+            psi_str = f"{int(psi.real)}"
+        else:
+            psi_str = f"{psi.real:g}"
+    else:
+        psi_str = f"{psi.real:g}{psi.imag:+g}j"
+    return f"1mil_patch_all_psi{psi_str}_seed{seed}.pkl"
+
+
+def dwork_points_path(psi, seed: int = 1024, points_dir: str = None) -> str:
+    """Path to a Dwork-family point cloud. Joins POINTS_DIR with dwork_filename."""
+    if points_dir is None:
+        points_dir = POINTS_DIR
+    return os.path.join(points_dir, dwork_filename(psi, seed))
+
+
+def assert_metric_psi_compatible(metric: str, psi) -> None:
+    """Reject metric/psi combinations that would silently give wrong results.
+
+    The Donaldson k=4 balanced coefficients in `calculate_complex_metric_k4`
+    are precomputed for the Fermat quintic (psi=0). Using them at psi != 0
+    would yield a non-Ricci-flat metric without any obvious failure mode.
+    """
+    if metric == 'k4_fermat' and complex(psi) != 0:
+        raise ValueError(
+            f"metric='k4_fermat' is only valid for the Fermat quintic (psi=0), "
+            f"but got psi={psi}. Use metric='FS' for the deformed quintic, or "
+            f"extend calculate_complex_metric_k4 with psi-dependent coefficients."
+        )
+
 
 @jax.jit
 def canonicalize_coeffs(A: jnp.ndarray) -> jnp.ndarray:

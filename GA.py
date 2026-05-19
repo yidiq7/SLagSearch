@@ -13,7 +13,7 @@ import re
 import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix, dwork_points_path
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'high')
@@ -30,18 +30,21 @@ def device_put_sharded(shards, devices):
 # -----------------------------------------------------------------------------
 # 1. HYPERPARAMETERS
 # -----------------------------------------------------------------------------
-# Moduli of the quintic
-#PSI = 1000000
-#CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
-PSI = 0
-CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{PSI}_seed1024.pkl'
-#CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
+# Moduli of the quintic (complex; integer-real values map to legacy filenames psi0, psi10, ...).
+PSI = 0+0j
+SEED = 1024
+
+# Edit this line if you're not using the Dwork-family naming convention,
+# e.g. POINTS_FILE = "data/my_cicy.pkl"
+POINTS_FILE = dwork_points_path(PSI, SEED)
 
 # Metric used when compute the kahler form
 # Options are 1. FS - Fubini-Study metric
 #             2. k4_fermat - Ricci-flat metric with k = 4 from Headrick-Nassar energy-functional minimization. Fermat only.
 #METRIC = 'FS'
 METRIC = 'k4_fermat'
+
+assert_metric_psi_compatible(METRIC, PSI)
 
 # GA Parameters
 POPULATION_SIZE = 800
@@ -385,7 +388,8 @@ if __name__ == '__main__':
 
 
     # --- Load points ---
-    with open(CYPOINTSFILE, 'rb') as f:
+    print(f"Loading points from {POINTS_FILE}")
+    with open(POINTS_FILE, 'rb') as f:
         points_real = np.asarray(pickle.load(f))
     points_real = np.concatenate([np.real(points_real), np.imag(points_real)], axis=1)
     points_real = jax.device_put(jnp.asarray(points_real))

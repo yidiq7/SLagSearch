@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import timeit
-from helper import canonicalize_coeffs, convert_real_to_complex_batch, convert_real_to_complex_single, determine_patch_and_rescale_single
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, convert_real_to_complex_batch, convert_real_to_complex_single, determine_patch_and_rescale_single, dwork_points_path
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 #with open('/projects/ruehlehet/yidi/sLag/data/50mil_patch0_3.pkl', 'rb') as f:
@@ -17,13 +17,17 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 newton_npts = 10000
 newton_refine_steps = 40
 #psi = 1000000
-psi=0
+psi = 0+0j
 #metric = 'FS'
 metric = 'k4_fermat'
 
-#with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
-#with open(f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{psi}_seed1024.pkl', 'rb') as f:
-with open(f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{psi}_seed1024.pkl', 'rb') as f:
+assert_metric_psi_compatible(metric, psi)
+
+# Edit this line if you're not using the Dwork-family naming convention,
+# e.g. POINTS_FILE = "data/my_cicy.pkl"
+POINTS_FILE = dwork_points_path(psi, seed=1024)
+
+with open(POINTS_FILE, 'rb') as f:
     pts_5mil_patch0 = pickle.load(f)
 
 pts_5mil_patch0 = np.asarray(pts_5mil_patch0)

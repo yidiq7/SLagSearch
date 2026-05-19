@@ -62,8 +62,10 @@ from find_smooth_submanifold import (
     refine_point_iterative,
 )
 from helper import (
+    assert_metric_psi_compatible,
     convert_real_to_complex_batch,
     determine_patches_batch,
+    dwork_points_path,
     format_array_with_commas,
 )
 from plots import make_fitness_plots
@@ -349,17 +351,14 @@ def make_parallel_mining(num_devices: int):
     return fn
 
 
-def load_points(psi: int):
-    """Try cluster path first, fall back to repo-local pkl."""
-    cluster = f"/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{psi}_seed1024.pkl"
-    local = "1mil_patch_all_psi0_seed1024.pkl"
-    for path in [cluster, local]:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                arr = np.asarray(pickle.load(f))
-            arr = np.concatenate([np.real(arr), np.imag(arr)], axis=1)
-            return jax.device_put(jnp.asarray(arr)), path
-    raise FileNotFoundError(f"No CY point cloud at {cluster} or {local}")
+def load_points(psi, path=None):
+    """Load points from `path` if given, else dwork_points_path(psi, seed=1024)."""
+    if path is None:
+        path = dwork_points_path(psi, seed=1024)
+    with open(path, "rb") as f:
+        arr = np.asarray(pickle.load(f))
+    arr = np.concatenate([np.real(arr), np.imag(arr)], axis=1)
+    return jax.device_put(jnp.asarray(arr)), path
 
 
 def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
@@ -505,7 +504,10 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
 
 def main():
     parser = argparse.ArgumentParser(description="GD for sLag search (d=1+2)")
-    parser.add_argument("--psi", type=int, default=0)
+    parser.add_argument("--psi", type=complex, default=0)
+    parser.add_argument("--points_file", type=str, default=None,
+                        help="Override path to the point-cloud pkl. "
+                             "Default: helper.dwork_points_path(psi).")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--mine_interval", type=int, default=10)
@@ -564,7 +566,8 @@ def main():
     print(f"mine_interval={args.mine_interval} minset_size={args.minset_size} "
           f"newton_steps={args.newton_steps} inner_newton_steps={args.inner_newton_steps}")
 
-    points_real, src_path = load_points(args.psi)
+    assert_metric_psi_compatible(args.metric, args.psi)
+    points_real, src_path = load_points(args.psi, path=args.points_file)
     print(f"Loaded {len(points_real)} points from {src_path}")
     psi = jnp.asarray(args.psi, dtype=jnp.complex128)
 

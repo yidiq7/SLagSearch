@@ -87,7 +87,7 @@ def print_per_patch_histogram(phases, patch_indices, label, n_bins=12):
 
 def main():
     parser = argparse.ArgumentParser(description="Diagnose Omega phase consistency across patches.")
-    parser.add_argument("--psi", type=int, default=0)
+    parser.add_argument("--psi", type=complex, default=0)
     parser.add_argument("--minset_size", type=int, default=10000)
     parser.add_argument("--newton_steps", type=int, default=40)
     parser.add_argument(
