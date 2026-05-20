@@ -8,7 +8,7 @@ import numpy as np
 import time
 import timeit
 import os
-from helper import canonicalize_coeffs, reconstruct_hermitian_matrices 
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, dwork_points_path, reconstruct_hermitian_matrices 
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
@@ -20,9 +20,15 @@ newton_refine_steps = 100
 #newton_npts = 1000
 #newton_refine_steps = 20
 
-psi = 0
+psi = 0+0j
 metric='k4_fermat'
-with open(f'/projects/ruehlehet/yidi/sLag/data_psi/1mil_patch_all_psi{psi}_seed1024.pkl', 'rb') as f:
+assert_metric_psi_compatible(metric, psi)
+
+# Edit this line if you're not using the Dwork-family naming convention,
+# e.g. POINTS_FILE = "data/my_cicy.pkl"
+POINTS_FILE = dwork_points_path(psi, seed=1024)
+
+with open(POINTS_FILE, 'rb') as f:
 #with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_1024.pkl', 'rb') as f:
 #with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
     pts_5mil_patch0 = pickle.load(f)

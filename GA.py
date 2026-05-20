@@ -13,7 +13,7 @@ import re
 import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix, dwork_points_path
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'high')
@@ -30,12 +30,13 @@ def device_put_sharded(shards, devices):
 # -----------------------------------------------------------------------------
 # 1. HYPERPARAMETERS
 # -----------------------------------------------------------------------------
-# Moduli of the quintic
-#PSI = 1000000
-#CYPOINTSFILE = f'/projects/ruehlehet/yidi/sLag/data_psi/5mil_patch0_psi{PSI}_seed1024.pkl'
-PSI = 0
-CYPOINTSFILE = f'1mil_patch_all_psi{PSI}_seed1024.pkl'
-#CYPOINTSFILE = '/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl'
+# Moduli of the quintic (complex; integer-real values map to legacy filenames psi0, psi10, ...).
+PSI = 0+0j
+SEED = 1024
+
+# Edit this line if you're not using the Dwork-family naming convention,
+# e.g. POINTS_FILE = "data/my_cicy.pkl"
+POINTS_FILE = dwork_points_path(PSI, SEED)
 
 # Metric used when compute the kahler form
 # Options are 1. FS - Fubini-Study metric
@@ -43,11 +44,13 @@ CYPOINTSFILE = f'1mil_patch_all_psi{PSI}_seed1024.pkl'
 #METRIC = 'FS'
 METRIC = 'k4_fermat'
 
+assert_metric_psi_compatible(METRIC, PSI)
+
 # GA Parameters
 POPULATION_SIZE = 800
-GENOTYPE_SHAPE = (3, 25)
+GENOTYPE_SHAPE = (3, 250)
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 400
+NUM_GENERATIONS = 40
 
 #TRANSITION_GENERATION = 1600
 TRANSITION_GENERATION = 999999
@@ -56,14 +59,14 @@ TRANSITION_GENERATION = 999999
 TARGET_SPECIES_COUNT_MIN = 10
 TARGET_SPECIES_COUNT_MAX = 25
 
-SPECIATION_THRESHOLD_INIT = 2.5
-SPECIATION_THRESHOLD_STEP = 0.02 # each gen *= (1 +/- step) 
+SPECIATION_THRESHOLD_INIT = 1.77
+SPECIATION_THRESHOLD_STEP = 0.02 # each gen *= (1 +/- step)
 WARMUP_GENERATIONS = 300
 COOLDOWN_GENERATIONS = 20
 SPECIATION_MERGE_RATIO = 0.5  # Merge if distance smaller than threshold * ratio
 
-TERRITORY_BUFFER_EXPLORE = 0.5
-TERRITORY_BUFFER_EXPLOIT = 0.5
+TERRITORY_BUFFER_EXPLORE = 0.0
+TERRITORY_BUFFER_EXPLOIT = 0.0
 
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
@@ -92,11 +95,11 @@ SPECIES_ELITISM = 1        # Number of best individuals per species to carry ove
 
 # --- Adaptive Step Size (1/5th success rule per species) ---
 SIGMA_INIT = 1.0
-SIGMA_MIN = 0.01
+SIGMA_MIN = 0.001
 SIGMA_MAX = 5.0
 SIGMA_INCREASE = 1.3   # on improvement
 SIGMA_DECAY = 0.93     # on no improvement (targets ~1/5 success: 1.3 * 0.93^4 ≈ 0.97)
-SIGMA_COOLDOWN = 4     # generations between sigma updates (lets effect propagate)
+SIGMA_COOLDOWN = 3     # generations between sigma updates (lets effect propagate)
 
 # Batching for Fitness Evaluation
 FITNESS_MINI_BATCH_SIZE = 200
@@ -118,6 +121,7 @@ NEWTON_STEPS = 40
 DIST_CHUNK_SIZE = 50000
 
 
+
 # JAX PRNG Key
 key = jax.random.PRNGKey(1234)
 
@@ -126,33 +130,31 @@ key = jax.random.PRNGKey(1234)
 # -----------------------------------------------------------------------------
 @partial(jit, static_argnames=('k', 'n_refine_steps', 'metric'))
 def calculate_fitness_for_one_individual(
-    coeffs: jnp.ndarray, 
-    points_real: jnp.ndarray, 
-    psi: jnp.ndarray, 
-    k: int, 
-    n_refine_steps: int, 
+    coeffs: jnp.ndarray,
+    points_real: jnp.ndarray,
+    psi: jnp.ndarray,
+    k: int,
+    n_refine_steps: int,
     metric: str = 'FS'
 ) -> jnp.float32:
     """
     Calculate fitness for one individual with automatic patch handling.
-    
+
     Args:
-        coeffs: (3, 25) coefficient array
+        coeffs: (3, 250) coefficient array
         points_real: (N, 10) array of sample points
         psi: Complex quintic parameter
         k: Number of points to refine
         n_refine_steps: Newton iterations
         metric: 'FS' or 'k4_fermat'
-    
+
     Returns:
         Fitness value (0 if Newton's method fails to converge)
     """
- 
     min_set_real, _, newton_check_pass = filter_and_refine(
         points_real, coeffs, psi, k, n_refine_steps, filter_newton=True,
         dist_chunk_size=DIST_CHUNK_SIZE
     )
-
     fitness = jax.lax.cond(
         newton_check_pass,
         lambda points: compute_combined_fitness(
@@ -377,6 +379,10 @@ if __name__ == '__main__':
         '--job_id', type=str, nargs='?', const='0', default='0',
         help="Provide a label, e.g. slurm job id, for the current run."
     )
+    parser.add_argument(
+        '--preload_d1', action='store_true',
+        help="Preload the initial population with a good approximation from the d=1 case."
+    )
     args = parser.parse_args()
     print("--- Speciation-based GA with Adaptive Schedule ---")
     print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}")
@@ -384,7 +390,8 @@ if __name__ == '__main__':
 
 
     # --- Load points ---
-    with open(CYPOINTSFILE, 'rb') as f:
+    print(f"Loading points from {POINTS_FILE}")
+    with open(POINTS_FILE, 'rb') as f:
         points_real = np.asarray(pickle.load(f))
     points_real = np.concatenate([np.real(points_real), np.imag(points_real)], axis=1)
     points_real = jax.device_put(jnp.asarray(points_real))
@@ -406,6 +413,15 @@ if __name__ == '__main__':
         )
     else:
         evaluate_fitness = vmap_fitness_batch
+
+    # --- Base individual from d=1 coefficients ---
+    d1_coeffs = jnp.array([
+        [-0.2085878998041153, 0.08078225702047348, 0.12364989519119263, 0.42693421244621277, -0.4276507794857025, 0.05941963940858841, -0.19358153641223907, 0.2884068787097931, 0.2374262660741806, 0.17124612629413605, -0.03099866583943367, 0.07415380328893661, -0.22672683000564575, -0.1914607286453247, 0.09337177127599716, -0.053066715598106384, -0.06608302891254425, -0.3771730363368988, 0.05378381162881851, 0.0064529310911893845, 0.2938925623893738, 0.08852922171354294, 0.020463770255446434, 0.09666207432746887, -0.006990742404013872],
+        [-0.1065014973282814, 0.20087268948554993, 0.18935158848762512, -0.17352613806724548, 0.05884088575839996, -0.4646260440349579, -0.10628655552864075, -0.28338274359703064, -0.03379037603735924, 0.007989203557372093, -0.06132059171795845, -0.13810740411281586, 0.04504100978374481, 0.015115765854716301, -0.4030528962612152, -0.025872472673654556, -0.4061300754547119, -0.02022559940814972, -0.13893099129199982, 0.10193423181772232, 0.29334160685539246, 0.22542181611061096, -0.050897762179374695, 0.21366965770721436, -0.04277477413415909],
+        [0.054688308387994766, 0.07500440627336502, 0.060474496334791183, -0.3848169445991516, -0.3781052529811859, 0.38639041781425476, 0.021527282893657684, 0.4060642719268799, -0.15761728584766388, -0.1271764189004898, -0.01066557876765728, -0.13985656201839447, 0.1605837494134903, 0.15716029703617096, -0.32516127824783325, 0.016290534287691116, 0.2249980866909027, -0.2878168523311615, -0.12032820284366608, -0.04713383689522743, 0.025025269016623497, 0.08448748290538788, 0.05337755009531975, 0.05431513488292694, -0.03361976519227028]
+    ])
+    base_d1_individual = jnp.zeros(GENOTYPE_SHAPE)
+    base_d1_individual = base_d1_individual.at[:, :25].set(d1_coeffs)
 
     # --- Load from checkpoint or initialize ---
     start_gen = 0
@@ -451,7 +467,23 @@ if __name__ == '__main__':
             print(f"Warning: Checkpoint '{args.load_checkpoint}' not found.")
         print("\nNo valid checkpoint specified. Starting a new run.")
         key, subkey = jax.random.split(key)
-        population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
+        
+        if args.preload_d1:
+            print("Preloading population: 25% near d=1 baseline, 75% with wide d=2 perturbation...")
+            n_pure = POPULATION_SIZE // 4
+            n_wide = POPULATION_SIZE - n_pure
+            k_pure, k_wide = jax.random.split(subkey)
+            noise_pure = jax.random.uniform(k_pure, (n_pure, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
+            d2_wide = jax.random.uniform(k_wide, (n_wide, GENOTYPE_SHAPE[0], 225), minval=-0.2, maxval=0.2)
+            d1_wide = jnp.zeros((n_wide, GENOTYPE_SHAPE[0], 25))
+            noise_wide = jnp.concatenate([d1_wide, d2_wide], axis=2)
+            population = jnp.concatenate([
+                base_d1_individual + noise_pure,
+                base_d1_individual + noise_wide,
+            ], axis=0)
+        else:
+            population = jax.random.uniform(subkey, (POPULATION_SIZE, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
+            
         population = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(population)
         species_list = []
     
@@ -481,6 +513,7 @@ if __name__ == '__main__':
         # 1. Calculate fitness for the entire population
         all_fitness_scores = jnp.zeros(POPULATION_SIZE)
         num_batches = (POPULATION_SIZE + FITNESS_MINI_BATCH_SIZE - 1) // FITNESS_MINI_BATCH_SIZE
+        
         for i in range(num_batches):
             start_idx = i * FITNESS_MINI_BATCH_SIZE
             end_idx = min(start_idx + FITNESS_MINI_BATCH_SIZE, POPULATION_SIZE)
@@ -638,7 +671,20 @@ if __name__ == '__main__':
              if current_pop_size < POPULATION_SIZE:
                  key, subkey = jax.random.split(key)
                  randoms_needed = POPULATION_SIZE - current_pop_size
-                 random_individuals = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
+                 if args.preload_d1:
+                     n_pure = randoms_needed // 4
+                     n_wide = randoms_needed - n_pure
+                     k_pure, k_wide = jax.random.split(subkey)
+                     noise_pure = jax.random.uniform(k_pure, (n_pure, *GENOTYPE_SHAPE), minval=-0.01, maxval=0.01)
+                     d2_wide = jax.random.uniform(k_wide, (n_wide, GENOTYPE_SHAPE[0], 225), minval=-0.2, maxval=0.2)
+                     d1_wide = jnp.zeros((n_wide, GENOTYPE_SHAPE[0], 25))
+                     noise_wide = jnp.concatenate([d1_wide, d2_wide], axis=2)
+                     random_individuals = jnp.concatenate([
+                         base_d1_individual + noise_pure,
+                         base_d1_individual + noise_wide,
+                     ], axis=0)
+                 else:
+                     random_individuals = jax.random.uniform(subkey, (randoms_needed, *GENOTYPE_SHAPE), minval=-1.0, maxval=1.0)
                  random_individuals = vmap(lambda p: normalize_coeffs(canonicalize_coeffs(p)))(random_individuals)
                  next_generation_population.extend(random_individuals)
 
@@ -754,13 +800,13 @@ if __name__ == '__main__':
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")
         print(format_array_with_commas(best_member))
-        print("Complex equations:")
-        print(combine_to_complex_equations(get_basis_labels(), best_member))
+        # print("Complex equations:")
+        # print(combine_to_complex_equations(get_basis_labels(), best_member))
 
         parent_folder = os.path.join(
             f'plots_slag_{args.job_id}', 
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=80000, n_refine_steps=80, metric=METRIC, compare_with="random", parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", parent_folder=parent_folder)
         rank += 1

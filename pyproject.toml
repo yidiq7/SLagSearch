@@ -16,6 +16,14 @@ dependencies = [
     "matplotlib>=3.10,<4",
 ]
 
+[project.optional-dependencies]
+# Only needed to (re)generate the input point clouds via points_gen/points_generation.py.
+# Day-to-day GA / gradient_descent runs do not need these.
+points-gen = [
+    "sympy>=1.13",
+    "MLGeometry-JAX",
+]
+
 [tool.uv]
 # Keep transitive resolution stable across machines.
 managed = true

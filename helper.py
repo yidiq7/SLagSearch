@@ -1,5 +1,65 @@
+import os
+
 import jax
 import jax.numpy as jnp
+
+
+# ----------------------------------------------------------------------------
+# Point-cloud data location.
+#
+# POINTS_DIR is the one directory every Dwork-family helper resolves against.
+# Each consumer script has a single POINTS_FILE variable at the top — edit
+# that line (or override --points_file on the CLI) to point at any pickle.
+#
+# dwork_points_path / dwork_filename are scoped to the one-parameter Dwork
+# pencil of the quintic (Σ z_i^5 + ψ · Π z_i = 0). For CICY / other families,
+# either write a parallel constructor or just assign
+#     POINTS_FILE = "your_data.pkl"
+# directly in the consumer script — there is nothing magic about going
+# through dwork_points_path.
+# ----------------------------------------------------------------------------
+
+POINTS_DIR = "."  # default: current working directory
+
+
+def dwork_filename(psi, seed: int) -> str:
+    """Filename for a Dwork-family point cloud at (psi, seed).
+
+    Integer-real psi keeps the legacy 'psi0', 'psi10' form. Fractional real
+    and complex psi extend without colliding: 'psi0.5', 'psi1+2j', 'psi-1.5j'.
+    """
+    psi = complex(psi)
+    if psi.imag == 0:
+        if psi.real == int(psi.real):
+            psi_str = f"{int(psi.real)}"
+        else:
+            psi_str = f"{psi.real:g}"
+    else:
+        psi_str = f"{psi.real:g}{psi.imag:+g}j"
+    return f"1mil_patch_all_psi{psi_str}_seed{seed}.pkl"
+
+
+def dwork_points_path(psi, seed: int = 1024, points_dir: str = None) -> str:
+    """Path to a Dwork-family point cloud. Joins POINTS_DIR with dwork_filename."""
+    if points_dir is None:
+        points_dir = POINTS_DIR
+    return os.path.join(points_dir, dwork_filename(psi, seed))
+
+
+def assert_metric_psi_compatible(metric: str, psi) -> None:
+    """Reject metric/psi combinations that would silently give wrong results.
+
+    The Donaldson k=4 balanced coefficients in `calculate_complex_metric_k4`
+    are precomputed for the Fermat quintic (psi=0). Using them at psi != 0
+    would yield a non-Ricci-flat metric without any obvious failure mode.
+    """
+    if metric == 'k4_fermat' and complex(psi) != 0:
+        raise ValueError(
+            f"metric='k4_fermat' is only valid for the Fermat quintic (psi=0), "
+            f"but got psi={psi}. Use metric='FS' for the deformed quintic, or "
+            f"extend calculate_complex_metric_k4 with psi-dependent coefficients."
+        )
+
 
 @jax.jit
 def canonicalize_coeffs(A: jnp.ndarray) -> jnp.ndarray:
@@ -207,14 +267,191 @@ def generate_basis_single_point(point: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([imag_basis, real_basis])  # (25,)
 
 
+def generate_basis_second_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
+    """
+    Generate second-order basis functions from points on Fermat quintic.
+    These are polynomials of degree (2, 2) in the coordinates: z_i z_j z_m_bar z_n_bar.
+
+    Args:
+        point: (5,) complex array of points on the quintic
+
+    Returns:
+        basis: (225,) real array of basis functions
+               - 105 Imaginary parts of (v_A * v_B_bar) for A < B
+               - 120 Real parts of (v_A * v_B_bar) for A <= B
+               Where v is the vector of 15 quadratic monomials.
+    """
+    # 1. Construct the vector of quadratic monomials (z_i * z_j)
+    # ---------------------------------------------------------
+    zi = point[:, None]
+    zj = point[None, :]
+    
+    # Shape: (5, 5) representing all z_i * z_j
+    quad_products = zi * zj
+    
+    # We only need the unique monomials. Since z_i*z_j = z_j*z_i, 
+    # we take the upper triangle (including diagonal).
+    # There are 5*(5+1)/2 = 15 such monomials.
+    triu_indices_1 = jnp.triu_indices(5, k=0)
+    
+    # Shape: (15,)
+    # Let's call this vector v. v_A corresponds to a pair (i,j)
+    v = quad_products[triu_indices_1[0], triu_indices_1[1]]
+
+    # 2. Construct the matrix of quartic products (v_A * v_B_bar)
+    # ---------------------------------------------------------
+    # This represents (z_i z_j) * (z_m_bar z_n_bar)
+    v_A = v[:, None]       # (15, 1)
+    v_B_bar = jnp.conj(v[None, :]) # (1, 15)
+    
+    # Shape: (15, 15)
+    # This matrix M is Hermitian by construction.
+    M = v_A * v_B_bar
+
+    # 3. Extract Independent Real Basis Functions
+    # ---------------------------------------------------------
+    # Just like the first order case, we extract the independent real parameters
+    # from this Hermitian matrix.
+    
+    # Imaginary parts: Strict upper triangle of the 15x15 matrix (k=1)
+    # Count: 15 * 14 / 2 = 105
+    triu_indices_imag = jnp.triu_indices(15, k=1)
+    imag_basis = jnp.imag(M[triu_indices_imag[0], triu_indices_imag[1]])
+
+    # Real parts: Upper triangle + diagonal of the 15x15 matrix (k=0)
+    # Count: 15 * 16 / 2 = 120
+    triu_indices_real = jnp.triu_indices(15, k=0)
+    real_basis = jnp.real(M[triu_indices_real[0], triu_indices_real[1]])
+
+    # Total size: 105 + 120 = 225
+    return jnp.concatenate([imag_basis, real_basis])
+
+
+# All (i, j, k) triples with i <= j <= k from {0,...,4}. C(5+2, 3) = 35.
+_CUBIC_TRIPLES = jnp.array(
+    [(i, j, k) for i in range(5) for j in range(i, 5) for k in range(j, 5)],
+    dtype=jnp.int32,
+)
+
+
+def generate_basis_third_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
+    """
+    Generate third-order basis functions from points on Fermat quintic.
+    These are polynomials of degree (3, 3): z_i z_j z_k z_l_bar z_m_bar z_n_bar.
+
+    Args:
+        point: (5,) complex array of points on the quintic
+
+    Returns:
+        basis: (1225,) real array of basis functions
+               - 595 Imaginary parts of (w_A * w_B_bar) for A < B
+               - 630 Real parts of (w_A * w_B_bar) for A <= B
+               Where w is the vector of 35 cubic monomials z_i z_j z_k (i<=j<=k).
+    """
+    # 1. Construct the vector of cubic monomials w_A = z_i * z_j * z_k.
+    w = (point[_CUBIC_TRIPLES[:, 0]]
+         * point[_CUBIC_TRIPLES[:, 1]]
+         * point[_CUBIC_TRIPLES[:, 2]])  # (35,)
+
+    # 2. Construct the (35, 35) Hermitian matrix of (w_A * w_B_bar).
+    M = w[:, None] * jnp.conj(w[None, :])
+
+    # 3. Extract independent real basis functions.
+    # Imag parts: strict upper triangle (k=1). Count: 35 * 34 / 2 = 595.
+    triu_indices_imag = jnp.triu_indices(35, k=1)
+    imag_basis = jnp.imag(M[triu_indices_imag[0], triu_indices_imag[1]])
+
+    # Real parts: upper triangle + diagonal (k=0). Count: 35 * 36 / 2 = 630.
+    triu_indices_real = jnp.triu_indices(35, k=0)
+    real_basis = jnp.real(M[triu_indices_real[0], triu_indices_real[1]])
+
+    # Total size: 595 + 630 = 1225.
+    return jnp.concatenate([imag_basis, real_basis])
+
+
+# All (i, j, k, l) quadruples with i <= j <= k <= l from {0,...,4}. C(5+3, 4) = 70.
+_QUARTIC_QUADRUPLES = jnp.array(
+    [(i, j, k, l)
+     for i in range(5)
+     for j in range(i, 5)
+     for k in range(j, 5)
+     for l in range(k, 5)],
+    dtype=jnp.int32,
+)
+
+
+def generate_basis_fourth_order_single_point(point: jnp.ndarray) -> jnp.ndarray:
+    """
+    Generate fourth-order basis functions from points on Fermat quintic.
+    These are polynomials of degree (4, 4): z_i z_j z_k z_l * conj of same.
+
+    Args:
+        point: (5,) complex array of points on the quintic
+
+    Returns:
+        basis: (4900,) real array of basis functions
+               - 2415 Imaginary parts of (u_A * u_B_bar) for A < B
+               - 2485 Real parts of (u_A * u_B_bar) for A <= B
+               Where u is the vector of 70 quartic monomials z_i z_j z_k z_l
+               (i <= j <= k <= l).
+    """
+    # 1. Construct the vector of quartic monomials u_A = z_i * z_j * z_k * z_l.
+    u = (point[_QUARTIC_QUADRUPLES[:, 0]]
+         * point[_QUARTIC_QUADRUPLES[:, 1]]
+         * point[_QUARTIC_QUADRUPLES[:, 2]]
+         * point[_QUARTIC_QUADRUPLES[:, 3]])  # (70,)
+
+    # 2. Construct the (70, 70) Hermitian matrix of (u_A * u_B_bar).
+    M = u[:, None] * jnp.conj(u[None, :])
+
+    # 3. Extract independent real basis functions.
+    # Imag parts: strict upper triangle (k=1). Count: 70 * 69 / 2 = 2415.
+    triu_indices_imag = jnp.triu_indices(70, k=1)
+    imag_basis = jnp.imag(M[triu_indices_imag[0], triu_indices_imag[1]])
+
+    # Real parts: upper triangle + diagonal (k=0). Count: 70 * 71 / 2 = 2485.
+    triu_indices_real = jnp.triu_indices(70, k=0)
+    real_basis = jnp.real(M[triu_indices_real[0], triu_indices_real[1]])
+
+    # Total size: 2415 + 2485 = 4900.
+    return jnp.concatenate([imag_basis, real_basis])
+
+
+# Genotype widths per max-degree. Switch is by coeffs.shape[1] (static under jit).
+_D1_END = 25
+_D2_END = 250    # 25 + 225
+_D3_END = 1475   # 250 + 1225
+_D4_END = 6375   # 1475 + 4900
+
+
 def evaluate_equations_single_point(point: jnp.ndarray, coeffs: jnp.ndarray, psi: jnp.ndarray) -> jnp.ndarray:
-    """Evaluate the five equations. The input points are real."""
+    """Evaluate the five equations. The input points are real.
+
+    The coefficient matrix may be (3, 25), (3, 250), (3, 1475), or (3, 6375),
+    selecting d=1, d=1+2, d=1+2+3, or d=1+2+3+4 ansatz respectively. Dispatch
+    is by static shape.
+    """
     point_complex = point[:5] + 1j * point[5:]
-    basis = generate_basis_single_point(point_complex)
-    eqs_vec = coeffs @ basis # (3,)
+    norm_sq = jnp.vdot(point_complex, point_complex).real
+    n_coeffs = coeffs.shape[1]
+
+    basis_d1 = generate_basis_single_point(point_complex) / norm_sq
+    eqs_vec = coeffs[:, :_D1_END] @ basis_d1
+
+    if n_coeffs >= _D2_END:
+        basis_d2 = generate_basis_second_order_single_point(point_complex) / (norm_sq ** 2)
+        eqs_vec = eqs_vec + coeffs[:, _D1_END:_D2_END] @ basis_d2
+
+    if n_coeffs >= _D3_END:
+        basis_d3 = generate_basis_third_order_single_point(point_complex) / (norm_sq ** 3)
+        eqs_vec = eqs_vec + coeffs[:, _D2_END:_D3_END] @ basis_d3
+
+    if n_coeffs >= _D4_END:
+        basis_d4 = generate_basis_fourth_order_single_point(point_complex) / (norm_sq ** 4)
+        eqs_vec = eqs_vec + coeffs[:, _D3_END:_D4_END] @ basis_d4
+
     cy = jnp.sum(point_complex**5) + psi * jnp.prod(point_complex)
-    eqs_evaluated = jnp.array([jnp.real(cy), jnp.imag(cy), *eqs_vec]) 
-    return eqs_evaluated
+    return jnp.concatenate([jnp.array([jnp.real(cy), jnp.imag(cy)]), eqs_vec])
 
 
 @jax.jit
