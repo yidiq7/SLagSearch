@@ -134,7 +134,7 @@ def main():
         normalize_coeffs,
     )
     from slag_condition import compute_combined_fitness
-    from helper import assert_metric_psi_compatible, canonicalize_coeffs, dwork_points_path
+    from helper import assert_metric_psi_compatible, canonicalize_coeffs, dwork_points_path, load_points
 
     assert_metric_psi_compatible(args.metric, args.psi)
 
@@ -149,10 +149,7 @@ def main():
     if args.points_file is None:
         args.points_file = dwork_points_path(args.psi, seed=1024)
     print(f'Loading points from {args.points_file} ...')
-    with open(args.points_file, 'rb') as f:
-        pts = np.asarray(pickle.load(f))
-    pts = np.concatenate([np.real(pts), np.imag(pts)], axis=1)
-    points_real = jax.device_put(jnp.asarray(pts))
+    points_real = load_points(args.points_file)
     print(f'  points shape: {points_real.shape}')
 
     # representative individual

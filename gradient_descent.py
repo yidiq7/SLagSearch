@@ -67,6 +67,7 @@ from helper import (
     determine_patches_batch,
     dwork_points_path,
     format_array_with_commas,
+    load_points as _load_points,
 )
 from plots import make_fitness_plots
 from sharding import device_put_sharded, shard_leading_axis, take_replicated
@@ -352,13 +353,13 @@ def make_parallel_mining(num_devices: int):
 
 
 def load_points(psi, path=None):
-    """Load points from `path` if given, else dwork_points_path(psi, seed=1024)."""
+    """Resolve via dwork_points_path if no explicit path, then load.
+
+    Returns (points_real, resolved_path) so the caller can log the source.
+    """
     if path is None:
         path = dwork_points_path(psi, seed=1024)
-    with open(path, "rb") as f:
-        arr = np.asarray(pickle.load(f))
-    arr = np.concatenate([np.real(arr), np.imag(arr)], axis=1)
-    return jax.device_put(jnp.asarray(arr)), path
+    return _load_points(path), path
 
 
 def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):

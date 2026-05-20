@@ -1,7 +1,9 @@
 import os
+import pickle
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 
 # ----------------------------------------------------------------------------
@@ -44,6 +46,57 @@ def dwork_points_path(psi, seed: int = 1024, points_dir: str = None) -> str:
     if points_dir is None:
         points_dir = POINTS_DIR
     return os.path.join(points_dir, dwork_filename(psi, seed))
+
+
+def load_points(path: str) -> jnp.ndarray:
+    """Load a point-cloud pkl and return (N, 10) real coords on the default device.
+
+    The on-disk format is the (N, 5) complex array produced by
+    points_gen/points_generation.py. This helper converts to the (N, 10) real
+    representation [Re | Im] that the rest of the pipeline consumes.
+    """
+    with open(path, "rb") as f:
+        arr = np.asarray(pickle.load(f))
+    arr = np.concatenate([np.real(arr), np.imag(arr)], axis=1)
+    return jax.device_put(jnp.asarray(arr))
+
+
+def load_ga_checkpoint(path: str) -> dict:
+    """Load a GA checkpoint pkl without importing GA.py.
+
+    GA checkpoints reference ``GA.Species`` via pickle's class registry, which
+    normally requires ``GA.py`` to be importable. To avoid pulling in JAX +
+    GA module-level constants just to inspect a checkpoint, we stub Species
+    as a plain attribute container. The returned dict has the same keys as
+    saved (``population``, ``generation``, ``key``, ``species_list``,
+    ``speciation_threshold``); the species objects expose their attributes
+    (``id``, ``representative``, ``best_fitness``, ``sigma``, ...) directly.
+    """
+
+    class _SpeciesStub:
+        pass
+
+    class _Unpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if name == "Species":
+                return _SpeciesStub
+            return super().find_class(module, name)
+
+    with open(path, "rb") as f:
+        return _Unpickler(f).load()
+
+
+def top_species(species_list, top_k: int = None):
+    """Return species sorted by ``best_fitness`` descending, optionally sliced to top_k.
+
+    Works with both live ``GA.Species`` objects and the stub objects returned
+    by ``load_ga_checkpoint``. ``top_k=None`` returns the full sorted list.
+    """
+    def fit(s):
+        return float(getattr(s, "best_fitness", float("-inf")))
+
+    sorted_list = sorted(species_list, key=fit, reverse=True)
+    return sorted_list if top_k is None else sorted_list[:top_k]
 
 
 def assert_metric_psi_compatible(metric: str, psi) -> None:

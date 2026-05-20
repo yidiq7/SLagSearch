@@ -17,6 +17,50 @@ Searches for special Lagrangian (sLag) submanifolds inside the Fermat quintic Ca
 
 There are two optimizers in the repo: a speciation **GA** (`GA.py`) and a **gradient-descent** loop (`gradient_descent.py`). They share the fitness pipeline (`find_smooth_submanifold.py` + `slag_condition.py`).
 
+## Recommended workflow
+
+GA is the search tool (broad exploration of the d=1 landscape); GD is the refinement tool (local optimization with higher-order ansätze). The intended loop:
+
+1. **Search at d=1** (GA). Coeffs constant `GENOTYPE_SHAPE = (3, 25)` at the top of `GA.py`:
+   ```bash
+   python GA.py --job_id d1_search
+   ```
+   At the end of the run, GA writes one pkl per surviving top species into `plots_slag_d1_search/top_coeffs/coeffs_rank<r>_id<sid>.pkl`. Lower-rank = higher fitness.
+
+2. **Refine with gradient descent.** Pick one of the top-K coeffs and warm-start GD at the desired max-degree. The `--init_pkl` path right-zero-pads the d=1 coeffs to the current genotype width:
+   ```bash
+   # Skip-the-middle: warm-start d=4 directly from d=1 (empirically works).
+   python gradient_descent.py --job_id d4_from_d1 --max_degree 4 --steps 2000 \
+       --init_pkl plots_slag_d1_search/top_coeffs/coeffs_rank1_id7.pkl
+
+   # Or step through: d=1+2 → d=1+2+3 → d=1+2+3+4, using each result as the
+   # init for the next. Slower but lets you inspect intermediate truncation plots.
+   python gradient_descent.py --job_id d2 --max_degree 2 --steps 2000 \
+       --init_pkl plots_slag_d1_search/top_coeffs/coeffs_rank1_id7.pkl
+   python gradient_descent.py --job_id d3 --max_degree 3 --steps 2000 \
+       --init_pkl gd_runs/gd_d2_step2000.pkl
+   python gradient_descent.py --job_id d4 --max_degree 4 --steps 2000 \
+       --init_pkl gd_runs/gd_d3_step2000.pkl
+   ```
+
+3. **Inspect.** GD auto-emits histograms at the end (`plots_slag_<job_id>/`, plus per-degree truncation overlays for `max_degree >= 3`). PCA: `python plot_pca.py gd_runs/plots_slag_<job_id>`.
+
+### Extracting candidates from a mid-run checkpoint
+
+The `top_coeffs/` dump happens only in GA's end-of-run "final analysis" block. To pull candidates from an in-progress checkpoint:
+
+```python
+from helper import load_ga_checkpoint, top_species
+import numpy as np, pickle
+
+ckpt = load_ga_checkpoint('checkpoints/checkpoint_gen_300.pkl')
+for rank, s in enumerate(top_species(ckpt['species_list'], top_k=5), start=1):
+    pickle.dump(np.asarray(s.representative),
+                open(f'ga_top/coeffs_rank{rank}_id{s.id}.pkl', 'wb'))
+```
+
+Note: `load_ga_checkpoint` uses each species's stored `representative` (current best), while GA's end-of-run dump re-evaluates fitness and uses the actual best `member`. The two usually agree, but for high-fidelity candidate selection, prefer letting GA finish.
+
 ## Point clouds: location & naming
 
 Path resolution has two layers:

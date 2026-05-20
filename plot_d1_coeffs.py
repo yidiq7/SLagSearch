@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from helper import assert_metric_psi_compatible, dwork_points_path
+from helper import assert_metric_psi_compatible, dwork_points_path, load_points
 from plots import make_fitness_plots
 
 
@@ -48,10 +48,7 @@ def main():
     if args.points_file is None:
         args.points_file = dwork_points_path(args.psi, seed=1024)
 
-    with open(args.points_file, 'rb') as f:
-        pts = np.asarray(pickle.load(f))
-    points_real = np.concatenate([np.real(pts), np.imag(pts)], axis=1)
-    points_real = jax.device_put(jnp.asarray(points_real))
+    points_real = load_points(args.points_file)
     print(f"Loaded {points_real.shape[0]} points from {args.points_file}")
 
     compare_with = None if args.compare_with.lower() == 'none' else args.compare_with

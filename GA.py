@@ -13,7 +13,7 @@ import re
 import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
-from helper import assert_metric_psi_compatible, canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix, dwork_points_path
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix, dwork_points_path, load_points
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'high')
@@ -391,10 +391,7 @@ if __name__ == '__main__':
 
     # --- Load points ---
     print(f"Loading points from {POINTS_FILE}")
-    with open(POINTS_FILE, 'rb') as f:
-        points_real = np.asarray(pickle.load(f))
-    points_real = np.concatenate([np.real(points_real), np.imag(points_real)], axis=1)
-    points_real = jax.device_put(jnp.asarray(points_real))
+    points_real = load_points(POINTS_FILE)
 
     # --- Create the vmapped/pmapped fitness function ---
     num_devices = jax.local_device_count()
@@ -786,6 +783,11 @@ if __name__ == '__main__':
     else:
         top_fitness_score = 0.0
 
+    # Centralized destination for top species' best members. One pkl per species
+    # above the 0.5 * top_fitness threshold, ready for `gradient_descent.py --init_pkl`.
+    top_coeffs_dir = os.path.join(f'plots_slag_{args.job_id}', 'top_coeffs')
+    os.makedirs(top_coeffs_dir, exist_ok=True)
+
     rank = 1
     for s in final_species_list:
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
@@ -803,8 +805,13 @@ if __name__ == '__main__':
         # print("Complex equations:")
         # print(combine_to_complex_equations(get_basis_labels(), best_member))
 
+        coeffs_out = os.path.join(top_coeffs_dir, f'coeffs_rank{rank}_id{s.id}.pkl')
+        with open(coeffs_out, 'wb') as f:
+            pickle.dump(np.asarray(best_member), f)
+        print(f"Saved best member to {coeffs_out}")
+
         parent_folder = os.path.join(
-            f'plots_slag_{args.job_id}', 
+            f'plots_slag_{args.job_id}',
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 

@@ -8,7 +8,7 @@ import numpy as np
 import time
 import timeit
 import os
-from helper import assert_metric_psi_compatible, canonicalize_coeffs, dwork_points_path, reconstruct_hermitian_matrices 
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, dwork_points_path, load_points, reconstruct_hermitian_matrices 
 from plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'highest')
@@ -28,19 +28,7 @@ assert_metric_psi_compatible(metric, psi)
 # e.g. POINTS_FILE = "data/my_cicy.pkl"
 POINTS_FILE = dwork_points_path(psi, seed=1024)
 
-with open(POINTS_FILE, 'rb') as f:
-#with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_1024.pkl', 'rb') as f:
-#with open('/projects/ruehlehet/yidi/sLag/data/5mil_patch0_343.pkl', 'rb') as f:
-    pts_5mil_patch0 = pickle.load(f)
-
-
-#with open('/projects/ruehlehet/yidi/sLag/data/50mil_patch0_0.pkl', 'rb') as f:
-#    pts_5mil_patch0 = pickle.load(f)
-
-pts_5mil_patch0 = np.asarray(pts_5mil_patch0)
-
-points_real = np.concatenate([np.real(pts_5mil_patch0), np.imag(pts_5mil_patch0)], axis=1)
-points_real = jnp.asarray(points_real)
+points_real = load_points(POINTS_FILE)
 
 coeffs_RP3 = jnp.zeros((3, 25)).at[[0, 1, 2], [0, 1, 2]].set(1)
 coeffs_T3 = jnp.zeros((3, 25)).at[[0, 1, 2], [10, 15, 19]].set(1).at[[0, 1, 2],[15, 19, 22]].set(-1)

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import timeit
-from helper import assert_metric_psi_compatible, canonicalize_coeffs, convert_real_to_complex_batch, convert_real_to_complex_single, determine_patch_and_rescale_single, dwork_points_path
+from helper import assert_metric_psi_compatible, canonicalize_coeffs, convert_real_to_complex_batch, convert_real_to_complex_single, determine_patch_and_rescale_single, dwork_points_path, load_points
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 #with open('/projects/ruehlehet/yidi/sLag/data/50mil_patch0_3.pkl', 'rb') as f:
@@ -27,13 +27,7 @@ assert_metric_psi_compatible(metric, psi)
 # e.g. POINTS_FILE = "data/my_cicy.pkl"
 POINTS_FILE = dwork_points_path(psi, seed=1024)
 
-with open(POINTS_FILE, 'rb') as f:
-    pts_5mil_patch0 = pickle.load(f)
-
-pts_5mil_patch0 = np.asarray(pts_5mil_patch0)
-
-points_real = np.concatenate([np.real(pts_5mil_patch0), np.imag(pts_5mil_patch0)], axis=1)
-points_real = jnp.asarray(points_real)
+points_real = load_points(POINTS_FILE)
 
 coeffs_RP3 = jnp.zeros((3, 25)).at[[0, 1, 2], [0, 1, 2]].set(1)
 coeffs_T3 = jnp.zeros((3, 25)).at[[0, 1, 2], [10, 15, 19]].set(1).at[[0, 1, 2],[15, 19, 22]].set(-1)
