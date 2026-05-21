@@ -503,6 +503,100 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
         )
 
 
+def run_lbfgs_finisher(coeffs, points_real, psi, args, total_loss_fn, history):
+    """L-BFGS polish on a freshly-mined frozen point set. Single-device.
+
+    optax.lbfgs's internal line search jit-traces value_fn, which does not
+    compose cleanly with pmap. The finisher therefore runs on one device:
+    we re-mine once on the un-sharded points_real and run a Python loop over
+    lbfgs.update. Wall-clock cost is small since this is a polishing phase
+    on a frozen minset (no remining between steps).
+
+    Mutates `history` in place; also returns the new coeffs and an opt_state
+    suitable for saving to a checkpoint.
+    """
+    try:
+        opt = optax.lbfgs(memory_size=args.lbfgs_memory_size)
+    except AttributeError as e:
+        raise RuntimeError(
+            "optax.lbfgs not available. Requires a recent optax (>=0.2.x with "
+            "the L-BFGS optimizer). Upgrade optax."
+        ) from e
+
+    print(
+        f"\n=== L-BFGS finisher (single-device): max {args.lbfgs_steps} steps, "
+        f"tol={args.lbfgs_tol:.2e}, memory_size={args.lbfgs_memory_size} ==="
+    )
+
+    # Fresh single-device mining for the frozen minset.
+    min_set_real, distances, _ = filter_and_refine(
+        points_real, coeffs, psi, args.minset_size, args.newton_steps,
+        filter_newton=True,
+    )
+    mean_d = float(jnp.mean(distances))
+    max_d = float(jnp.max(distances))
+    print(f"  [lbfgs mining] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
+    if mean_d > 1e-4:
+        print(f"  [warn] mean Newton distance > 1e-4 -- points may not be on the manifold")
+
+    # Closure: total_loss with everything but coeffs frozen.
+    def loss_with_aux(c):
+        return total_loss_fn(c, min_set_real, psi, args.inner_newton_steps, args.metric)
+
+    def loss_only(c):
+        loss, _ = total_loss_fn(c, min_set_real, psi, args.inner_newton_steps, args.metric)
+        return loss
+
+    loss_only_jit = jax.jit(loss_only)
+    value_and_grad_with_aux = jax.jit(jax.value_and_grad(loss_with_aux, has_aux=True))
+    ga_fitness_jit = jax.jit(compute_ga_fitness, static_argnames=("metric",))
+
+    opt_state = opt.init(coeffs)
+    base_step = history[-1]["step"] if history else 0
+
+    for it in range(args.lbfgs_steps):
+        t0 = time.time()
+        (loss_val, (lag_loss, spec_loss)), grads = value_and_grad_with_aux(coeffs)
+        grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
+        gnorm = float(jnp.linalg.norm(grads))
+
+        updates, opt_state = opt.update(
+            grads, opt_state, coeffs,
+            value=loss_val, grad=grads, value_fn=loss_only_jit,
+        )
+        coeffs = optax.apply_updates(coeffs, updates)
+        coeffs = normalize_coeffs(coeffs)
+
+        lag_fit, spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
+        lag_fit = float(lag_fit)
+        spec_fit = float(spec_fit)
+
+        dt = time.time() - t0
+        step_num = base_step + it + 1
+        print(
+            f"lbfgs {it+1:4d} | loss {float(loss_val):.6f} | "
+            f"lag_loss {float(lag_loss):.6f} | spec_loss {float(spec_loss):.6f} | "
+            f"lag_fit {lag_fit:.4f} | spec_fit {spec_fit:.4f} | "
+            f"|grad| {gnorm:.2e} | {dt:.2f}s"
+        )
+        history.append({
+            "step": step_num,
+            "phase": "lbfgs",
+            "loss": float(loss_val),
+            "lag_loss": float(lag_loss),
+            "spec_loss": float(spec_loss),
+            "lag_fit": lag_fit,
+            "spec_fit": spec_fit,
+            "gnorm": gnorm,
+        })
+
+        if gnorm < args.lbfgs_tol:
+            print(f"  [lbfgs] |grad|={gnorm:.2e} < tol={args.lbfgs_tol:.2e}, converged")
+            break
+
+    return coeffs, opt_state
+
+
 def main():
     parser = argparse.ArgumentParser(description="GD for sLag search (d=1+2)")
     parser.add_argument("--psi", type=complex, default=0)
@@ -555,6 +649,15 @@ def main():
                         help="Point cloud size for the final plots.")
     parser.add_argument("--plot_newton_steps", type=int, default=80,
                         help="Newton refinement steps for the final plots.")
+    parser.add_argument("--lbfgs_steps", type=int, default=0,
+                        help="If > 0, run optax.lbfgs as a finisher after the "
+                             "Adam loop on a freshly-mined frozen point set. "
+                             "Single-device (multi-GPU pmap is incompatible "
+                             "with optax.lbfgs's internal line search).")
+    parser.add_argument("--lbfgs_tol", type=float, default=1e-6,
+                        help="L-BFGS gradient-norm stopping tolerance.")
+    parser.add_argument("--lbfgs_memory_size", type=int, default=10,
+                        help="L-BFGS history length (number of (s,y) pairs).")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -628,10 +731,11 @@ def main():
         history = list(ckpt["history"])
         start_step = int(ckpt["step"])
         print(f"=== Resumed from {args.resume} at step {start_step} ===")
-        if start_step >= args.steps:
+        if start_step > args.steps or (start_step == args.steps and args.lbfgs_steps == 0):
             raise ValueError(
                 f"Checkpoint is at step {start_step} but --steps is {args.steps}. "
-                "Pass a larger --steps to continue training."
+                "Pass a larger --steps to continue Adam, or --lbfgs_steps > 0 "
+                "to skip Adam and run the L-BFGS finisher only."
             )
     else:
         key = jax.random.PRNGKey(args.seed)
@@ -740,6 +844,26 @@ def main():
                 pickle.dump(payload, f)
             os.replace(tmp, ckpt)
             print(f"  [save] wrote {ckpt}")
+
+    if args.lbfgs_steps > 0:
+        coeffs, lbfgs_opt_state = run_lbfgs_finisher(
+            coeffs, points_real, psi, args, total_loss, history,
+        )
+        lbfgs_ckpt = os.path.join(args.out_dir, f"gd_{args.job_id}_lbfgs.pkl")
+        last_step = history[-1]["step"] if history else 0
+        payload = {
+            "coeffs": np.asarray(coeffs),
+            "opt_state": jax.tree.map(np.asarray, lbfgs_opt_state),
+            "history": history,
+            "step": last_step,
+            "args": vars(args),
+            "phase": "lbfgs",
+        }
+        tmp = lbfgs_ckpt + ".tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump(payload, f)
+        os.replace(tmp, lbfgs_ckpt)
+        print(f"  [save] wrote {lbfgs_ckpt}")
 
     print("\nFinal coeffs:")
     print(format_array_with_commas(coeffs))
