@@ -503,17 +503,92 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
         )
 
 
-def run_lbfgs_finisher(coeffs, points_real, psi, args, total_loss_fn, history):
-    """L-BFGS polish on a freshly-mined frozen point set. Single-device.
+def make_parallel_lbfgs_step(opt, total_loss_fn, num_devices: int,
+                             n_refine_steps: int, metric: str):
+    """One full L-BFGS step (value+grad -> opt.update -> apply_updates -> normalize),
+    sharded across devices in the same data-parallel-with-pmean pattern Adam uses.
 
-    optax.lbfgs's internal line search jit-traces value_fn, which does not
-    compose cleanly with pmap. The finisher therefore runs on one device:
-    we re-mine once on the un-sharded points_real and run a Python loop over
-    lbfgs.update. Wall-clock cost is small since this is a polishing phase
-    on a frozen minset (no remining between steps).
+    Replication / sharding:
+      coeffs, opt_state : broadcast (in_axes=None) -> identical on every device
+      min_set           : sharded on leading axis (in_axes=0)
+      psi               : broadcast
 
-    Mutates `history` in place; also returns the new coeffs and an opt_state
-    suitable for saving to a checkpoint.
+    Inside pmap, value_fn = lax.pmean(local_loss(c), 'x'). optax.lbfgs's
+    internal zoom line search jit-traces value_fn; the pmean fires on every
+    trial coefficient, so every device sees an identical global loss for the
+    trial step. The outer value_and_grad's loss/aux/grads are likewise
+    pmean'd before opt.update, so every device computes the same updates ->
+    coeffs / opt_state remain replicated post-update.
+
+    Bias note: the loss is a per-shard mean (bottom-99% Lagrangian, Kuramoto
+    |mean exp(2i theta)|), then pmean'd. This is biased vs the true global
+    loss on the union of shards, but it is the *same* biased loss Adam
+    minimizes — consistent across iterations, fine for L-BFGS curvature.
+    """
+    def inner(coeffs, opt_state, min_set, psi):
+        def loss_with_aux(c):
+            return total_loss_fn(c, min_set, psi, n_refine_steps, metric)
+
+        if num_devices > 1:
+            def value_fn(c):
+                local_loss, _ = loss_with_aux(c)
+                return jax.lax.pmean(local_loss, axis_name="x")
+        else:
+            def value_fn(c):
+                local_loss, _ = loss_with_aux(c)
+                return local_loss
+
+        (loss, (lag, spec)), grads = jax.value_and_grad(
+            loss_with_aux, has_aux=True
+        )(coeffs)
+
+        if num_devices > 1:
+            loss = jax.lax.pmean(loss, axis_name="x")
+            lag = jax.lax.pmean(lag, axis_name="x")
+            spec = jax.lax.pmean(spec, axis_name="x")
+            grads = jax.lax.pmean(grads, axis_name="x")
+
+        grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
+        updates, new_opt_state = opt.update(
+            grads, opt_state, coeffs,
+            value=loss, grad=grads, value_fn=value_fn,
+        )
+        new_coeffs = optax.apply_updates(coeffs, updates)
+        new_coeffs = normalize_coeffs(new_coeffs)
+        return new_coeffs, new_opt_state, loss, lag, spec, grads
+
+    if num_devices <= 1:
+        return jax.jit(inner)
+
+    pmapped = jax.pmap(inner, axis_name="x", in_axes=(None, None, 0, None))
+
+    def fn(coeffs, opt_state, min_set_sharded, psi):
+        new_coeffs, new_opt_state, loss, lag, spec, grads = pmapped(
+            coeffs, opt_state, min_set_sharded, psi
+        )
+        # All outputs are replicated along the device axis; collapse it.
+        return (
+            take_replicated(new_coeffs),
+            jax.tree.map(take_replicated, new_opt_state),
+            take_replicated(loss),
+            take_replicated(lag),
+            take_replicated(spec),
+            take_replicated(grads),
+        )
+
+    return fn
+
+
+def run_lbfgs_finisher(coeffs, points_in, psi, args, total_loss_fn,
+                       mining_fn, ga_fitness_fn, num_devices: int, history):
+    """L-BFGS polish on a freshly-mined frozen point set.
+
+    Multi-GPU follows the same pmap+pmean pattern as Adam: replicated
+    coeffs/opt_state, sharded min_set. See make_parallel_lbfgs_step for the
+    sharding contract. `points_in` is the sharded points array if num_devices
+    > 1, else the raw (N, 10) array — same convention as in main().
+
+    Mutates `history` in place. Returns (new_coeffs, opt_state).
     """
     try:
         opt = optax.lbfgs(memory_size=args.lbfgs_memory_size)
@@ -524,14 +599,14 @@ def run_lbfgs_finisher(coeffs, points_real, psi, args, total_loss_fn, history):
         ) from e
 
     print(
-        f"\n=== L-BFGS finisher (single-device): max {args.lbfgs_steps} steps, "
-        f"tol={args.lbfgs_tol:.2e}, memory_size={args.lbfgs_memory_size} ==="
+        f"\n=== L-BFGS finisher ({num_devices} GPU(s)): "
+        f"max {args.lbfgs_steps} steps, tol={args.lbfgs_tol:.2e}, "
+        f"memory_size={args.lbfgs_memory_size} ==="
     )
 
-    # Fresh single-device mining for the frozen minset.
-    min_set_real, distances, _ = filter_and_refine(
-        points_real, coeffs, psi, args.minset_size, args.newton_steps,
-        filter_newton=True,
+    # Fresh mining (uses the multi-GPU mining path if num_devices > 1).
+    min_set_data, distances, _ = mining_fn(
+        points_in, coeffs, psi, args.minset_size, args.newton_steps,
     )
     mean_d = float(jnp.mean(distances))
     max_d = float(jnp.max(distances))
@@ -539,35 +614,21 @@ def run_lbfgs_finisher(coeffs, points_real, psi, args, total_loss_fn, history):
     if mean_d > 1e-4:
         print(f"  [warn] mean Newton distance > 1e-4 -- points may not be on the manifold")
 
-    # Closure: total_loss with everything but coeffs frozen.
-    def loss_with_aux(c):
-        return total_loss_fn(c, min_set_real, psi, args.inner_newton_steps, args.metric)
-
-    def loss_only(c):
-        loss, _ = total_loss_fn(c, min_set_real, psi, args.inner_newton_steps, args.metric)
-        return loss
-
-    loss_only_jit = jax.jit(loss_only)
-    value_and_grad_with_aux = jax.jit(jax.value_and_grad(loss_with_aux, has_aux=True))
-    ga_fitness_jit = jax.jit(compute_ga_fitness, static_argnames=("metric",))
-
+    step_fn = make_parallel_lbfgs_step(
+        opt, total_loss_fn, num_devices,
+        args.inner_newton_steps, args.metric,
+    )
     opt_state = opt.init(coeffs)
     base_step = history[-1]["step"] if history else 0
 
     for it in range(args.lbfgs_steps):
         t0 = time.time()
-        (loss_val, (lag_loss, spec_loss)), grads = value_and_grad_with_aux(coeffs)
-        grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
+        coeffs, opt_state, loss_val, lag_loss, spec_loss, grads = step_fn(
+            coeffs, opt_state, min_set_data, psi
+        )
         gnorm = float(jnp.linalg.norm(grads))
 
-        updates, opt_state = opt.update(
-            grads, opt_state, coeffs,
-            value=loss_val, grad=grads, value_fn=loss_only_jit,
-        )
-        coeffs = optax.apply_updates(coeffs, updates)
-        coeffs = normalize_coeffs(coeffs)
-
-        lag_fit, spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
+        lag_fit, spec_fit = ga_fitness_fn(min_set_data, coeffs, psi, args.metric)
         lag_fit = float(lag_fit)
         spec_fit = float(spec_fit)
 
@@ -847,7 +908,8 @@ def main():
 
     if args.lbfgs_steps > 0:
         coeffs, lbfgs_opt_state = run_lbfgs_finisher(
-            coeffs, points_real, psi, args, total_loss, history,
+            coeffs, points_in, psi, args, total_loss,
+            mining_fn, ga_fitness_jit, num_devices, history,
         )
         lbfgs_ckpt = os.path.join(args.out_dir, f"gd_{args.job_id}_lbfgs.pkl")
         last_step = history[-1]["step"] if history else 0
