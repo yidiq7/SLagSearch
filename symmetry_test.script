@@ -20,7 +20,7 @@
 set -euo pipefail
 
 # --- User-editable: path to the source d=3 checkpoint ---------------------
-SOURCE_PKL="${SOURCE_PKL:-gd_runs/gd_d3_coeffs_step5000.pkl}"
+SOURCE_PKL="${SOURCE_PKL:-gd_runs/gd_d3_from_d1_step3000.pkl}"
 MAX_DEGREE="${MAX_DEGREE:-3}"
 
 # --- Output layout --------------------------------------------------------
