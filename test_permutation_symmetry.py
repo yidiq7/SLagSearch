@@ -1,24 +1,32 @@
-"""Test approximate permutation symmetries of the per-degree Hermitian
-matrices, allowing an O(3) twist that mixes the three equations.
+"""Test approximate (anti-)holomorphic permutation symmetries of the per-degree
+Hermitian matrices, allowing an O(3) twist that mixes the three equations.
 
-For a permutation g in S_5 acting on coordinates we induce a permutation U_g on
-each d-monomial basis (size N x N with N in {5,15,35,70}). The symmetry test:
-the polynomial system {f_0, f_1, f_2} is g-invariant up to an O(3) rotation iff
-there exists O in O(3) with
-    U_g H^(k) U_g^T  =  sum_l O_{kl} H^(l)   for each k and each degree d.
+For a permutation g in S_5 we induce a permutation U_g on each d-monomial
+basis (size N x N with N in {5,15,35,70}). Two symmetry types are tested:
 
-We find the best O (Procrustes-style, in closed form via SVD of a 3x3 matrix)
-and report the relative Frobenius residual
+  HOLO  (holomorphic, z_i -> z_{g(i)}):
+    U_g H^(k) U_g^T  =  sum_l O_{kl} H^(l)
 
-    rel_res(g) = || U_g H U_g^T - O.H ||_F / || H ||_F
+  ANTI  (anti-holomorphic, z_i -> conj(z_{g(i)})):
+    U_g conj(H^(k)) U_g^T  =  sum_l O_{kl} H^(l)
+    (equivalently U_g H^(k)^T U_g^T for Hermitian H)
 
-both per-degree (lower bound: each degree gets its own best O) and joint
+The anti-holomorphic case is the algebraic signature of an anti-holomorphic
+involution of the CY -- the standard sLag construction (Bryant, Joyce):
+sLag candidates lie in the fixed locus of such an involution.
+
+For each candidate g, we find the best real O in O(3) (closed form via SVD of
+a 3x3 matrix, Procrustes) and report the relative Frobenius residual
+
+    rel_res = || tilde_H - O . H ||_F / || H ||_F
+
+both per-degree (lower bound: each degree picks its own optimal O) and joint
 (physical: single O across all degrees). For reference we also print the
-"no-twist" residual ||U_g H U_g^T - H||_F / ||H||_F, i.e. the rigid symmetry
-test without allowing equation mixing.
+no-twist residual ||tilde_H - H||_F / ||H||_F (rigid symmetry without O(3)).
 
 Usage:
-    python test_permutation_symmetry.py --coeffs gd_runs/<job>.pkl [--group z2xs3]
+    python test_permutation_symmetry.py --coeffs gd_runs/<job>.pkl \
+        [--group z2xs3] [--mode both]
 """
 import argparse
 import pickle
@@ -124,11 +132,25 @@ def joint_O3_across_degrees(
 def no_twist_residual(
     H_triple: list[np.ndarray], tilde_triple: list[np.ndarray]
 ) -> float:
-    """||U H U^T - H||_F / ||H||_F, summed over the 3 equations."""
+    """||tilde - H||_F / ||H||_F, summed over the 3 equations."""
     num_sq = sum(float(np.linalg.norm(t - H) ** 2)
                  for t, H in zip(tilde_triple, H_triple))
     den_sq = sum(float(np.linalg.norm(H) ** 2) for H in H_triple)
     return float(np.sqrt(num_sq) / max(np.sqrt(den_sq), 1e-30))
+
+
+def build_tilde(H_triple: list[np.ndarray], U: np.ndarray,
+                mode: str) -> list[np.ndarray]:
+    """Apply the (anti-)holomorphic transformation to each H.
+
+    mode='holo' :  tilde_H = U H U^T  (perm acting on z_i)
+    mode='anti' :  tilde_H = U conj(H) U^T  (perm + complex conj, antiholo)
+    """
+    if mode == "holo":
+        return [U @ H @ U.T for H in H_triple]
+    if mode == "anti":
+        return [U @ H.conj() @ U.T for H in H_triple]
+    raise ValueError(f"unknown mode: {mode!r}")
 
 
 # Pre-canned group element lists. Each entry is (perm_tuple, label).
@@ -179,6 +201,11 @@ def main() -> None:
     parser.add_argument("--group", default="z2xs3",
                         choices=list(_GROUPS.keys()),
                         help="Which set of elements to test (default: z2xs3).")
+    parser.add_argument("--mode", default="both",
+                        choices=["holo", "anti", "both"],
+                        help="holo: pure permutation; anti: permutation + "
+                             "complex conjugation (anti-holomorphic). "
+                             "both: report both side by side (default).")
     args = parser.parse_args()
 
     H_by_d = _load_hermitians(args.coeffs)
@@ -199,38 +226,45 @@ def main() -> None:
         for perm, name in elements for d in degrees
     }
 
-    # --- Per-degree best O(3): each degree gets its own optimal rotation.
-    print(f"=== Per-degree best O(3) residual  (group: {args.group}) ===")
-    header = (f"{'element':<28} | "
-              + "  ".join(f"d={d:1d} no-twist | d={d:1d} w/ O(3)"
-                         for d in degrees))
-    print(header)
-    print("-" * len(header))
-    for perm, name in elements:
-        cells = []
-        for d in degrees:
-            U = U_cache[(name, d)]
-            tilde = [U @ H @ U.T for H in H_by_d[d]]
-            no_twist = no_twist_residual(H_by_d[d], tilde)
-            _, _, with_twist = best_O3_for_block(H_by_d[d], tilde)
-            cells.append(f"{no_twist:.4f}   |  {with_twist:.4f}")
-        print(f"{name:<28} | " + "  ".join(cells))
-    print()
+    modes = ["holo", "anti"] if args.mode == "both" else [args.mode]
+    mode_label = {"holo": "HOLO (U H U^T)", "anti": "ANTI (U conj(H) U^T)"}
 
-    # --- Joint O(3) across all degrees (the physical symmetry test).
-    print(f"=== Joint O(3) residual (single O across all degrees) ===")
-    print(f"{'element':<28} | overall rel_res | "
-          + " ".join(f"d={d:1d}" for d in degrees))
-    print("-" * 60)
-    for perm, name in elements:
-        tilde_by_d = {
-            d: [U_cache[(name, d)] @ H @ U_cache[(name, d)].T for H in H_by_d[d]]
-            for d in degrees
-        }
-        O, per_d, overall = joint_O3_across_degrees(H_by_d, tilde_by_d)
-        cells = " ".join(f"{per_d[d]:.4f}" for d in degrees)
-        det = float(np.linalg.det(O))
-        print(f"{name:<28} | {overall:.4f} (det O={det:+.2f})  | {cells}")
+    for mode in modes:
+        # --- Per-degree best O(3): each degree gets its own optimal rotation.
+        print(f"=== Per-degree best O(3) residual  "
+              f"({mode_label[mode]}, group: {args.group}) ===")
+        header = (f"{'element':<28} | "
+                  + "  ".join(f"d={d:1d} no-twist | d={d:1d} w/ O(3)"
+                             for d in degrees))
+        print(header)
+        print("-" * len(header))
+        for perm, name in elements:
+            cells = []
+            for d in degrees:
+                U = U_cache[(name, d)]
+                tilde = build_tilde(H_by_d[d], U, mode)
+                no_twist = no_twist_residual(H_by_d[d], tilde)
+                _, _, with_twist = best_O3_for_block(H_by_d[d], tilde)
+                cells.append(f"{no_twist:.4f}   |  {with_twist:.4f}")
+            print(f"{name:<28} | " + "  ".join(cells))
+        print()
+
+        # --- Joint O(3) across all degrees (the physical symmetry test).
+        print(f"=== Joint O(3) residual (single O across all degrees)  "
+              f"({mode_label[mode]}) ===")
+        print(f"{'element':<28} | overall rel_res | "
+              + " ".join(f"d={d:1d}" for d in degrees))
+        print("-" * 60)
+        for perm, name in elements:
+            tilde_by_d = {
+                d: build_tilde(H_by_d[d], U_cache[(name, d)], mode)
+                for d in degrees
+            }
+            O, per_d, overall = joint_O3_across_degrees(H_by_d, tilde_by_d)
+            cells = " ".join(f"{per_d[d]:.4f}" for d in degrees)
+            det = float(np.linalg.det(O))
+            print(f"{name:<28} | {overall:.4f} (det O={det:+.2f})  | {cells}")
+        print()
 
 
 if __name__ == "__main__":
