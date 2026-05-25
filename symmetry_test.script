@@ -31,9 +31,9 @@ HERM_DIR="$OUT_ROOT/hermitian"
 LOG_DIR="$OUT_ROOT/symmetry_logs"
 mkdir -p "$PERM_DIR" "$GD_DIR" "$HERM_DIR" "$LOG_DIR"
 
-# --- Env (matches GA.script) ----------------------------------------------
-source /home/y.qi/miniconda3/etc/profile.d/conda.sh
-conda activate sLagSearch
+# --- Env: uv-managed (no conda on this cluster) ---------------------------
+# All python invocations below are prefixed with `uv run` so dependencies are
+# resolved against the project's pyproject.toml / uv.lock.
 
 echo "==============================================="
 echo "Symmetry test:  source pkl = $SOURCE_PKL"
@@ -50,7 +50,7 @@ fi
 # --- Step 0: generate the 10 permuted coeffs pkls -------------------------
 echo
 echo "--- [0/3] permute_coeffs.py -> $PERM_DIR ---"
-python permute_coeffs.py --coeffs "$SOURCE_PKL" --out_dir "$PERM_DIR" \
+uv run python permute_coeffs.py --coeffs "$SOURCE_PKL" --out_dir "$PERM_DIR" \
     2>&1 | tee "$LOG_DIR/permute_coeffs.log"
 
 # --- Step 1: fitness plots for each permutation (plots_only) --------------
@@ -62,7 +62,7 @@ for f in "$PERM_DIR"/*.pkl; do
     job=$(basename "$f" .pkl)
     echo
     echo ">>> $job"
-    python gradient_descent.py \
+    uv run python gradient_descent.py \
         --job_id "$job" \
         --plots_only \
         --resume "$f" \
@@ -77,7 +77,7 @@ echo "--- [2/3] plot_hermitian_coeffs.py -> $HERM_DIR ---"
 for f in "$PERM_DIR"/*.pkl; do
     job=$(basename "$f" .pkl)
     echo ">>> $job"
-    python plot_hermitian_coeffs.py \
+    uv run python plot_hermitian_coeffs.py \
         --coeffs "$f" \
         --job_id "$job" \
         --out_dir "$HERM_DIR" \
@@ -92,7 +92,7 @@ for f in "$PERM_DIR"/*.pkl; do
     job=$(basename "$f" .pkl)
     echo
     echo ">>> $job"
-    python test_permutation_symmetry.py \
+    uv run python test_permutation_symmetry.py \
         --coeffs "$f" \
         --group transpositions \
         --mode holo \
