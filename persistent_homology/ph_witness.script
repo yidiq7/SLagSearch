@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -p short
+#SBATCH -t 48:00:00
+#SBATCH -n 1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=45G
+
+cd "$(dirname "$0")/.."
+
+START_TIME=$SECONDS
+uv run python persistent_homology/persistent_homology_witness_h0h1.py \
+    --filepath plots_slag_d4_run/min_set.pkl \
+    --coeffs_pkl gd_runs/gd_d4_run_step3000.pkl \
+    --psi 0
+ELAPSED_TIME=$(($SECONDS - $START_TIME))
+
+echo "Total execution time: $(($ELAPSED_TIME/3600))h $((($ELAPSED_TIME/60)%60))m $(($ELAPSED_TIME%60))s"
