@@ -52,10 +52,11 @@ def plot_pairs(z: np.ndarray, patches: np.ndarray, out_path: Path,
 
     if part == "re":
         proj = z.real
-        label_fmt = r"$\mathrm{Re}\,z_{}$"
+        # Escape literal LaTeX braces around Re/Im so .format() only fills {}.
+        label_fmt = r"$\mathrm{{Re}}\,z_{}$"
     elif part == "im":
         proj = z.imag
-        label_fmt = r"$\mathrm{Im}\,z_{}$"
+        label_fmt = r"$\mathrm{{Im}}\,z_{}$"
     elif part == "abs":
         proj = np.abs(z)
         label_fmt = r"$|z_{}|$"
