@@ -190,6 +190,22 @@ wheels = [
 ]
 
 [[package]]
+name = "gudhi"
+version = "3.12.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/67/9069252cf19c8e4b19f633646c349839215b5bd6bf131e72bcf67025a272/gudhi-3.12.0-cp312-cp312-macosx_14_0_universal2.whl", hash = "sha256:33247abcb633b9a3172d36b49e283e77be668443c0d9c40750a8b8fc332866ac", size = 8301983, upload-time = "2026-03-30T17:01:56.228Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/94/12d4826c617fbe53bfff19a982e0c606ede7d3cba9463a788f146ce440be/gudhi-3.12.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c7f8ba6cf7c2ee95208a2504ecc70b853ce88ca3e0d7e4d3f507c20faabf0923", size = 4255895, upload-time = "2026-03-30T17:15:07.324Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/36/d44c50f211fa11cdca26f15d3e1284ccd486cef5536c6dfce4964757ea7c/gudhi-3.12.0-cp312-cp312-win_amd64.whl", hash = "sha256:7e2b2a83046182976d5380e2741472903d18a34cca5c55817b69f570ef33869a", size = 3778796, upload-time = "2026-03-30T17:36:13.051Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/34/b0122af41efdab1f630902d8f0e761bee9f9274fc178f5ae4ab767e0fa6a/gudhi-3.12.0-cp313-cp313-macosx_14_0_universal2.whl", hash = "sha256:2ed4954d0c62c3f731aae5df1d76ae6101262464bbed41ebefaec0c7f58f1d20", size = 8300444, upload-time = "2026-03-30T17:01:31.04Z" },
+    { url = "https://files.pythonhosted.org/packages/25/1a/1b8dad4c460ed933c58ef2a92b9166cabc18a13965858110b7f4661be4f2/gudhi-3.12.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:079b9c8e94510f5b7b943796e24d4ed0bd589b32ea50b40f34c38dd7dedc95d2", size = 4255355, upload-time = "2026-03-30T17:15:08.98Z" },
+    { url = "https://files.pythonhosted.org/packages/84/7c/8d534c0ba4217eb5389a620ec3793dfffc5d3b23d1358c1c7ff4790246b6/gudhi-3.12.0-cp313-cp313-win_amd64.whl", hash = "sha256:b049b6f562dc7514338b23617797f35618426700f57fe73e21ba464f1870abcb", size = 3777880, upload-time = "2026-03-30T17:34:40.49Z" },
+    { url = "https://files.pythonhosted.org/packages/12/5d/3eb4f0c6bdb286cdef21a81a402bcc95f931cd04a0bbd7e7b2c9a943bc6f/gudhi-3.12.0-cp314-cp314-macosx_14_0_universal2.whl", hash = "sha256:71b8e17fdebc4a8b7d8a16d325f3f782951ba8ab4e89d0c9857b95f66a41bce0", size = 8302906, upload-time = "2026-03-30T17:02:27.97Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/eb/55639188ed435c817e2663c90db3fdb9be69aeef95c37ee80945886de4c3/gudhi-3.12.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d5694a3e2ddfae33e70402eebc897889d755c0d2d9c693165e89ced61e3c30bf", size = 4254587, upload-time = "2026-03-30T17:15:10.344Z" },
+    { url = "https://files.pythonhosted.org/packages/51/b7/848d79fc52fccbb68f5f0fc7b94e3df43e5ca4f0a7c20d9d03ca48e362c5/gudhi-3.12.0-cp314-cp314-win_amd64.whl", hash = "sha256:e44394a355a3cd159a28720be0e96ced69e1b48c74ba3e78cf35a293422dfc5e", size = 3889224, upload-time = "2026-03-30T18:12:34.051Z" },
+]
+
+[[package]]
 name = "humanize"
 version = "4.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1192,6 +1208,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+persistent-homology = [
+    { name = "gudhi" },
+]
 points-gen = [
     { name = "mlgeometry-jax" },
     { name = "sympy" },
@@ -1199,6 +1218,7 @@ points-gen = [
 
 [package.metadata]
 requires-dist = [
+    { name = "gudhi", marker = "extra == 'persistent-homology'", specifier = ">=3.9" },
     { name = "jax", extras = ["cuda12"], specifier = ">=0.10,<0.11" },
     { name = "matplotlib", specifier = ">=3.10,<4" },
     { name = "mlgeometry-jax", marker = "extra == 'points-gen'" },
@@ -1207,7 +1227,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.17,<2" },
     { name = "sympy", marker = "extra == 'points-gen'", specifier = ">=1.13" },
 ]
-provides-extras = ["points-gen"]
+provides-extras = ["points-gen", "persistent-homology"]
 
 [[package]]
 name = "sympy"
