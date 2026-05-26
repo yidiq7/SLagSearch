@@ -25,11 +25,10 @@ points-gen = [
 ]
 
 # Persistent homology / TDA pipeline (persistent_homology/ folder).
-# VR (giotto-tda) and witness (gudhi) variants share the same group; JAX is
-# already in core deps and is used for FS distance + max-min landmarks.
+# Witness-complex variant via gudhi; JAX (core dep) handles FS distance +
+# max-min landmark selection.
 # Install with:   uv sync --extra persistent-homology
 persistent-homology = [
-    "giotto-tda>=0.6",
     "gudhi>=3.9",
 ]
 
