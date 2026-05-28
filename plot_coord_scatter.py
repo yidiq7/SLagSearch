@@ -90,13 +90,6 @@ def plot_pairs(z: np.ndarray, patches: np.ndarray, out_path: Path,
                 ax.plot([xlo, xhi], [xlo, xhi], "k--", lw=0.8, alpha=0.5)
                 ax.set_xlabel(label_fmt.format(j), fontsize=8)
                 ax.set_ylabel(label_fmt.format(i), fontsize=8)
-                # Mark the (2, 3) panel specifically -- this is the
-                # confirmed-symmetric pair.
-                if {i, j} == {2, 3}:
-                    for spine in ax.spines.values():
-                        spine.set_edgecolor("crimson")
-                        spine.set_linewidth(2.0)
-                    ax.set_title("symmetry pair", color="crimson", fontsize=9)
             ax.tick_params(axis="both", labelsize=6)
             ax.set_aspect("equal", adjustable="box")
 
