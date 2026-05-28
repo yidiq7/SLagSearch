@@ -40,15 +40,17 @@ def patch_indices_from_complex(z: np.ndarray) -> np.ndarray:
 
 
 def plot_pairs(z: np.ndarray, patches: np.ndarray, out_path: Path,
-               part: str, title: str, max_points: int) -> None:
+               part: str, title: str, max_points: int | None) -> None:
     """5x5 grid. Off-diagonal panel (i, j) shows part(z_i) vs part(z_j).
     Diagonal panel (i, i) shows (Re z_i, Im z_i) (always, regardless of
     --part) as a reference for the individual coord distribution.
     """
-    if z.shape[0] > max_points:
+    if max_points is not None and z.shape[0] > max_points:
         idx = np.random.default_rng(0).choice(z.shape[0], max_points, replace=False)
         z = z[idx]
         patches = patches[idx]
+    # Auto-tune marker alpha so very large clouds don't saturate to solid.
+    alpha = min(0.4, 8000.0 / max(z.shape[0], 1))
 
     if part == "re":
         proj = z.real
@@ -73,7 +75,7 @@ def plot_pairs(z: np.ndarray, patches: np.ndarray, out_path: Path,
                 sc = ax.scatter(
                     z[:, i].real, z[:, i].imag,
                     c=patches, cmap="tab10", vmin=-0.5, vmax=4.5,
-                    s=0.5, alpha=0.4, edgecolors="none",
+                    s=0.5, alpha=alpha, edgecolors="none",
                 )
                 ax.set_xlabel(rf"$\mathrm{{Re}}\,z_{i}$", fontsize=8)
                 ax.set_ylabel(rf"$\mathrm{{Im}}\,z_{i}$", fontsize=8)
@@ -82,7 +84,7 @@ def plot_pairs(z: np.ndarray, patches: np.ndarray, out_path: Path,
                 ax.scatter(
                     proj[:, j], proj[:, i],
                     c=patches, cmap="tab10", vmin=-0.5, vmax=4.5,
-                    s=0.5, alpha=0.4, edgecolors="none",
+                    s=0.5, alpha=alpha, edgecolors="none",
                 )
                 # y = x line for visual diagonal-symmetry check.
                 xlo = min(proj[:, i].min(), proj[:, j].min())
@@ -107,9 +109,10 @@ def main() -> None:
                         default="all",
                         help="Which projection: re, im, abs, or all (writes "
                              "three PNGs).")
-    parser.add_argument("--max_points", type=int, default=20000,
+    parser.add_argument("--max_points", type=int, default=None,
                         help="Subsample points to this many for plotting "
-                             "(default 20000).")
+                             "(default: use all points). Pass an integer "
+                             "to subsample.")
     args = parser.parse_args()
 
     z = load_min_set_complex(args.folder)

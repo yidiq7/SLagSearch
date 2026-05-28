@@ -52,12 +52,17 @@ def patch_indices_from_complex(z: np.ndarray) -> np.ndarray:
     return np.argmax(np.abs(z), axis=1)
 
 
-def subsample(z: np.ndarray, patches: np.ndarray, n: int,
+def subsample(z: np.ndarray, patches: np.ndarray, n: int | None,
               seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     if n is None or z.shape[0] <= n:
         return z, patches
     idx = np.random.default_rng(seed).choice(z.shape[0], n, replace=False)
     return z[idx], patches[idx]
+
+
+def _auto_alpha(n: int) -> float:
+    """Marker alpha that doesn't saturate for large clouds."""
+    return float(min(0.4, 8000.0 / max(n, 1)))
 
 
 def real_form(z: np.ndarray) -> np.ndarray:
@@ -103,6 +108,7 @@ def plot_coord_triples(z: np.ndarray, patches: np.ndarray, out_dir: Path,
     """For each triple, render one 3D scatter from three viewing angles."""
     z_sub, patches_sub = subsample(z, patches, max_points)
     angles = [(20, 45), (20, 135), (60, 30)]
+    alpha = _auto_alpha(z_sub.shape[0])
 
     for label, sx, sy, sz in triples:
         try:
@@ -118,7 +124,7 @@ def plot_coord_triples(z: np.ndarray, patches: np.ndarray, out_dir: Path,
             ax = fig.add_subplot(1, 3, k + 1, projection="3d")
             ax.scatter(x, y, zc, c=patches_sub,
                        cmap="tab10", vmin=-0.5, vmax=4.5,
-                       s=1.0, alpha=0.4, edgecolors="none")
+                       s=1.0, alpha=alpha, edgecolors="none")
             ax.set_xlabel(xl, fontsize=9)
             ax.set_ylabel(yl, fontsize=9)
             ax.set_zlabel(zl, fontsize=9)
@@ -169,7 +175,8 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
             ax = fig.add_subplot(1, 3, k + 1, projection="3d")
             ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], c=patches_sub,
                        cmap="tab10", vmin=-0.5, vmax=4.5,
-                       s=1.0, alpha=0.4, edgecolors="none")
+                       s=1.0, alpha=_auto_alpha(emb.shape[0]),
+                       edgecolors="none")
             ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2"); ax.set_zlabel("UMAP 3")
             ax.view_init(elev=elev, azim=azim)
             ax.set_title(f"view {k + 1}", fontsize=9)
@@ -193,7 +200,8 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
             ax = fig.add_subplot(3, 3, i * 3 + j + 1, projection="3d")
             ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], c=patches_sub,
                        cmap="tab10", vmin=-0.5, vmax=4.5,
-                       s=0.6, alpha=0.4, edgecolors="none")
+                       s=0.6, alpha=_auto_alpha(emb.shape[0]),
+                       edgecolors="none")
             ax.view_init(elev=20, azim=45)
             ax.set_title(f"nn={nn_v}, md={md_v}", fontsize=10)
             ax.tick_params(labelsize=6)
@@ -371,10 +379,10 @@ def main() -> None:
                         choices=["coord", "umap", "mapper", "all"],
                         default=["all"],
                         help="Which methods to run (default: all).")
-    parser.add_argument("--max_points", type=int, default=80000,
-                        help="Subsample to this many points for "
-                             "UMAP / Mapper (default 80000). The neck "
-                             "is unlikely to be visible at < 20k.")
+    parser.add_argument("--max_points", type=int, default=None,
+                        help="Subsample to this many points "
+                             "(default: use all points). Pass an integer "
+                             "if UMAP / Mapper runtime needs to be capped.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out_subdir", type=str, default=None,
                         help="If set, write all outputs to "
