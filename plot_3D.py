@@ -210,6 +210,7 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
 # ---------------------------------------------------------------------------
 def _lens_from_spec(z_sub: np.ndarray, X: np.ndarray,
                     filter_spec: str) -> tuple[np.ndarray, str]:
+    # ----- 1D filters -----
     if filter_spec == "first-pc":
         Xc = X - X.mean(axis=0)
         _, _, Vt = np.linalg.svd(Xc, full_matrices=False)
@@ -220,6 +221,17 @@ def _lens_from_spec(z_sub: np.ndarray, X: np.ndarray,
         return lens, "|z_0| - |z_4|"
     if filter_spec == "abs0":
         return np.abs(z_sub[:, 0]).reshape(-1, 1), "|z_0|"
+    # ----- 2D filters (n_cubes^2 cover cells -> many more nodes) -----
+    if filter_spec == "abs04_abs123":
+        # Axis 1: |z_0| - |z_4|  (separates the two suspected pieces)
+        # Axis 2: |z_1| + |z_2| + |z_3|  (orthogonal: overall scale of triple)
+        a = np.abs(z_sub[:, 0]) - np.abs(z_sub[:, 4])
+        b = np.abs(z_sub[:, 1]) + np.abs(z_sub[:, 2]) + np.abs(z_sub[:, 3])
+        return np.stack([a, b], axis=1), "|z_0|-|z_4|  vs  Σ|z_{1,2,3}|"
+    if filter_spec == "first-two-pc":
+        Xc = X - X.mean(axis=0)
+        _, _, Vt = np.linalg.svd(Xc, full_matrices=False)
+        return Xc @ Vt[:2].T, "first 2 PCs"
     raise ValueError(f"unknown --filter {filter_spec!r}")
 
 
@@ -321,24 +333,26 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         print(f"  wrote {png_path}")
         return
 
-    # Sweep: 3x3 grid over (overlap, eps_percentile).
-    overlaps = [0.3, 0.5, 0.7]
-    eps_pcts = [50.0, 75.0, 95.0]
+    # Sweep: 3x3 grid over (n_cubes, overlap). eps stays auto-scaled
+    # at the single eps_percentile. n_cubes is the main knob for node
+    # count; overlap is the main knob for edge count.
+    n_cubes_list = [20, 50, 100]
+    overlap_list = [0.3, 0.5, 0.7]
     fig, axes = plt.subplots(3, 3, figsize=(18, 18))
-    for i, ov in enumerate(overlaps):
-        for j, epct in enumerate(eps_pcts):
-            print(f"  sweep ({i},{j}): overlap={ov}, eps_pct={epct}")
+    for i, nc in enumerate(n_cubes_list):
+        for j, ov in enumerate(overlap_list):
+            print(f"  sweep ({i},{j}): n_cubes={nc}, overlap={ov}")
             _, graph, lens_label, eps, n_nodes, n_edges = _build_mapper_graph(
-                z_sub, patches_sub, X, filter_spec, n_cubes, ov, epct,
+                z_sub, patches_sub, X, filter_spec, nc, ov, eps_percentile,
             )
             _render_mapper_png(
                 graph, patches_sub, axes[i, j],
-                f"ov={ov}, eps={eps:.3f} (p{epct})\n"
+                f"n_cubes={nc}, ov={ov}\n"
                 f"{n_nodes} nodes, {n_edges} edges",
                 seed,
             )
     fig.suptitle(f"Mapper sweep  (filter={filter_spec}, "
-                 f"n_cubes={n_cubes}, N={X.shape[0]})", fontsize=14)
+                 f"eps@p{eps_percentile}, N={X.shape[0]})", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     out_path = out_dir / f"mapper_sweep_{filter_spec}.png"
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -375,14 +389,21 @@ def main() -> None:
     parser.add_argument("--umap_n_neighbors", type=int, default=100)
     parser.add_argument("--umap_min_dist", type=float, default=0.3)
 
-    # Mapper knobs (used only if --sweep is not set).
+    # Mapper knobs.
     parser.add_argument("--mapper_filter",
-                        choices=["first-pc", "abs0_minus_abs4", "abs0"],
-                        default="abs0_minus_abs4",
-                        help="Lens function (default: |z_0| - |z_4|, which "
-                             "separates the two pieces under the "
-                             "{0,4} | {1,2,3} partition).")
-    parser.add_argument("--mapper_n_cubes", type=int, default=20)
+                        choices=["first-pc", "abs0_minus_abs4", "abs0",
+                                 "abs04_abs123", "first-two-pc"],
+                        default="abs04_abs123",
+                        help="Lens function. 1D options: first-pc, abs0, "
+                             "abs0_minus_abs4. 2D options (n_cubes^2 cover "
+                             "cells, many more nodes): abs04_abs123 "
+                             "(|z_0|-|z_4|, |z_1|+|z_2|+|z_3|; default), "
+                             "first-two-pc.")
+    parser.add_argument("--mapper_n_cubes", type=int, default=50,
+                        help="Cover intervals per filter axis. For 2D "
+                             "filters this gives n_cubes^2 cells. Default "
+                             "50 (gives ~2500 cells for 2D filters, vs "
+                             "~50 for 1D).")
     parser.add_argument("--mapper_overlap", type=float, default=0.5)
     parser.add_argument("--mapper_eps_percentile", type=float, default=75.0,
                         help="Percentile of k-NN distances used to set "
