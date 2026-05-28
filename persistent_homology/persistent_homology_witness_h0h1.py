@@ -1,10 +1,9 @@
 """Persistent homology of points in CP^4 via the (weak) witness complex.
 
-Sister script to persistent_homology_gtda_h0h1.py (Vietoris-Rips). Witness
-complexes scale better in N, so this script targets N ~ 50k with a sweep
-over the number of landmarks L. The sweep doubles as a stability check:
-if the diagram is sample-stable, the persistent H0/H1 features should be
-consistent across L.
+Computes H0/H1/H2 over a landmark sweep. The witness complex scales as L
+(landmarks), not N (points), so this script targets N ~ 50k with H2
+tractable thanks to a filtration cap (--max_alpha) that bounds simplex
+counts at higher dimensions. The L sweep doubles as a stability check.
 
 Pipeline:
   1. Load points; optionally Newton-refine + drop points whose per-point
@@ -15,10 +14,11 @@ Pipeline:
   2. Max-min landmark selection up to L_max in the Fubini-Study metric
      (JAX, runs on GPU). Builds a single (L_max, N) landmark-to-witness
      distance table; the sweep slices it (max-min is prefix-monotone).
-  3. For each L in --landmarks: build gudhi.WitnessComplex on the first L
-     landmarks, compute persistence, extract H0/H1.
-  4. Plot: per-L PH figure (mirrors VR script layout) + a combined
-     across-L comparison figure (H0/H1 diagrams + overlaid Betti curves).
+  3. For each L in --landmarks: build gudhi.WitnessComplex with
+     limit_dimension=3 (tetrahedra for H2), compute persistence, extract
+     H0/H1/H2.
+  4. Plot: per-L PH figure (3x3 grid: rows = H0/H1/H2, cols = diagram /
+     barcode / Betti curve) + a combined across-L comparison figure.
 
 Units: gudhi's WitnessComplex consumes a `nearest_landmark_table` whose
 entries are *squared* distances, and its filtration is alpha^2. We pass
@@ -197,20 +197,20 @@ def maxmin_landmarks(Zn_np, L_max, seed):
 # ------------------------------------------------------------- witness complex
 
 def build_witness_diagram(dist_table_slice, max_alpha_square,
-                          limit_dimension=2, top_k_landmarks=50):
+                          limit_dimension=3, top_k_landmarks=50):
     """gudhi WitnessComplex on a precomputed landmark-to-witness distance table.
 
     Args:
         dist_table_slice: (L, N) raw FS distances, landmark -> witness.
         max_alpha_square: filtration cap in squared-distance units.
-        limit_dimension: max simplex dim (2 sufficient for H0/H1).
+        limit_dimension: max simplex dim. Need >=3 for H2 (tetrahedra).
         top_k_landmarks: keep only the top-K nearest landmarks per witness
                          when building the table (saves memory; the witness
                          complex only needs ~limit_dimension+2 nearest).
 
     Returns:
-        (H0, H1): each (n_features, 2) array of (birth, death) in *raw* FS
-                  distance (filtration values sqrt'd from gudhi's alpha^2).
+        (H0, H1, H2): each (n_features, 2) array of (birth, death) in *raw* FS
+                      distance (filtration values sqrt'd from gudhi's alpha^2).
     """
     import gudhi
 
@@ -235,7 +235,7 @@ def build_witness_diagram(dist_table_slice, max_alpha_square,
     )
     persistence = st.persistence()
 
-    H0, H1 = [], []
+    H0, H1, H2 = [], [], []
     for dim, (b, d) in persistence:
         b_raw = np.sqrt(max(b, 0.0)) if np.isfinite(b) else 0.0
         d_raw = np.inf if np.isinf(d) else np.sqrt(max(d, 0.0))
@@ -243,8 +243,11 @@ def build_witness_diagram(dist_table_slice, max_alpha_square,
             H0.append([b_raw, d_raw])
         elif dim == 1:
             H1.append([b_raw, d_raw])
+        elif dim == 2:
+            H2.append([b_raw, d_raw])
     return (np.array(H0, dtype=np.float64) if H0 else np.empty((0, 2)),
-            np.array(H1, dtype=np.float64) if H1 else np.empty((0, 2)))
+            np.array(H1, dtype=np.float64) if H1 else np.empty((0, 2)),
+            np.array(H2, dtype=np.float64) if H2 else np.empty((0, 2)))
 
 
 # ------------------------------------------------------------------- analysis
@@ -255,15 +258,17 @@ def betti_at(points, t):
     return int(np.sum((points[:, 0] <= t) & (points[:, 1] > t)))
 
 
-def analyze(H0, H1, infinity_val, label=""):
+def analyze(H0, H1, H2, infinity_val, label=""):
     print(f"\n=== TOPOLOGICAL FEATURES {label} ===")
     print(f"H0 (connected components): {len(H0)}")
     print(f"H1 (loops):                {len(H1)}")
+    print(f"H2 (voids):                {len(H2)}")
 
-    filt = (np.array([0.2, 0.3, 0.4, 0.5]) * (infinity_val / (np.pi / 2))).tolist()
+    filt = (np.linspace(0.2, 0.9, 4) * infinity_val).tolist()
     print("Betti at sampled filtration values:")
     for t in filt:
-        print(f"  r={t:.3f}: beta0={betti_at(H0, t)}, beta1={betti_at(H1, t)}")
+        print(f"  r={t:.3f}: beta0={betti_at(H0, t)}, beta1={betti_at(H1, t)}, "
+              f"beta2={betti_at(H2, t)}")
 
     def top_features(points, name):
         if len(points) == 0:
@@ -276,6 +281,7 @@ def analyze(H0, H1, infinity_val, label=""):
 
     top_features(H0, "H0")
     top_features(H1, "H1")
+    top_features(H2, "H2")
 
 
 # ------------------------------------------------------------------- plotting
@@ -288,67 +294,27 @@ def _clip_inf(p, infinity_val):
     return out
 
 
-def plot_one_L(H0, H1, infinity_val, n_sample, L, output_file):
-    """Per-L PH figure mirroring the VR script's 2x4 layout."""
+def plot_one_L(H0, H1, H2, infinity_val, n_sample, L, output_file):
+    """Per-L PH figure: 3 rows (H0, H1, H2) x 3 cols (diagram, barcode, Betti).
+    """
     print(f"  plotting L={L} -> {output_file}")
-    h0_color = 'skyblue'
-    h1_color = 'orange'
+    dims = [('H0', H0, 'skyblue'),
+            ('H1', H1, 'orange'),
+            ('H2', H2, 'forestgreen')]
 
-    H0d = _clip_inf(H0, infinity_val)
-    H1d = _clip_inf(H1, infinity_val)
-    H0f = H0[np.isfinite(H0[:, 1])] if len(H0) else H0
-    H1f = H1[np.isfinite(H1[:, 1])] if len(H1) else H1
+    fig = plt.figure(figsize=(15, 12))
 
-    fig = plt.figure(figsize=(16, 10))
-
-    def diag_ax(ax, pts, color, name):
-        if len(pts):
-            ax.scatter(pts[:, 0], pts[:, 1], alpha=0.7, s=30, c=color)
+    def plot_diagram(ax, pts, color, name):
+        ptsd = _clip_inf(pts, infinity_val)
+        if len(ptsd):
+            ax.scatter(ptsd[:, 0], ptsd[:, 1], alpha=0.7, s=30, c=color)
             ax.plot([0, infinity_val], [0, infinity_val], 'k--', alpha=0.3)
         ax.set_xlabel('Birth (FS distance)')
         ax.set_ylabel('Death (FS distance)')
-        ax.set_title(f'{name} Persistence Diagram\n({len(pts)} features)')
+        ax.set_title(f'{name} Persistence Diagram ({len(pts)} features)')
         ax.set_xlim([0, infinity_val])
         ax.set_ylim([0, infinity_val * 1.05])
         ax.grid(True, linestyle='--', alpha=0.6)
-
-    ax1 = plt.subplot(2, 4, 1)
-    diag_ax(ax1, H0d, h0_color, 'H0')
-    ax2 = plt.subplot(2, 4, 2)
-    diag_ax(ax2, H1d, h1_color, 'H1')
-
-    ax3 = plt.subplot(2, 4, 3)
-    if len(H0):
-        ax3.scatter(H0d[:, 0], H0d[:, 1], alpha=0.7, s=30, c=h0_color, label='H0')
-    if len(H1):
-        ax3.scatter(H1d[:, 0], H1d[:, 1], alpha=0.7, s=30, c=h1_color, label='H1')
-    ax3.plot([0, infinity_val], [0, infinity_val], 'k--', alpha=0.3)
-    ax3.set_xlim([0, infinity_val])
-    ax3.set_ylim([0, infinity_val * 1.05])
-    ax3.set_xlabel('Birth')
-    ax3.set_ylabel('Death')
-    ax3.set_title('Combined Persistence Diagram')
-    ax3.legend()
-    ax3.grid(True, linestyle='--', alpha=0.6)
-
-    ax4 = plt.subplot(2, 4, 4)
-    all_p, labels, cols = [], [], []
-    if len(H0f):
-        all_p.append(H0f[:, 1] - H0f[:, 0])
-        labels.append('H0')
-        cols.append(h0_color)
-    if len(H1f):
-        all_p.append(H1f[:, 1] - H1f[:, 0])
-        labels.append('H1')
-        cols.append(h1_color)
-    if all_p:
-        ax4.hist(all_p, bins=30, label=labels, color=cols, alpha=0.7)
-    ax4.set_xlabel('Persistence')
-    ax4.set_ylabel('Count')
-    ax4.set_title('Persistence Distribution')
-    if all_p:
-        ax4.legend()
-    ax4.grid(True, linestyle='--', alpha=0.6)
 
     def plot_barcode(ax, pts, color, title):
         if len(pts) == 0:
@@ -371,16 +337,8 @@ def plot_one_L(H0, H1, infinity_val, n_sample, L, output_file):
         ax.set_title(title)
         ax.grid(True, linestyle='--', alpha=0.6, axis='x')
 
-    ax5 = plt.subplot(2, 4, 5)
-    plot_barcode(ax5, H0, h0_color, f'H0 Barcode (top {min(50, len(H0))})')
-    ax6 = plt.subplot(2, 4, 6)
-    plot_barcode(ax6, H1, h1_color, f'H1 Barcode (top {min(50, len(H1))})')
-
-    ax7 = plt.subplot(2, 4, 7)
-    ax8 = plt.subplot(2, 4, 8)
-    t_grid = np.linspace(0, infinity_val, 100)
-    for ax, dim, color, pts in zip([ax7, ax8], [0, 1],
-                                   [h0_color, h1_color], [H0, H1]):
+    def plot_betti(ax, dim, pts, color):
+        t_grid = np.linspace(0, infinity_val, 100)
         if len(pts):
             bv = [betti_at(pts, t) for t in t_grid]
             ax.plot(t_grid, bv, color=color, linewidth=2)
@@ -390,6 +348,14 @@ def plot_one_L(H0, H1, infinity_val, n_sample, L, output_file):
         ax.set_ylabel(f'beta_{dim}')
         ax.set_title(f'H{dim} Betti Curve')
         ax.grid(True, linestyle='--', alpha=0.6)
+
+    for row, (name, pts, color) in enumerate(dims):
+        ax_diag = plt.subplot(3, 3, row * 3 + 1)
+        plot_diagram(ax_diag, pts, color, name)
+        ax_bar = plt.subplot(3, 3, row * 3 + 2)
+        plot_barcode(ax_bar, pts, color, f'{name} Barcode (top {min(50, len(pts))})')
+        ax_betti = plt.subplot(3, 3, row * 3 + 3)
+        plot_betti(ax_betti, row, pts, color)
 
     fig.suptitle(
         f'Witness Complex Persistence (FS metric)  |  '
@@ -402,60 +368,47 @@ def plot_one_L(H0, H1, infinity_val, n_sample, L, output_file):
 
 
 def plot_comparison(per_L, infinity_val, n_sample, output_file):
-    """Across-L comparison: H0 diagrams (row 1), H1 diagrams (row 2),
-    overlaid Betti curves (row 3)."""
+    """Across-L comparison: rows = H0/H1/H2 diagrams per L, bottom row =
+    overlaid Betti curves (one panel per dim)."""
     Ls = sorted(per_L.keys())
     n_L = len(Ls)
-    fig = plt.figure(figsize=(4 * n_L, 12))
+    n_rows = 4  # H0, H1, H2 diagrams + Betti curve overlay
+    fig = plt.figure(figsize=(4 * n_L, 4 * n_rows))
     cmap_L = plt.cm.viridis(np.linspace(0.1, 0.9, n_L))
 
-    # Row 1: H0 diagrams
-    for ci, L in enumerate(Ls):
-        H0, _ = per_L[L]
-        ax = plt.subplot(3, n_L, ci + 1)
-        H0d = _clip_inf(H0, infinity_val)
-        if len(H0d):
-            ax.scatter(H0d[:, 0], H0d[:, 1], s=15, alpha=0.7, c='steelblue')
-            ax.plot([0, infinity_val], [0, infinity_val], 'k--', alpha=0.3)
-        ax.set_title(f'H0  (L={L}, n_feat={len(H0)})')
-        ax.set_xlim([0, infinity_val])
-        ax.set_ylim([0, infinity_val * 1.05])
-        ax.set_xlabel('Birth')
-        ax.set_ylabel('Death')
-        ax.grid(True, linestyle='--', alpha=0.6)
+    dim_specs = [(0, 'H0', 'steelblue'),
+                 (1, 'H1', 'darkorange'),
+                 (2, 'H2', 'forestgreen')]
 
-    # Row 2: H1 diagrams
-    for ci, L in enumerate(Ls):
-        _, H1 = per_L[L]
-        ax = plt.subplot(3, n_L, n_L + ci + 1)
-        H1d = _clip_inf(H1, infinity_val)
-        if len(H1d):
-            ax.scatter(H1d[:, 0], H1d[:, 1], s=15, alpha=0.7, c='darkorange')
-            ax.plot([0, infinity_val], [0, infinity_val], 'k--', alpha=0.3)
-        ax.set_title(f'H1  (L={L}, n_feat={len(H1)})')
-        ax.set_xlim([0, infinity_val])
-        ax.set_ylim([0, infinity_val * 1.05])
-        ax.set_xlabel('Birth')
-        ax.set_ylabel('Death')
-        ax.grid(True, linestyle='--', alpha=0.6)
+    # Rows 0..2: per-L diagrams for H0, H1, H2
+    for row, (dim, name, color) in enumerate(dim_specs):
+        for ci, L in enumerate(Ls):
+            pts = per_L[L][dim]
+            ax = plt.subplot(n_rows, n_L, row * n_L + ci + 1)
+            ptsd = _clip_inf(pts, infinity_val)
+            if len(ptsd):
+                ax.scatter(ptsd[:, 0], ptsd[:, 1], s=15, alpha=0.7, c=color)
+                ax.plot([0, infinity_val], [0, infinity_val], 'k--', alpha=0.3)
+            ax.set_title(f'{name}  (L={L}, n_feat={len(pts)})')
+            ax.set_xlim([0, infinity_val])
+            ax.set_ylim([0, infinity_val * 1.05])
+            ax.set_xlabel('Birth')
+            ax.set_ylabel('Death')
+            ax.grid(True, linestyle='--', alpha=0.6)
 
-    # Row 3: overlaid Betti curves, all L on one panel per dim
-    ax_b0 = plt.subplot(3, 2, 5)
-    ax_b1 = plt.subplot(3, 2, 6)
+    # Row 3: overlaid Betti curves across L, one panel per dim
     t_grid = np.linspace(0, infinity_val, 200)
-    for L, color in zip(Ls, cmap_L):
-        H0, H1 = per_L[L]
-        if len(H0):
-            ax_b0.plot(t_grid, [betti_at(H0, t) for t in t_grid],
-                       color=color, label=f'L={L}', linewidth=2)
-        if len(H1):
-            ax_b1.plot(t_grid, [betti_at(H1, t) for t in t_grid],
-                       color=color, label=f'L={L}', linewidth=2)
-    for ax, dim, name in [(ax_b0, 0, 'H0'), (ax_b1, 1, 'H1')]:
+    for di, (dim, name, _) in enumerate(dim_specs):
+        ax = plt.subplot(n_rows, 3, 3 * 3 + di + 1)
+        for L, lc in zip(Ls, cmap_L):
+            pts = per_L[L][dim]
+            if len(pts):
+                ax.plot(t_grid, [betti_at(pts, t) for t in t_grid],
+                        color=lc, label=f'L={L}', linewidth=2)
         ax.set_xlim([0, infinity_val])
         ax.set_xlabel('Filtration Value')
         ax.set_ylabel(f'beta_{dim}')
-        ax.set_title(f'{name} Betti Curves across L (stability check)')
+        ax.set_title(f'{name} Betti Curves across L')
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.6)
 
@@ -463,7 +416,7 @@ def plot_comparison(per_L, infinity_val, n_sample, output_file):
         f'Witness Landmark Sweep  |  N={n_sample}, FS metric',
         fontsize=14, fontweight='bold',
     )
-    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  saved comparison: {output_file}")
@@ -499,6 +452,12 @@ def parse_args():
     p.add_argument('--top_k_landmarks', type=int, default=50,
                    help='Keep top-K nearest landmarks per witness in the '
                         'gudhi table (>= limit_dimension+2; 50 is generous).')
+    p.add_argument('--max_alpha', type=float, default=0.8,
+                   help='Filtration cap in raw FS distance units. Simplices '
+                        'with filtration value above this are not built. '
+                        'Default 0.8 covers H1/H2 features of interest while '
+                        'avoiding the cost of building up to the diameter '
+                        '(pi/2 ~= 1.5708). Diagrams display on [0, max_alpha].')
     p.add_argument('--out_prefix', default='persistent_homology_witness_h0h1')
     p.add_argument('--cache_landmarks', default='witness_landmarks_cache.pkl')
     p.add_argument('--cache_diagrams', default='witness_diagrams_cache.pkl')
@@ -578,33 +537,35 @@ def main():
                 }, f)
             print(f"  cached: {args.cache_landmarks}")
 
-    infinity_val = float(np.max(dist_table))
-    max_alpha_sq = infinity_val ** 2
-    print(f"\nMax FS distance in landmark/witness pairs: {infinity_val:.4f}")
-    print(f"max_alpha_square (filtration cap):         {max_alpha_sq:.4f}")
+    data_diameter = float(np.max(dist_table))
+    infinity_val = float(args.max_alpha)
+    max_alpha_sq = args.max_alpha ** 2
+    print(f"\nData diameter (max FS distance): {data_diameter:.4f}")
+    print(f"Filtration cap (--max_alpha):    {infinity_val:.4f}")
+    print(f"max_alpha_square:                {max_alpha_sq:.4f}")
     print(f"(reference: FS diameter pi/2 = {np.pi / 2:.4f})")
 
-    # ---- witness diagrams per L
+    # ---- witness diagrams per L (H0, H1, H2 via limit_dimension=3)
     per_L = {}
     for L in L_values:
         print(f"\n=== WITNESS COMPLEX (L={L}) ===")
         t0 = time.time()
-        H0, H1 = build_witness_diagram(
+        H0, H1, H2 = build_witness_diagram(
             dist_table[:L], max_alpha_sq,
-            limit_dimension=2, top_k_landmarks=args.top_k_landmarks,
+            limit_dimension=3, top_k_landmarks=args.top_k_landmarks,
         )
         print(f"  built in {time.time() - t0:.1f}s; "
-              f"H0={len(H0)}, H1={len(H1)}")
+              f"H0={len(H0)}, H1={len(H1)}, H2={len(H2)}")
 
         # Match the VR script: ensure the essential H0 is present.
         if len(H0) and not np.any(np.isinf(H0[:, 1])):
             H0 = np.vstack([H0, [0.0, np.inf]])
             print("  injected essential H0 (birth=0, death=inf)")
-        per_L[L] = (H0, H1)
+        per_L[L] = (H0, H1, H2)
 
-        analyze(H0, H1, infinity_val, label=f'(L={L})')
+        analyze(H0, H1, H2, infinity_val, label=f'(L={L})')
         png = f'{args.out_prefix}_L{L}.png'
-        plot_one_L(H0, H1, infinity_val, n_sample, L, png)
+        plot_one_L(H0, H1, H2, infinity_val, n_sample, L, png)
 
     # ---- cache diagrams
     if not args.no_cache:
@@ -612,6 +573,8 @@ def main():
             pickle.dump({
                 'per_L': per_L,
                 'infinity_val': infinity_val,
+                'data_diameter': data_diameter,
+                'max_alpha': args.max_alpha,
                 'n_sample': n_sample,
                 'L_values': L_values,
                 'filepath': args.filepath,
