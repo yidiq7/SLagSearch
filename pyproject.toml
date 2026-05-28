@@ -32,6 +32,17 @@ persistent-homology = [
     "gudhi>=3.9",
 ]
 
+# 3D / topology-aware visualization (plot_3D.py). UMAP for 3D embedding,
+# kmapper for Mapper graphs. networkx + scikit-learn are kmapper deps that
+# we also use directly for the static PNG and DBSCAN clustering.
+# Install with:   uv sync --extra viz-3d
+viz-3d = [
+    "umap-learn>=0.5",
+    "kmapper>=2.0",
+    "networkx>=3.0",
+    "scikit-learn>=1.3",
+]
+
 [tool.uv]
 # Keep transitive resolution stable across machines.
 managed = true
