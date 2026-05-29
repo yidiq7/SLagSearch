@@ -295,7 +295,7 @@ def _clip_inf(p, infinity_val):
 
 
 def plot_one_L(H0, H1, H2, infinity_val, n_sample, L, output_file):
-    """Per-L PH figure: 3 rows (H0, H1, H2) x 3 cols (diagram, barcode, Betti).
+    """Per-L PH figure: 3 cols (H0, H1, H2) x 3 rows (diagram, barcode, Betti).
     """
     print(f"  plotting L={L} -> {output_file}")
     dims = [('H0', H0, 'skyblue'),
@@ -349,13 +349,14 @@ def plot_one_L(H0, H1, H2, infinity_val, n_sample, L, output_file):
         ax.set_title(f'H{dim} Betti Curve')
         ax.grid(True, linestyle='--', alpha=0.6)
 
-    for row, (name, pts, color) in enumerate(dims):
-        ax_diag = plt.subplot(3, 3, row * 3 + 1)
+    # Columns = homology dim (H0, H1, H2); rows = plot type (diagram, barcode, Betti).
+    for col, (name, pts, color) in enumerate(dims):
+        ax_diag = plt.subplot(3, 3, col + 1)
         plot_diagram(ax_diag, pts, color, name)
-        ax_bar = plt.subplot(3, 3, row * 3 + 2)
+        ax_bar = plt.subplot(3, 3, 3 + col + 1)
         plot_barcode(ax_bar, pts, color, f'{name} Barcode (top {min(50, len(pts))})')
-        ax_betti = plt.subplot(3, 3, row * 3 + 3)
-        plot_betti(ax_betti, row, pts, color)
+        ax_betti = plt.subplot(3, 3, 6 + col + 1)
+        plot_betti(ax_betti, col, pts, color)
 
     fig.suptitle(
         f'Witness Complex Persistence (FS metric)  |  '
