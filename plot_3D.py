@@ -6,21 +6,31 @@ Three methods, all colored by affine patch index to match the 2D plots:
            interesting triples (|z_0|, |z_4|, |z_1|; (Re z_2, Re z_3, Re z_0);
            etc.). Always renders three orbit views per triple.
 
-  umap   : UMAP embedding of the (N, 10) real point cloud into 3D. Preserves
-           local neighborhoods + component structure, so a real
-           two-piece-with-neck topology should show up as two clusters
-           joined by a thin bridge. Requires `umap-learn`.
+  umap   : UMAP embedding into 3D. Preserves local neighborhoods + component
+           structure. Requires `umap-learn`.
 
   mapper : Topological-data-analysis Mapper graph: clusters the point
            cloud along level sets of a filter function and draws the
            resulting simplicial 1-complex. Loops in the graph correspond
-           to nontrivial H_1 generators (we expect 5 of them). Requires
-           `kmapper` and `networkx`. Writes both an interactive HTML
-           (kepler-mapper default) and a static PNG.
+           to nontrivial H_1 generators. Requires `kmapper` and `networkx`.
+           Writes both an interactive HTML (kepler-mapper default) and a
+           static PNG.
+
+For umap and mapper, the distance metric on min_set is selectable via
+--metric:
+  - 'euclidean': raw 10D real coords. Patch-dependent (a point's 10D
+    representation depends on which affine patch normalizes it), so two
+    physically-close points in different patches can look far apart.
+  - 'fs' (default): map each point z to its rank-1 projector P_z =
+    z conj(z)^T / ||z||^2 flattened to 25 real DOF. Euclidean distance on
+    these features equals sqrt(2) * sin(d_FS) where d_FS is Fubini-Study
+    distance on CP^4 -- monotone with FS, patch-independent, exact (not
+    a small-distance approximation).
 
 Usage:
     python plot_3D.py <folder> [--methods coord umap mapper]
-                              [--max_points N] [--filter coord-pc|first-coord|...]
+                              [--metric fs|euclidean]
+                              [--sweep] [--max_points N]
 """
 import argparse
 import os
@@ -66,8 +76,59 @@ def _auto_alpha(n: int) -> float:
 
 
 def real_form(z: np.ndarray) -> np.ndarray:
-    """(N, 5) complex -> (N, 10) real (concat Re and Im)."""
+    """(N, 5) complex -> (N, 10) real (concat Re and Im).
+
+    Patch-dependent: two points that project to the same point in CP^4 can
+    have very different 10-vectors here. Use to_features(..., metric='fs')
+    instead when feeding distance-sensitive tools like UMAP / Mapper.
+    """
     return np.concatenate([z.real, z.imag], axis=1)
+
+
+def fs_feature_embedding(z: np.ndarray) -> np.ndarray:
+    """(N, 5) complex -> (N, 25) real such that Euclidean distance on the
+    features equals the Frobenius distance between rank-1 projector matrices
+    P_z = z conj(z)^T / ||z||^2. Concretely
+
+        ||P_z - P_w||_F^2  =  2 - 2 |<z, w>|^2 / (||z||^2 ||w||^2)
+                           =  2 sin^2(d_FS)
+
+    so Euclidean distance on these features equals sqrt(2) * sin(d_FS),
+    monotone in Fubini-Study distance on CP^4 over [0, pi/2]. The mapping
+    is intrinsically projective-invariant -- the projector P_z is unchanged
+    by z -> lambda*z for any nonzero lambda, so no per-point phase fix or
+    norm fix is needed. Patch labels become irrelevant.
+
+    Layout of the 25 real features:
+      [0:5]   diag entries P_ii = |z_i|^2 / ||z||^2 (5 reals)
+      [5:15]  sqrt(2) * Re(P_ij) for i < j (10 reals)
+      [15:25] sqrt(2) * Im(P_ij) for i < j (10 reals)
+    The sqrt(2) weighting on off-diagonals is so that Euclidean distance on
+    the 25-vector recovers the full Frobenius norm of the 5x5 Hermitian
+    (which counts each off-diagonal twice via Hermiticity).
+    """
+    norm_sq = (z.conj() * z).sum(axis=1).real  # (N,)
+    z_n = z / np.sqrt(norm_sq)[:, None]
+    P = z_n[:, :, None] * z_n[:, None, :].conj()  # (N, 5, 5) Hermitian
+    iu1 = np.triu_indices(5, k=1)
+    diag = np.diagonal(P, axis1=1, axis2=2).real  # (N, 5)
+    off_re = P[:, iu1[0], iu1[1]].real * np.sqrt(2.0)  # (N, 10)
+    off_im = P[:, iu1[0], iu1[1]].imag * np.sqrt(2.0)  # (N, 10)
+    return np.concatenate([diag, off_re, off_im], axis=1).astype(np.float64)
+
+
+def to_features(z: np.ndarray, metric: str) -> np.ndarray:
+    """Dispatch: build the feature matrix used by UMAP / Mapper.
+
+    metric='euclidean': raw 10D real form (patch-dependent).
+    metric='fs':        25D projector embedding (projective-invariant,
+                        Euclidean = sqrt(2)*sin(d_FS), monotone with FS).
+    """
+    if metric == "euclidean":
+        return real_form(z)
+    if metric == "fs":
+        return fs_feature_embedding(z)
+    raise ValueError(f"unknown metric: {metric!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +215,8 @@ def _run_umap(X: np.ndarray, n_neighbors: int, min_dist: float,
 
 def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                  n_neighbors: int, min_dist: float, max_points: int,
-                 seed: int, sweep: bool = False) -> None:
+                 seed: int, metric: str = "fs",
+                 sweep: bool = False) -> None:
     try:
         import umap  # noqa: F401
     except ImportError:
@@ -163,7 +225,8 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         return
 
     z_sub, patches_sub = subsample(z, patches, max_points, seed=seed)
-    X = real_form(z_sub)
+    X = to_features(z_sub, metric)
+    print(f"  feature dim: {X.shape[1]} ({metric} metric)")
     angles = [(20, 45), (20, 135), (60, 30)]
 
     if not sweep:
@@ -180,10 +243,10 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
             ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2"); ax.set_zlabel("UMAP 3")
             ax.view_init(elev=elev, azim=azim)
             ax.set_title(f"view {k + 1}", fontsize=9)
-        fig.suptitle(f"UMAP 3D (n_neighbors={n_neighbors}, "
+        fig.suptitle(f"UMAP 3D (metric={metric}, n_neighbors={n_neighbors}, "
                      f"min_dist={min_dist})", fontsize=13)
         fig.tight_layout(rect=(0, 0, 1, 0.95))
-        out_path = out_dir / f"umap3d_nn{n_neighbors}_md{min_dist}.png"
+        out_path = out_dir / f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}.png"
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
         print(f"  wrote {out_path}")
@@ -205,9 +268,10 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
             ax.view_init(elev=20, azim=45)
             ax.set_title(f"nn={nn_v}, md={md_v}", fontsize=10)
             ax.tick_params(labelsize=6)
-    fig.suptitle(f"UMAP 3D sweep  (N={X.shape[0]})", fontsize=14)
+    fig.suptitle(f"UMAP 3D sweep  (metric={metric}, N={X.shape[0]})",
+                 fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    out_path = out_dir / "umap3d_sweep.png"
+    out_path = out_dir / f"umap3d_{metric}_sweep.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"  wrote {out_path}")
@@ -297,7 +361,7 @@ def _render_mapper_png(graph, patches_sub, ax, title, seed):
 def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                 filter_spec: str, n_cubes: int, perc_overlap: float,
                 eps_percentile: float, max_points: int, seed: int,
-                sweep: bool = False) -> None:
+                metric: str = "fs", sweep: bool = False) -> None:
     try:
         import kmapper as km  # noqa: F401
         import networkx as nx  # noqa: F401
@@ -308,7 +372,8 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         return
 
     z_sub, patches_sub = subsample(z, patches, max_points, seed=seed)
-    X = real_form(z_sub)
+    X = to_features(z_sub, metric)
+    print(f"  feature dim: {X.shape[1]} ({metric} metric)")
 
     if not sweep:
         mapper, graph, lens_label, eps, n_nodes, n_edges = _build_mapper_graph(
@@ -320,9 +385,9 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
               f"overlap={perc_overlap}, eps={eps:.4f} "
               f"@p{eps_percentile})")
 
-        html_path = out_dir / f"mapper_{filter_spec}.html"
+        html_path = out_dir / f"mapper_{metric}_{filter_spec}.html"
         mapper.visualize(graph, path_html=str(html_path),
-                         title=f"Mapper on min_set ({lens_label})",
+                         title=f"Mapper ({metric} metric, {lens_label})",
                          color_values=patches_sub.astype(float),
                          color_function_name="patch index")
         print(f"  wrote {html_path}")
@@ -330,12 +395,12 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         fig, ax = plt.subplots(figsize=(10, 10))
         _render_mapper_png(
             graph, patches_sub, ax,
-            f"Mapper  (filter={lens_label}, {n_nodes} nodes, "
-            f"{n_edges} edges)\n"
+            f"Mapper  (metric={metric}, filter={lens_label}, "
+            f"{n_nodes} nodes, {n_edges} edges)\n"
             f"n_cubes={n_cubes}, overlap={perc_overlap}, eps={eps:.4f}",
             seed,
         )
-        png_path = out_dir / f"mapper_{filter_spec}.png"
+        png_path = out_dir / f"mapper_{metric}_{filter_spec}.png"
         fig.savefig(png_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         print(f"  wrote {png_path}")
@@ -359,10 +424,10 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                 f"{n_nodes} nodes, {n_edges} edges",
                 seed,
             )
-    fig.suptitle(f"Mapper sweep  (filter={filter_spec}, "
+    fig.suptitle(f"Mapper sweep  (metric={metric}, filter={filter_spec}, "
                  f"eps@p{eps_percentile}, N={X.shape[0]})", fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    out_path = out_dir / f"mapper_sweep_{filter_spec}.png"
+    out_path = out_dir / f"mapper_sweep_{metric}_{filter_spec}.png"
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {out_path}")
@@ -392,6 +457,15 @@ def main() -> None:
                         help="For UMAP / Mapper: run a 3x3 hyperparameter "
                              "sweep instead of a single setting. coord "
                              "method is unaffected.")
+    parser.add_argument("--metric", choices=["euclidean", "fs"], default="fs",
+                        help="Distance metric for UMAP / Mapper. "
+                             "'euclidean' uses raw 10D real coords "
+                             "(patch-dependent). 'fs' (default) maps each "
+                             "point to its rank-1 projector z conj(z)^T / "
+                             "||z||^2 flattened to 25 real DOF, giving "
+                             "Euclidean distance = sqrt(2) * sin(d_FS), "
+                             "monotone with Fubini-Study distance on CP^4. "
+                             "Projective-invariant.")
 
     # UMAP knobs (used only if --sweep is not set).
     parser.add_argument("--umap_n_neighbors", type=int, default=100)
@@ -448,6 +522,7 @@ def main() -> None:
                      min_dist=args.umap_min_dist,
                      max_points=args.max_points,
                      seed=args.seed,
+                     metric=args.metric,
                      sweep=args.sweep)
 
     if "mapper" in methods:
@@ -459,6 +534,7 @@ def main() -> None:
                     eps_percentile=args.mapper_eps_percentile,
                     max_points=args.max_points,
                     seed=args.seed,
+                    metric=args.metric,
                     sweep=args.sweep)
 
 
