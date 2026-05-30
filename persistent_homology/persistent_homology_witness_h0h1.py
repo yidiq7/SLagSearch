@@ -476,6 +476,10 @@ def parse_args():
                         'face of sigma is witnessed by the same w, which '
                         'prunes the late-alpha noise band by 1-2 orders of '
                         'magnitude. "weak" is the de Silva-Carlsson default.')
+    p.add_argument('--out_dir', default=None,
+                   help='Output directory for PNGs and cache files. '
+                        'Defaults to the directory containing --filepath '
+                        '(e.g. gd_runs/plots_slag_<job>/ alongside min_set.pkl).')
     p.add_argument('--out_prefix', default='persistent_homology_witness_h0h1')
     p.add_argument('--cache_landmarks', default='witness_landmarks_cache.pkl')
     p.add_argument('--cache_diagrams', default='witness_diagrams_cache.pkl')
@@ -490,6 +494,14 @@ def main():
     L_values = sorted({int(x) for x in args.landmarks.split(',') if x.strip()})
     L_max = max(L_values)
     print(f"Sweep: L values = {L_values}, L_max = {L_max}")
+
+    # Resolve output directory (defaults to the min_set's folder, e.g.
+    # gd_runs/plots_slag_<job>/). All PNGs and caches land here.
+    out_dir = args.out_dir or (os.path.dirname(os.path.abspath(args.filepath)) or '.')
+    os.makedirs(out_dir, exist_ok=True)
+    cache_landmarks_path = os.path.join(out_dir, args.cache_landmarks)
+    cache_diagrams_path = os.path.join(out_dir, args.cache_diagrams)
+    print(f"Output directory: {out_dir}")
 
     # ---- load + filter
     Z = load_points(args.filepath, args.subsamp, args.seed)
@@ -523,8 +535,8 @@ def main():
         'newton_threshold': args.newton_threshold,
     }
     use_lm_cache = False
-    if not args.no_cache and os.path.exists(args.cache_landmarks):
-        with open(args.cache_landmarks, 'rb') as f:
+    if not args.no_cache and os.path.exists(cache_landmarks_path):
+        with open(cache_landmarks_path, 'rb') as f:
             lm_data = pickle.load(f)
         if (lm_data.get('filepath') == args.filepath
                 and lm_data.get('subsamp') == args.subsamp
@@ -533,12 +545,12 @@ def main():
                 and lm_data.get('n_sample') == n_sample
                 and lm_data.get('L_max', 0) >= L_max):
             print(f"\nLoading cached landmarks/dist_table from "
-                  f"'{args.cache_landmarks}'")
+                  f"'{cache_landmarks_path}'")
             lm_idx = lm_data['lm_idx'][:L_max]
             dist_table = lm_data['dist_table'][:L_max]
             use_lm_cache = True
         else:
-            print(f"\nCache '{args.cache_landmarks}' params mismatch; "
+            print(f"\nCache '{cache_landmarks_path}' params mismatch; "
                   f"recomputing landmarks.")
     if not use_lm_cache:
         print(f"\n=== MAX-MIN LANDMARK SELECTION (L_max={L_max}) ===")
@@ -546,14 +558,14 @@ def main():
         lm_idx, dist_table = maxmin_landmarks(Zn, L_max, args.seed)
         print(f"  done in {time.time() - t0:.1f}s on device {jax.devices()[0]}")
         if not args.no_cache:
-            with open(args.cache_landmarks, 'wb') as f:
+            with open(cache_landmarks_path, 'wb') as f:
                 pickle.dump({
                     'filepath': args.filepath, 'subsamp': args.subsamp,
                     'seed': args.seed, 'filter_sig': filter_sig,
                     'n_sample': n_sample, 'L_max': L_max,
                     'lm_idx': lm_idx, 'dist_table': dist_table,
                 }, f)
-            print(f"  cached: {args.cache_landmarks}")
+            print(f"  cached: {cache_landmarks_path}")
 
     data_diameter = float(np.max(dist_table))
     infinity_val = float(args.max_alpha)
@@ -583,12 +595,12 @@ def main():
         per_L[L] = (H0, H1, H2)
 
         analyze(H0, H1, H2, infinity_val, label=f'(L={L})')
-        png = f'{args.out_prefix}_L{L}.png'
+        png = os.path.join(out_dir, f'{args.out_prefix}_L{L}.png')
         plot_one_L(H0, H1, H2, infinity_val, n_sample, L, png)
 
     # ---- cache diagrams
     if not args.no_cache:
-        with open(args.cache_diagrams, 'wb') as f:
+        with open(cache_diagrams_path, 'wb') as f:
             pickle.dump({
                 'per_L': per_L,
                 'infinity_val': infinity_val,
@@ -602,11 +614,11 @@ def main():
                 'seed': args.seed,
                 'filter_sig': filter_sig,
             }, f)
-        print(f"\nCached diagrams: {args.cache_diagrams}")
+        print(f"\nCached diagrams: {cache_diagrams_path}")
 
     # ---- comparison plot
     plot_comparison(per_L, infinity_val, n_sample,
-                    f'{args.out_prefix}_sweep.png')
+                    os.path.join(out_dir, f'{args.out_prefix}_sweep.png'))
 
     print(f"\n=== DONE in {time.time() - st:.1f}s ===")
 
