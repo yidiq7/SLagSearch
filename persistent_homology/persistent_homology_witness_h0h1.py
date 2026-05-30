@@ -197,7 +197,8 @@ def maxmin_landmarks(Zn_np, L_max, seed):
 # ------------------------------------------------------------- witness complex
 
 def build_witness_diagram(dist_table_slice, max_alpha_square,
-                          limit_dimension=3, top_k_landmarks=50):
+                          limit_dimension=3, top_k_landmarks=50,
+                          witness_type='weak'):
     """gudhi WitnessComplex on a precomputed landmark-to-witness distance table.
 
     Args:
@@ -207,6 +208,12 @@ def build_witness_diagram(dist_table_slice, max_alpha_square,
         top_k_landmarks: keep only the top-K nearest landmarks per witness
                          when building the table (saves memory; the witness
                          complex only needs ~limit_dimension+2 nearest).
+        witness_type: 'weak' (gudhi.WitnessComplex) or 'strong'
+                      (gudhi.StrongWitnessComplex). Strong applies a
+                      stricter witnessing condition: every face of sigma
+                      must be witnessed by the same w. Cuts the late-alpha
+                      noise band by ~1-2 orders of magnitude; same input
+                      format as weak.
 
     Returns:
         (H0, H1, H2): each (n_features, 2) array of (birth, death) in *raw* FS
@@ -228,7 +235,12 @@ def build_witness_diagram(dist_table_slice, max_alpha_square,
         d_sq = dt[j, order] ** 2
         nearest.append([(int(order[k]), float(d_sq[k])) for k in range(K)])
 
-    wc = gudhi.WitnessComplex(nearest_landmark_table=nearest)
+    if witness_type == 'strong':
+        wc = gudhi.StrongWitnessComplex(nearest_landmark_table=nearest)
+    elif witness_type == 'weak':
+        wc = gudhi.WitnessComplex(nearest_landmark_table=nearest)
+    else:
+        raise ValueError(f"witness_type must be 'weak' or 'strong', got {witness_type!r}")
     st = wc.create_simplex_tree(
         max_alpha_square=max_alpha_square,
         limit_dimension=limit_dimension,
@@ -459,6 +471,11 @@ def parse_args():
                         'Default 0.8 covers H1/H2 features of interest while '
                         'avoiding the cost of building up to the diameter '
                         '(pi/2 ~= 1.5708). Diagrams display on [0, max_alpha].')
+    p.add_argument('--witness_type', choices=['weak', 'strong'], default='weak',
+                   help='gudhi witness variant. "strong" enforces that every '
+                        'face of sigma is witnessed by the same w, which '
+                        'prunes the late-alpha noise band by 1-2 orders of '
+                        'magnitude. "weak" is the de Silva-Carlsson default.')
     p.add_argument('--out_prefix', default='persistent_homology_witness_h0h1')
     p.add_argument('--cache_landmarks', default='witness_landmarks_cache.pkl')
     p.add_argument('--cache_diagrams', default='witness_diagrams_cache.pkl')
@@ -554,6 +571,7 @@ def main():
         H0, H1, H2 = build_witness_diagram(
             dist_table[:L], max_alpha_sq,
             limit_dimension=3, top_k_landmarks=args.top_k_landmarks,
+            witness_type=args.witness_type,
         )
         print(f"  built in {time.time() - t0:.1f}s; "
               f"H0={len(H0)}, H1={len(H1)}, H2={len(H2)}")
@@ -576,6 +594,7 @@ def main():
                 'infinity_val': infinity_val,
                 'data_diameter': data_diameter,
                 'max_alpha': args.max_alpha,
+                'witness_type': args.witness_type,
                 'n_sample': n_sample,
                 'L_values': L_values,
                 'filepath': args.filepath,
