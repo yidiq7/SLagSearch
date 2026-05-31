@@ -529,27 +529,35 @@ def main():
     }
 
     # ---- try diagrams cache first (fast path: skip filter + landmarks + gudhi)
+    requested_sig = {
+        'filepath': args.filepath,
+        'subsamp': args.subsamp,
+        'seed': args.seed,
+        'filter_sig': filter_sig,
+        'L_values': L_values,
+        'max_alpha': args.max_alpha,
+        'witness_type': args.witness_type,
+        'top_k_landmarks': args.top_k_landmarks,
+    }
     per_L = None
     infinity_val = None
     n_sample = None
     if not args.no_cache and os.path.exists(cache_diagrams_path):
         with open(cache_diagrams_path, 'rb') as f:
             d_data = pickle.load(f)
-        if (d_data.get('filepath') == args.filepath
-                and d_data.get('subsamp') == args.subsamp
-                and d_data.get('seed') == args.seed
-                and d_data.get('filter_sig') == filter_sig
-                and d_data.get('L_values') == L_values
-                and d_data.get('max_alpha') == args.max_alpha
-                and d_data.get('witness_type') == args.witness_type
-                and d_data.get('top_k_landmarks') == args.top_k_landmarks):
+        diffs = [
+            (k, d_data.get(k), v) for k, v in requested_sig.items()
+            if d_data.get(k) != v
+        ]
+        if not diffs:
             print(f"\nLoading cached diagrams from '{cache_diagrams_path}'")
             per_L = d_data['per_L']
             infinity_val = d_data['infinity_val']
             n_sample = d_data['n_sample']
         else:
-            print(f"\nDiagrams cache '{cache_diagrams_path}' params mismatch; "
-                  f"running full pipeline.")
+            print(f"\nDiagrams cache '{cache_diagrams_path}' mismatch on:")
+            for k, cached_v, current_v in diffs:
+                print(f"  {k}: cached={cached_v!r}  current={current_v!r}")
 
     if per_L is None and args.plots_only:
         raise SystemExit(
