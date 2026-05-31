@@ -16,6 +16,13 @@ Three methods, all colored by affine patch index to match the 2D plots:
            Writes both an interactive HTML (kepler-mapper default) and a
            static PNG.
 
+  intrinsic_dim
+         : Three intrinsic-dimension estimators in one diagnostic PNG:
+           TwoNN (Facco 2017), Levina-Bickel MLE histograms over k in
+           {10, 20, 50}, and Schweinhart-style PH-dim (scaling of total
+           H_0 persistence = MST edge-weight sum vs sub-sample size N).
+           For a sLag in a CY 3-fold the expected answer is d = 3.
+
 For umap and mapper, the distance metric on min_set is selectable via
 --metric:
   - 'euclidean': raw 10D real coords. Patch-dependent (a point's 10D
@@ -434,6 +441,222 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
 
 
 # ---------------------------------------------------------------------------
+#  Method 4: intrinsic dimension estimators
+# ---------------------------------------------------------------------------
+def _twonn_estimate(X: np.ndarray, n_jobs: int = -1
+                    ) -> tuple[float, np.ndarray, np.ndarray]:
+    """TwoNN (Facco et al. 2017). Returns (d_hat, log_mu, -log(1 - F)).
+
+    For each point, take 1st and 2nd NN distances r_1 < r_2; ratio
+    mu = r_2 / r_1 has CDF 1 - mu^{-d} under locally-uniform Poisson
+    sampling on a d-manifold. Linear fit slope through origin estimates d.
+    Fits only the F < 0.9 region (tail deviates from the model).
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    nn = NearestNeighbors(n_neighbors=3, n_jobs=n_jobs).fit(X)
+    dists, _ = nn.kneighbors(X)
+    r1 = dists[:, 1]
+    r2 = dists[:, 2]
+    # Drop degenerate points (duplicates) where r_1 == 0 and mu undefined.
+    mask = r1 > 0
+    mu = r2[mask] / r1[mask]
+    mu = mu[mu > 1.0 + 1e-12]
+    mu_sorted = np.sort(mu)
+    N = len(mu_sorted)
+    # Use (i - 0.5)/N to avoid F=1 at the top (log divergence).
+    F = (np.arange(1, N + 1) - 0.5) / N
+    log_mu = np.log(mu_sorted)
+    nlog_1mF = -np.log(1 - F)
+    # Linear fit through origin on the lower 90% of the empirical CDF.
+    fit_mask = F < 0.9
+    x = log_mu[fit_mask]
+    y = nlog_1mF[fit_mask]
+    d_hat = float((x * y).sum() / (x * x).sum())
+    return d_hat, log_mu, nlog_1mF
+
+
+def _mle_estimate(X: np.ndarray, k_values: tuple[int, ...] = (10, 20, 50),
+                  n_jobs: int = -1) -> dict[int, np.ndarray]:
+    """Levina-Bickel MLE with MacKay-Ghahramani (k-2) correction.
+
+    Per-point estimate
+       d_hat_k(x) = [ (1/(k-2)) * sum_{j=1..k-1} log(r_k / r_j) ]^{-1}
+
+    Returns dict {k: array of per-point d estimates}.
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    k_max = max(k_values)
+    nn = NearestNeighbors(n_neighbors=k_max + 1, n_jobs=n_jobs).fit(X)
+    dists, _ = nn.kneighbors(X)  # dists[:, 0] = self distance (0)
+
+    results: dict[int, np.ndarray] = {}
+    for k in k_values:
+        rk = dists[:, k]                # (N,) k-th NN distance
+        rj = dists[:, 1:k]              # (N, k-1) distances to 1..k-1 NN
+        mask = (rj > 0).all(axis=1) & (rk > 0)
+        log_ratio = np.log(rk[mask, None] / rj[mask])  # (N', k-1)
+        inv_d = log_ratio.sum(axis=1) / (k - 2)
+        d_per_point = 1.0 / inv_d
+        finite = np.isfinite(d_per_point) & (d_per_point > 0)
+        results[k] = d_per_point[finite]
+    return results
+
+
+def _phdim_estimate(X: np.ndarray, n_samples: int = 6, smallest: int = 500,
+                    largest: int | None = None, alpha: float = 1.0,
+                    n_trials: int = 3, k_for_graph: int = 30,
+                    seed: int = 0
+                    ) -> tuple[float, np.ndarray, np.ndarray, float]:
+    """PH-dim via Schweinhart-style scaling of H_0 total persistence.
+
+    H_0 persistence diagram bar lengths == minimum-spanning-tree edge
+    weights. Total persistence E_alpha(N) = sum |e_MST|^alpha scales as
+    N^{(d-alpha)/d} for an underlying d-manifold (Schweinhart 2020). Fit
+    slope of log E vs log N to extract d = alpha / (1 - slope).
+
+    Sub-samples are drawn at n_samples geometrically-spaced sizes between
+    `smallest` and `largest` (defaults to min(N, 20000)).
+    """
+    from sklearn.neighbors import kneighbors_graph
+    from scipy.sparse.csgraph import minimum_spanning_tree
+
+    if largest is None:
+        largest = min(X.shape[0], 20000)
+    if largest <= smallest:
+        smallest = max(largest // 4, 50)
+    sample_sizes = np.unique(np.round(
+        np.logspace(np.log10(smallest), np.log10(largest), n_samples)
+    ).astype(int))
+
+    rng = np.random.default_rng(seed)
+    log_N_list: list[float] = []
+    log_E_list: list[float] = []
+    for N_sub in sample_sizes:
+        E_vals = []
+        for _ in range(n_trials):
+            idx = rng.choice(X.shape[0], int(N_sub), replace=False)
+            Y = X[idx]
+            k = min(k_for_graph, int(N_sub) - 1)
+            G = kneighbors_graph(Y, n_neighbors=k, mode="distance",
+                                 include_self=False)
+            # Symmetrize (kneighbors_graph is directed).
+            G_sym = G.maximum(G.T)
+            mst = minimum_spanning_tree(G_sym)
+            edges = mst.data
+            E_vals.append(float((edges ** alpha).sum()))
+        log_N_list.append(np.log(float(N_sub)))
+        log_E_list.append(np.log(np.mean(E_vals)))
+
+    log_N = np.array(log_N_list)
+    log_E = np.array(log_E_list)
+    slope, _intercept = np.polyfit(log_N, log_E, 1)
+    slope = float(slope)
+    if slope >= 1.0:
+        d_hat = float("inf")
+    else:
+        d_hat = float(alpha / (1.0 - slope))
+    return d_hat, log_N, log_E, slope
+
+
+def plot_intrinsic_dim(z: np.ndarray, patches: np.ndarray, out_dir: Path,
+                       metric: str = "fs", max_points: int | None = None,
+                       seed: int = 0) -> None:
+    """Estimate intrinsic dim three ways and write a 3-panel diagnostic PNG."""
+    try:
+        from sklearn.neighbors import NearestNeighbors  # noqa: F401
+        from scipy.sparse.csgraph import minimum_spanning_tree  # noqa: F401
+    except ImportError:
+        print("  sklearn / scipy missing. `uv sync --extra viz-3d`.")
+        return
+
+    z_sub, _ = subsample(z, patches, max_points, seed=seed)
+    X = to_features(z_sub, metric)
+    N = X.shape[0]
+    print(f"  feature dim: {X.shape[1]} ({metric} metric), points: {N}")
+
+    print("  [1/3] TwoNN ...")
+    d_twonn, log_mu, nlog_1mF = _twonn_estimate(X)
+
+    print("  [2/3] MLE  (k = 10, 20, 50) ...")
+    mle_results = _mle_estimate(X, k_values=(10, 20, 50))
+
+    print("  [3/3] PH-dim (MST H_0 total persistence vs N) ...")
+    d_phdim, ph_logN, ph_logE, ph_slope = _phdim_estimate(X, seed=seed)
+
+    # ----- plot -----
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    # TwoNN
+    ax = axes[0]
+    plot_idx = np.linspace(0, len(log_mu) - 1, min(1500, len(log_mu))).astype(int)
+    ax.scatter(log_mu[plot_idx], nlog_1mF[plot_idx],
+               s=4, alpha=0.4, color="steelblue", edgecolors="none")
+    x_line = np.linspace(log_mu.min(), max(log_mu.max(), 0.01), 50)
+    ax.plot(x_line, d_twonn * x_line, color="crimson", lw=1.5,
+            label=f"fit (slope through origin):  d = {d_twonn:.3f}")
+    ax.set_xlabel(r"$\log\,\mu$,    $\mu = r_2 / r_1$", fontsize=10)
+    ax.set_ylabel(r"$-\log(1 - F(\mu))$", fontsize=10)
+    ax.set_title(f"TwoNN:   d = {d_twonn:.3f}")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # MLE
+    ax = axes[1]
+    colors = ["steelblue", "darkorange", "seagreen"]
+    for (k, d_arr), c in zip(mle_results.items(), colors):
+        d_arr_clip = d_arr[(d_arr > 0) & (d_arr < 15)]
+        median = float(np.median(d_arr_clip))
+        ax.hist(d_arr_clip, bins=80, alpha=0.45, color=c,
+                label=f"k = {k}  (median {median:.3f})")
+    ax.set_xlabel("local dim (MLE per point)", fontsize=10)
+    ax.set_ylabel("count")
+    ax.set_title("MLE per-point histograms")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # PH-dim
+    ax = axes[2]
+    ax.scatter(ph_logN, ph_logE, color="steelblue", s=40,
+               edgecolors="black", linewidths=0.5, zorder=3)
+    x_line = np.linspace(ph_logN.min(), ph_logN.max(), 50)
+    intercept = np.mean(ph_logE - ph_slope * ph_logN)
+    y_line = ph_slope * x_line + intercept
+    ax.plot(x_line, y_line, color="crimson", lw=1.5,
+            label=f"slope = {ph_slope:.3f}    d = {d_phdim:.3f}")
+    ax.set_xlabel(r"$\log\,N$", fontsize=10)
+    ax.set_ylabel(r"$\log\,\sum_{e\in MST(N)} |e|^\alpha,\ \alpha = 1$",
+                  fontsize=10)
+    ax.set_title(f"PH-dim:   d = {d_phdim:.3f}")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(
+        f"Intrinsic dimension estimates  (metric={metric}, N={N})",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    out_path = out_dir / f"intrinsic_dim_{metric}.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  wrote {out_path}")
+
+    # ----- stdout summary -----
+    print()
+    print("  ===== Intrinsic dimension summary =====")
+    print(f"  expected (sLag in CY 3-fold):  d = 3")
+    print(f"  TwoNN:                         d = {d_twonn:.3f}")
+    for k, d_arr in mle_results.items():
+        d_arr_clip = d_arr[(d_arr > 0) & (d_arr < 15)]
+        print(f"  MLE  k={k:<3}:                    "
+              f"median = {np.median(d_arr_clip):.3f},  "
+              f"mean = {d_arr_clip.mean():.3f}")
+    print(f"  PH-dim (MST scaling):          "
+          f"d = {d_phdim:.3f}  (slope = {ph_slope:.3f})")
+
+
+# ---------------------------------------------------------------------------
 #  CLI
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -441,9 +664,11 @@ def main() -> None:
     parser.add_argument("folder", type=Path,
                         help="Folder containing min_set.pkl.")
     parser.add_argument("--methods", nargs="+",
-                        choices=["coord", "umap", "mapper", "all"],
+                        choices=["coord", "umap", "mapper", "intrinsic_dim",
+                                 "all"],
                         default=["all"],
-                        help="Which methods to run (default: all).")
+                        help="Which methods to run (default: all -- includes "
+                             "intrinsic_dim).")
     parser.add_argument("--max_points", type=int, default=None,
                         help="Subsample to this many points "
                              "(default: use all points). Pass an integer "
@@ -508,7 +733,7 @@ def main() -> None:
 
     methods = set(args.methods)
     if "all" in methods:
-        methods = {"coord", "umap", "mapper"}
+        methods = {"coord", "umap", "mapper", "intrinsic_dim"}
 
     if "coord" in methods:
         print("\n--- coord-aligned 3D scatters ---")
@@ -536,6 +761,13 @@ def main() -> None:
                     seed=args.seed,
                     metric=args.metric,
                     sweep=args.sweep)
+
+    if "intrinsic_dim" in methods:
+        print("\n--- Intrinsic dimension (TwoNN + MLE + PH-dim) ---")
+        plot_intrinsic_dim(z, patches, out_dir,
+                           metric=args.metric,
+                           max_points=args.max_points,
+                           seed=args.seed)
 
 
 if __name__ == "__main__":
