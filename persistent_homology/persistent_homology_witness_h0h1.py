@@ -285,11 +285,15 @@ def analyze(H0, H1, H2, infinity_val, label=""):
     def top_features(points, name):
         if len(points) == 0:
             return
-        pers = points[:, 1] - points[:, 0]
-        order = np.argsort(pers)[-5:][::-1]
+        # Bounded persistence so essential classes are ranked by birth.
+        death_bounded = np.where(np.isinf(points[:, 1]), infinity_val,
+                                 points[:, 1])
+        pers_for_sort = death_bounded - points[:, 0]
+        order = np.argsort(pers_for_sort)[-5:][::-1]
         print(f"{name} top 5 by persistence:")
         for i in order:
-            print(f"  birth={points[i, 0]:.4f}  death={points[i, 1]:.4f}  pers={pers[i]:.4f}")
+            pers_actual = points[i, 1] - points[i, 0]
+            print(f"  birth={points[i, 0]:.4f}  death={points[i, 1]:.4f}  pers={pers_actual:.4f}")
 
     top_features(H0, "H0")
     top_features(H1, "H1")
@@ -332,7 +336,13 @@ def plot_one_L(H0, H1, H2, infinity_val, n_sample, L, output_file):
         if len(pts) == 0:
             ax.set_title(title)
             return
-        order = np.argsort(pts[:, 1] - pts[:, 0])[::-1]
+        # Sort by *bounded* persistence: treat inf-death as if it died at the
+        # filtration cap. Without this, many essential classes all have
+        # persistence = inf and the numpy argsort tie-break ranks them by
+        # original gudhi index, surfacing arbitrary high-birth bars instead
+        # of the visually-meaningful low-birth ones.
+        death_for_sort = np.where(np.isinf(pts[:, 1]), infinity_val, pts[:, 1])
+        order = np.argsort(death_for_sort - pts[:, 0])[::-1]
         sorted_pts = pts[order]
         n_bars = min(50, len(sorted_pts))
         for i in range(n_bars):
