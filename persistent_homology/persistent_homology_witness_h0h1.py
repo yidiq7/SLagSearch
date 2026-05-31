@@ -494,6 +494,11 @@ def parse_args():
     p.add_argument('--cache_landmarks', default='witness_landmarks_cache.pkl')
     p.add_argument('--cache_diagrams', default='witness_diagrams_cache.pkl')
     p.add_argument('--no_cache', action='store_true')
+    p.add_argument('--plots_only', action='store_true',
+                   help='Skip Newton filter, landmark selection, and gudhi '
+                        'construction. Load diagrams from the cached pkl '
+                        'and re-plot (and re-print analysis). Errors out '
+                        'if no matching cache is found.')
     return p.parse_args()
 
 
@@ -513,30 +518,8 @@ def main():
     cache_diagrams_path = os.path.join(out_dir, args.cache_diagrams)
     print(f"Output directory: {out_dir}")
 
-    # ---- load + filter
-    Z = load_points(args.filepath, args.subsamp, args.seed)
-    if args.no_newton_filter:
-        print("\nNewton-residual filter disabled (--no_newton_filter).")
-    else:
-        if args.coeffs_pkl is None:
-            raise SystemExit(
-                "ERROR: --coeffs_pkl is required to run the Newton filter. "
-                "Pass --no_newton_filter to skip filtering entirely."
-            )
-        psi_val = complex(args.psi)
-        Z, _, _ = filter_newton_check(
-            Z,
-            coeffs_pkl=args.coeffs_pkl,
-            psi=psi_val,
-            n_steps=args.newton_steps,
-            threshold=args.newton_threshold,
-            dist_chunk_size=args.dist_chunk_size,
-        )
-    Zn = _normalize_rows_complex(Z)
-    n_sample = len(Z)
-    print(f"\nN after filter: {n_sample}")
-
-    # ---- landmarks (cached on disk)
+    # ---- filter_sig is used to match both caches; defined early so the
+    # diagrams cache check can use it without running the Newton filter.
     filter_sig = {
         'no_newton_filter': args.no_newton_filter,
         'coeffs_pkl': args.coeffs_pkl,
@@ -544,87 +527,147 @@ def main():
         'newton_steps': args.newton_steps,
         'newton_threshold': args.newton_threshold,
     }
-    use_lm_cache = False
-    if not args.no_cache and os.path.exists(cache_landmarks_path):
-        with open(cache_landmarks_path, 'rb') as f:
-            lm_data = pickle.load(f)
-        if (lm_data.get('filepath') == args.filepath
-                and lm_data.get('subsamp') == args.subsamp
-                and lm_data.get('seed') == args.seed
-                and lm_data.get('filter_sig') == filter_sig
-                and lm_data.get('n_sample') == n_sample
-                and lm_data.get('L_max', 0) >= L_max):
-            print(f"\nLoading cached landmarks/dist_table from "
-                  f"'{cache_landmarks_path}'")
-            lm_idx = lm_data['lm_idx'][:L_max]
-            dist_table = lm_data['dist_table'][:L_max]
-            use_lm_cache = True
+
+    # ---- try diagrams cache first (fast path: skip filter + landmarks + gudhi)
+    per_L = None
+    infinity_val = None
+    n_sample = None
+    if not args.no_cache and os.path.exists(cache_diagrams_path):
+        with open(cache_diagrams_path, 'rb') as f:
+            d_data = pickle.load(f)
+        if (d_data.get('filepath') == args.filepath
+                and d_data.get('subsamp') == args.subsamp
+                and d_data.get('seed') == args.seed
+                and d_data.get('filter_sig') == filter_sig
+                and d_data.get('L_values') == L_values
+                and d_data.get('max_alpha') == args.max_alpha
+                and d_data.get('witness_type') == args.witness_type
+                and d_data.get('top_k_landmarks') == args.top_k_landmarks):
+            print(f"\nLoading cached diagrams from '{cache_diagrams_path}'")
+            per_L = d_data['per_L']
+            infinity_val = d_data['infinity_val']
+            n_sample = d_data['n_sample']
         else:
-            print(f"\nCache '{cache_landmarks_path}' params mismatch; "
-                  f"recomputing landmarks.")
-    if not use_lm_cache:
-        print(f"\n=== MAX-MIN LANDMARK SELECTION (L_max={L_max}) ===")
-        t0 = time.time()
-        lm_idx, dist_table = maxmin_landmarks(Zn, L_max, args.seed)
-        print(f"  done in {time.time() - t0:.1f}s on device {jax.devices()[0]}")
-        if not args.no_cache:
-            with open(cache_landmarks_path, 'wb') as f:
-                pickle.dump({
-                    'filepath': args.filepath, 'subsamp': args.subsamp,
-                    'seed': args.seed, 'filter_sig': filter_sig,
-                    'n_sample': n_sample, 'L_max': L_max,
-                    'lm_idx': lm_idx, 'dist_table': dist_table,
-                }, f)
-            print(f"  cached: {cache_landmarks_path}")
+            print(f"\nDiagrams cache '{cache_diagrams_path}' params mismatch; "
+                  f"running full pipeline.")
 
-    data_diameter = float(np.max(dist_table))
-    infinity_val = float(args.max_alpha)
-    max_alpha_sq = args.max_alpha ** 2
-    print(f"\nData diameter (max FS distance): {data_diameter:.4f}")
-    print(f"Filtration cap (--max_alpha):    {infinity_val:.4f}")
-    print(f"max_alpha_square:                {max_alpha_sq:.4f}")
-    print(f"(reference: FS diameter pi/2 = {np.pi / 2:.4f})")
-
-    # ---- witness diagrams per L (H0, H1, H2 via limit_dimension=3)
-    per_L = {}
-    for L in L_values:
-        print(f"\n=== WITNESS COMPLEX (L={L}) ===")
-        t0 = time.time()
-        H0, H1, H2 = build_witness_diagram(
-            dist_table[:L], max_alpha_sq,
-            limit_dimension=3, top_k_landmarks=args.top_k_landmarks,
-            witness_type=args.witness_type,
+    if per_L is None and args.plots_only:
+        raise SystemExit(
+            "ERROR: --plots_only set but no matching diagrams cache at "
+            f"'{cache_diagrams_path}'. Run once without --plots_only to "
+            "populate the cache."
         )
-        print(f"  built in {time.time() - t0:.1f}s; "
-              f"H0={len(H0)}, H1={len(H1)}, H2={len(H2)}")
 
-        # Match the VR script: ensure the essential H0 is present.
-        if len(H0) and not np.any(np.isinf(H0[:, 1])):
-            H0 = np.vstack([H0, [0.0, np.inf]])
-            print("  injected essential H0 (birth=0, death=inf)")
-        per_L[L] = (H0, H1, H2)
+    if per_L is None:
+        # ---- load + filter
+        Z = load_points(args.filepath, args.subsamp, args.seed)
+        if args.no_newton_filter:
+            print("\nNewton-residual filter disabled (--no_newton_filter).")
+        else:
+            if args.coeffs_pkl is None:
+                raise SystemExit(
+                    "ERROR: --coeffs_pkl is required to run the Newton filter. "
+                    "Pass --no_newton_filter to skip filtering entirely."
+                )
+            psi_val = complex(args.psi)
+            Z, _, _ = filter_newton_check(
+                Z,
+                coeffs_pkl=args.coeffs_pkl,
+                psi=psi_val,
+                n_steps=args.newton_steps,
+                threshold=args.newton_threshold,
+                dist_chunk_size=args.dist_chunk_size,
+            )
+        Zn = _normalize_rows_complex(Z)
+        n_sample = len(Z)
+        print(f"\nN after filter: {n_sample}")
 
+        # ---- landmarks (cached on disk)
+        use_lm_cache = False
+        if not args.no_cache and os.path.exists(cache_landmarks_path):
+            with open(cache_landmarks_path, 'rb') as f:
+                lm_data = pickle.load(f)
+            if (lm_data.get('filepath') == args.filepath
+                    and lm_data.get('subsamp') == args.subsamp
+                    and lm_data.get('seed') == args.seed
+                    and lm_data.get('filter_sig') == filter_sig
+                    and lm_data.get('n_sample') == n_sample
+                    and lm_data.get('L_max', 0) >= L_max):
+                print(f"\nLoading cached landmarks/dist_table from "
+                      f"'{cache_landmarks_path}'")
+                lm_idx = lm_data['lm_idx'][:L_max]
+                dist_table = lm_data['dist_table'][:L_max]
+                use_lm_cache = True
+            else:
+                print(f"\nCache '{cache_landmarks_path}' params mismatch; "
+                      f"recomputing landmarks.")
+        if not use_lm_cache:
+            print(f"\n=== MAX-MIN LANDMARK SELECTION (L_max={L_max}) ===")
+            t0 = time.time()
+            lm_idx, dist_table = maxmin_landmarks(Zn, L_max, args.seed)
+            print(f"  done in {time.time() - t0:.1f}s on device {jax.devices()[0]}")
+            if not args.no_cache:
+                with open(cache_landmarks_path, 'wb') as f:
+                    pickle.dump({
+                        'filepath': args.filepath, 'subsamp': args.subsamp,
+                        'seed': args.seed, 'filter_sig': filter_sig,
+                        'n_sample': n_sample, 'L_max': L_max,
+                        'lm_idx': lm_idx, 'dist_table': dist_table,
+                    }, f)
+                print(f"  cached: {cache_landmarks_path}")
+
+        data_diameter = float(np.max(dist_table))
+        infinity_val = float(args.max_alpha)
+        max_alpha_sq = args.max_alpha ** 2
+        print(f"\nData diameter (max FS distance): {data_diameter:.4f}")
+        print(f"Filtration cap (--max_alpha):    {infinity_val:.4f}")
+        print(f"max_alpha_square:                {max_alpha_sq:.4f}")
+        print(f"(reference: FS diameter pi/2 = {np.pi / 2:.4f})")
+
+        # ---- witness diagrams per L (H0, H1, H2 via limit_dimension=3)
+        per_L = {}
+        for L in L_values:
+            print(f"\n=== WITNESS COMPLEX (L={L}) ===")
+            t0 = time.time()
+            H0, H1, H2 = build_witness_diagram(
+                dist_table[:L], max_alpha_sq,
+                limit_dimension=3, top_k_landmarks=args.top_k_landmarks,
+                witness_type=args.witness_type,
+            )
+            print(f"  built in {time.time() - t0:.1f}s; "
+                  f"H0={len(H0)}, H1={len(H1)}, H2={len(H2)}")
+
+            # Match the VR script: ensure the essential H0 is present.
+            if len(H0) and not np.any(np.isinf(H0[:, 1])):
+                H0 = np.vstack([H0, [0.0, np.inf]])
+                print("  injected essential H0 (birth=0, death=inf)")
+            per_L[L] = (H0, H1, H2)
+
+        # ---- cache diagrams
+        if not args.no_cache:
+            with open(cache_diagrams_path, 'wb') as f:
+                pickle.dump({
+                    'per_L': per_L,
+                    'infinity_val': infinity_val,
+                    'data_diameter': data_diameter,
+                    'max_alpha': args.max_alpha,
+                    'witness_type': args.witness_type,
+                    'top_k_landmarks': args.top_k_landmarks,
+                    'n_sample': n_sample,
+                    'L_values': L_values,
+                    'filepath': args.filepath,
+                    'subsamp': args.subsamp,
+                    'seed': args.seed,
+                    'filter_sig': filter_sig,
+                }, f)
+            print(f"\nCached diagrams: {cache_diagrams_path}")
+
+    # ---- analyze + per-L plot (runs whether per_L came from cache or fresh)
+    for L in L_values:
+        H0, H1, H2 = per_L[L]
         analyze(H0, H1, H2, infinity_val, label=f'(L={L})')
         png = os.path.join(out_dir, f'{args.out_prefix}_L{L}.png')
         plot_one_L(H0, H1, H2, infinity_val, n_sample, L, png)
-
-    # ---- cache diagrams
-    if not args.no_cache:
-        with open(cache_diagrams_path, 'wb') as f:
-            pickle.dump({
-                'per_L': per_L,
-                'infinity_val': infinity_val,
-                'data_diameter': data_diameter,
-                'max_alpha': args.max_alpha,
-                'witness_type': args.witness_type,
-                'n_sample': n_sample,
-                'L_values': L_values,
-                'filepath': args.filepath,
-                'subsamp': args.subsamp,
-                'seed': args.seed,
-                'filter_sig': filter_sig,
-            }, f)
-        print(f"\nCached diagrams: {cache_diagrams_path}")
 
     # ---- comparison plot
     plot_comparison(per_L, infinity_val, n_sample,
