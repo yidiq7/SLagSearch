@@ -545,20 +545,24 @@ def main():
     if not args.no_cache and os.path.exists(cache_diagrams_path):
         with open(cache_diagrams_path, 'rb') as f:
             d_data = pickle.load(f)
-        # Diff only on keys explicitly present in the cache; missing keys
-        # (e.g. top_k_landmarks added after the cache was written) are
-        # treated as "trust the user" with a printed warning.
         missing = [k for k in requested_sig if k not in d_data]
         diffs = [
             (k, d_data[k], requested_sig[k])
             for k in requested_sig
             if k in d_data and d_data[k] != requested_sig[k]
         ]
-        if not diffs:
+        # Strict match for auto-load; lenient (load anyway, warn) for plots_only.
+        accept = (not diffs) or args.plots_only
+        if accept:
             print(f"\nLoading cached diagrams from '{cache_diagrams_path}'")
             if missing:
                 print(f"  WARNING: cache predates these keys "
                       f"(assuming match): {missing}")
+            if diffs:
+                print("  WARNING: plotting cached data despite param diffs "
+                      "(--plots_only):")
+                for k, cached_v, current_v in diffs:
+                    print(f"    {k}: cached={cached_v!r}  current={current_v!r}")
             per_L = d_data['per_L']
             infinity_val = d_data['infinity_val']
             n_sample = d_data['n_sample']
