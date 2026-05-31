@@ -220,6 +220,47 @@ def _run_umap(X: np.ndarray, n_neighbors: int, min_dist: float,
     return reducer.fit_transform(X)
 
 
+# tab10-derived hex colors for the 5 patches (matches the 2D scatter style).
+_PATCH_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+
+
+def _render_umap_html(emb: np.ndarray, patches: np.ndarray, out_path: Path,
+                      title: str) -> None:
+    """Interactive 3D scatter HTML via plotly (free rotation in browser)."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("  plotly not installed; skipping HTML. "
+              "`uv sync --extra viz-3d` to enable.")
+        return
+
+    traces = []
+    n_total = int(emb.shape[0])
+    # Marker size and opacity tuned for browser rendering of large clouds.
+    msize = 1.5
+    mopacity = float(min(0.6, 12000.0 / max(n_total, 1)))
+    for p in range(5):
+        mask = patches == p
+        if not mask.any():
+            continue
+        traces.append(go.Scatter3d(
+            x=emb[mask, 0], y=emb[mask, 1], z=emb[mask, 2],
+            mode="markers",
+            marker=dict(size=msize, color=_PATCH_COLORS[p], opacity=mopacity),
+            name=f"patch {p}  ({int(mask.sum())} pts)",
+        ))
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title=title,
+        scene=dict(xaxis_title="UMAP 1", yaxis_title="UMAP 2",
+                   zaxis_title="UMAP 3", aspectmode="data"),
+        legend=dict(itemsizing="constant"),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    fig.write_html(str(out_path))
+    print(f"  wrote {out_path}")
+
+
 def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                  n_neighbors: int, min_dist: float, max_points: int,
                  seed: int, metric: str = "fs",
@@ -240,16 +281,19 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         print(f"  UMAP on {X.shape[0]} points, n_neighbors={n_neighbors}, "
               f"min_dist={min_dist}")
         emb = _run_umap(X, n_neighbors, min_dist, seed)
-        fig = plt.figure(figsize=(15, 5))
-        for k, (elev, azim) in enumerate(angles):
-            ax = fig.add_subplot(1, 3, k + 1, projection="3d")
+
+        # ----- Six PNG viewing angles -----
+        many_angles = [(15, az) for az in (0, 60, 120, 180, 240, 300)]
+        alpha_pts = _auto_alpha(emb.shape[0])
+        fig = plt.figure(figsize=(15, 10))
+        for k, (elev, azim) in enumerate(many_angles):
+            ax = fig.add_subplot(2, 3, k + 1, projection="3d")
             ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], c=patches_sub,
                        cmap="tab10", vmin=-0.5, vmax=4.5,
-                       s=1.0, alpha=_auto_alpha(emb.shape[0]),
-                       edgecolors="none")
-            ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2"); ax.set_zlabel("UMAP 3")
+                       s=0.7, alpha=alpha_pts, edgecolors="none")
             ax.view_init(elev=elev, azim=azim)
-            ax.set_title(f"view {k + 1}", fontsize=9)
+            ax.set_title(f"elev={elev}, az={azim}", fontsize=9)
+            ax.tick_params(labelsize=6)
         fig.suptitle(f"UMAP 3D (metric={metric}, n_neighbors={n_neighbors}, "
                      f"min_dist={min_dist})", fontsize=13)
         fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -257,6 +301,14 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
         print(f"  wrote {out_path}")
+
+        # ----- Interactive HTML via plotly (free rotation in browser) -----
+        html_path = out_dir / (
+            f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}.html")
+        _render_umap_html(emb, patches_sub, html_path,
+                          title=f"UMAP 3D  (metric={metric}, "
+                                f"nn={n_neighbors}, md={min_dist}, "
+                                f"N={emb.shape[0]})")
         return
 
     # Sweep: 3x3 grid over (n_neighbors, min_dist), single viewing angle.
@@ -332,6 +384,7 @@ def _autoscale_eps(X: np.ndarray, k: int = 5,
 def _build_mapper_graph(z_sub, patches_sub, X, filter_spec, n_cubes,
                         perc_overlap, eps_percentile):
     import kmapper as km
+    import networkx as nx
     from sklearn.cluster import DBSCAN
     lens, lens_label = _lens_from_spec(z_sub, X, filter_spec)
     eps = _autoscale_eps(X, k=5, percentile=eps_percentile)
@@ -339,9 +392,19 @@ def _build_mapper_graph(z_sub, patches_sub, X, filter_spec, n_cubes,
     cover = km.Cover(n_cubes=n_cubes, perc_overlap=perc_overlap)
     clusterer = DBSCAN(eps=eps, min_samples=5)
     graph = mapper.map(lens, X, cover=cover, clusterer=clusterer)
-    n_nodes = len(graph["nodes"])
-    n_edges = sum(len(v) for v in graph["links"].values())
-    return mapper, graph, lens_label, eps, n_nodes, n_edges
+
+    # Graph topology: (V, E, C, beta_1) where beta_1 = E - V + C is the
+    # cycle-rank, our direct readout of the underlying manifold's b_1.
+    G = nx.Graph()
+    G.add_nodes_from(graph["nodes"].keys())
+    for src, tgts in graph["links"].items():
+        for tgt in tgts:
+            G.add_edge(src, tgt)
+    V = G.number_of_nodes()
+    E = G.number_of_edges()
+    C = nx.number_connected_components(G) if V > 0 else 0
+    beta_1 = E - V + C
+    return mapper, graph, lens_label, eps, V, E, C, beta_1
 
 
 def _render_mapper_png(graph, patches_sub, ax, title, seed):
@@ -383,18 +446,22 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
     print(f"  feature dim: {X.shape[1]} ({metric} metric)")
 
     if not sweep:
-        mapper, graph, lens_label, eps, n_nodes, n_edges = _build_mapper_graph(
+        mapper, graph, lens_label, eps, V, E, C, beta_1 = _build_mapper_graph(
             z_sub, patches_sub, X, filter_spec, n_cubes, perc_overlap,
             eps_percentile,
         )
-        print(f"  Mapper: {n_nodes} nodes, {n_edges} edges  "
+        print(f"  Mapper: V={V}, E={E}, C={C}, beta_1={beta_1}  "
               f"(filter={lens_label}, n_cubes={n_cubes}, "
               f"overlap={perc_overlap}, eps={eps:.4f} "
               f"@p{eps_percentile})")
+        print(f"    topology readout:  b_0 candidate = {C},  "
+              f"b_1 candidate = {beta_1}  "
+              f"(persistent homology said b_1 = 5)")
 
         html_path = out_dir / f"mapper_{metric}_{filter_spec}.html"
         mapper.visualize(graph, path_html=str(html_path),
-                         title=f"Mapper ({metric} metric, {lens_label})",
+                         title=f"Mapper ({metric}, {lens_label})  "
+                               f"V={V} E={E} C={C} β₁={beta_1}",
                          color_values=patches_sub.astype(float),
                          color_function_name="patch index")
         print(f"  wrote {html_path}")
@@ -402,8 +469,8 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         fig, ax = plt.subplots(figsize=(10, 10))
         _render_mapper_png(
             graph, patches_sub, ax,
-            f"Mapper  (metric={metric}, filter={lens_label}, "
-            f"{n_nodes} nodes, {n_edges} edges)\n"
+            f"Mapper  (metric={metric}, filter={lens_label})\n"
+            f"V={V}, E={E},  C={C},  β₁ = E - V + C = {beta_1}\n"
             f"n_cubes={n_cubes}, overlap={perc_overlap}, eps={eps:.4f}",
             seed,
         )
@@ -421,14 +488,15 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
     fig, axes = plt.subplots(3, 3, figsize=(18, 18))
     for i, nc in enumerate(n_cubes_list):
         for j, ov in enumerate(overlap_list):
-            print(f"  sweep ({i},{j}): n_cubes={nc}, overlap={ov}")
-            _, graph, lens_label, eps, n_nodes, n_edges = _build_mapper_graph(
+            _, graph, lens_label, eps, V, E, C, beta_1 = _build_mapper_graph(
                 z_sub, patches_sub, X, filter_spec, nc, ov, eps_percentile,
             )
+            print(f"  sweep ({i},{j}): n_cubes={nc}, overlap={ov}  "
+                  f"->  V={V}, E={E}, C={C}, β₁={beta_1}")
             _render_mapper_png(
                 graph, patches_sub, axes[i, j],
                 f"n_cubes={nc}, ov={ov}\n"
-                f"{n_nodes} nodes, {n_edges} edges",
+                f"V={V}, E={E}, C={C}, β₁={beta_1}",
                 seed,
             )
     fig.suptitle(f"Mapper sweep  (metric={metric}, filter={filter_spec}, "
@@ -700,23 +768,23 @@ def main() -> None:
     parser.add_argument("--mapper_filter",
                         choices=["first-pc", "abs0_minus_abs4", "abs0",
                                  "abs04_abs123", "first-two-pc"],
-                        default="abs04_abs123",
-                        help="Lens function. 1D options: first-pc, abs0, "
-                             "abs0_minus_abs4. 2D options (n_cubes^2 cover "
-                             "cells, many more nodes): abs04_abs123 "
-                             "(|z_0|-|z_4|, |z_1|+|z_2|+|z_3|; default), "
-                             "first-two-pc.")
+                        default="first-pc",
+                        help="Lens function. 1D options (cleaner cycle "
+                             "visualization, n_cubes cells): first-pc "
+                             "(default, data-driven), abs0, "
+                             "abs0_minus_abs4. 2D options (n_cubes^2 "
+                             "cells, more nodes but harder to read): "
+                             "abs04_abs123, first-two-pc.")
     parser.add_argument("--mapper_n_cubes", type=int, default=50,
-                        help="Cover intervals per filter axis. For 2D "
-                             "filters this gives n_cubes^2 cells. Default "
-                             "50 (gives ~2500 cells for 2D filters, vs "
-                             "~50 for 1D).")
+                        help="Cover intervals per filter axis. With the "
+                             "1D default this gives ~50 cells; with a 2D "
+                             "filter ~2500 cells.")
     parser.add_argument("--mapper_overlap", type=float, default=0.5)
-    parser.add_argument("--mapper_eps_percentile", type=float, default=75.0,
+    parser.add_argument("--mapper_eps_percentile", type=float, default=50.0,
                         help="Percentile of k-NN distances used to set "
-                             "DBSCAN eps (auto-scaled to local density). "
-                             "Higher = more permissive clustering = more "
-                             "edges. Default 75.")
+                             "DBSCAN eps (auto-scaled). Higher = more "
+                             "permissive clustering = more edges (and "
+                             "fewer / larger nodes). Default 50.")
     args = parser.parse_args()
 
     z = load_min_set_complex(args.folder)
