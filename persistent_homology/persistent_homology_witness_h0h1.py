@@ -551,25 +551,26 @@ def main():
             for k in requested_sig
             if k in d_data and d_data[k] != requested_sig[k]
         ]
-        # Strict match for auto-load; lenient (load anyway, warn) for plots_only.
-        accept = (not diffs) or args.plots_only
+        # Strict match for auto-load; --plots_only loads anyway and warns.
+        accept = (not diffs and not missing) or args.plots_only
         if accept:
             print(f"\nLoading cached diagrams from '{cache_diagrams_path}'")
-            if missing:
-                print(f"  WARNING: cache predates these keys "
-                      f"(assuming match): {missing}")
-            if diffs:
-                print("  WARNING: plotting cached data despite param diffs "
-                      "(--plots_only):")
+            if missing or diffs:
+                print("  WARNING: plotting cached data despite cache "
+                      "mismatch (--plots_only):")
                 for k, cached_v, current_v in diffs:
                     print(f"    {k}: cached={cached_v!r}  current={current_v!r}")
+                if missing:
+                    print(f"    missing keys (cache predates them): {missing}")
             per_L = d_data['per_L']
             infinity_val = d_data['infinity_val']
             n_sample = d_data['n_sample']
         else:
-            print(f"\nDiagrams cache '{cache_diagrams_path}' mismatch on:")
+            print(f"\nDiagrams cache '{cache_diagrams_path}' mismatch:")
             for k, cached_v, current_v in diffs:
                 print(f"  {k}: cached={cached_v!r}  current={current_v!r}")
+            if missing:
+                print(f"  missing keys (cache predates them): {missing}")
 
     if per_L is None and args.plots_only:
         raise SystemExit(
