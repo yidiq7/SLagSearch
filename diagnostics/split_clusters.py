@@ -15,10 +15,10 @@ Pipeline:
   6. Save a 4-view PNG showing the split in UMAP space.
 
 Usage:
-    python split_clusters.py <folder> [--n_clusters 2] [--basis umap]
+    python -m diagnostics.split_clusters <folder> [--n_clusters 2] [--basis umap]
     # then for each cluster:
-    python persistent_homology_witness_h0h1.py \\
-        --min_set <folder>/cluster_split/cluster_0_points.pkl
+    python persistent_homology/persistent_homology_witness_h0h1.py \\
+        --filepath <folder>/cluster_split/cluster_0_points.pkl
 """
 import argparse
 import pickle
@@ -29,7 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from plot_3D import (
+from viz.plot_3D import (
     load_min_set_complex, patch_indices_from_complex, subsample,
     to_features, _run_umap, _PATCH_COLORS,
 )

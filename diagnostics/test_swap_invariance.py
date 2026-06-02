@@ -11,7 +11,7 @@ symmetry of L = {f_k = 0}, sigma.p still satisfies f_k ~ 0; if not, the
 swapped points fall off the locus and ||f_k(sigma.p)|| grows substantially.
 
 Usage:
-    python test_swap_invariance.py \
+    python -m diagnostics.test_swap_invariance \
         --min_set <plots_slag_<job>/min_set.pkl> \
         --coeffs gd_runs/gd_<job>_step<N>.pkl \
         [--swap 2 3] [--psi 0]

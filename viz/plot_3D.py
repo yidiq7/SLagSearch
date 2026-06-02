@@ -41,9 +41,9 @@ For pca, umap, and mapper, the distance metric on min_set is selectable via
     a small-distance approximation).
 
 Usage:
-    python plot_3D.py <folder> [--methods coord pca umap mapper]
-                              [--metric fs|euclidean]
-                              [--sweep] [--max_points N]
+    python -m viz.plot_3D <folder> [--methods coord pca umap mapper]
+                                   [--metric fs|euclidean]
+                                   [--sweep] [--max_points N]
 """
 import argparse
 import os

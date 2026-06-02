@@ -25,7 +25,7 @@ both per-degree (lower bound: each degree picks its own optimal O) and joint
 no-twist residual ||tilde_H - H||_F / ||H||_F (rigid symmetry without O(3)).
 
 Usage:
-    python test_permutation_symmetry.py --coeffs gd_runs/<job>.pkl \
+    python -m diagnostics.test_permutation_symmetry --coeffs gd_runs/<job>.pkl \
         [--group z2xs3] [--mode both]
 """
 import argparse

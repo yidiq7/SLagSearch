@@ -14,7 +14,7 @@ import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
 from helper import assert_metric_psi_compatible, canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix, dwork_points_path, load_points
-from fitness_plots import make_fitness_plots
+from viz.fitness_plots import make_fitness_plots
 
 jax.config.update('jax_default_matmul_precision', 'high')
 

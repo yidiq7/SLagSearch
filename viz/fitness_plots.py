@@ -1,3 +1,19 @@
+"""Fitness-diagnostics pipeline for a candidate coeffs array.
+
+Mines a min-set with Newton refinement, computes Kahler-form Frobenius norms
+and Omega phases on it, and writes two histograms + a min_set.pkl +
+frobenius_norms.npy sidecar + fitness-colored coord-scatter PNGs into
+--parent_folder. Library entry point `make_fitness_plots` is imported by
+GA.py and gradient_descent.py for their end-of-run plots.
+
+Usage (CLI):
+    python -m viz.fitness_plots --coeffs_pkl gd_runs/gd_<job>_step<N>.pkl \
+        [--points_file <path>] [--psi <c>] [--metric k4_fermat|FS] \
+        [--parent_folder <dir>] [--k 80000] [--n_refine_steps 80]
+
+--coeffs_pkl is required and accepts either a bare (3, w) array or a
+checkpoint dict with a "coeffs" key (matches gradient_descent checkpoints).
+"""
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -18,7 +34,7 @@ from slag_condition import (
 )
 from get_restriction import compute_Omega_restriction
 from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
-from plot_coord_scatter import render_from_folder
+from viz.plot_coord_scatter import render_from_folder
 from typing import Optional
 
 

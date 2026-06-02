@@ -9,17 +9,17 @@ reports a timing breakdown so you can see where wall time is actually spent.
 Examples
 --------
 # Single-GPU phase profile
-python profile_pipeline.py --n_iters 5
+python -m diagnostics.profile_pipeline --n_iters 5
 
 # Multi-GPU mini-batch (matches GA.py mini-batch path)
-python profile_pipeline.py --multi_gpu --batch_size 100 --n_iters 5
+python -m diagnostics.profile_pipeline --multi_gpu --batch_size 100 --n_iters 5
 
 # Compare with vs. without tensor cores
-python profile_pipeline.py --precision highest --n_iters 5
-python profile_pipeline.py --precision high    --n_iters 5
+python -m diagnostics.profile_pipeline --precision highest --n_iters 5
+python -m diagnostics.profile_pipeline --precision high    --n_iters 5
 
 # Also write a Perfetto-viewable trace
-python profile_pipeline.py --trace_dir ./jax_trace --n_iters 3
+python -m diagnostics.profile_pipeline --trace_dir ./jax_trace --n_iters 3
 """
 
 import argparse

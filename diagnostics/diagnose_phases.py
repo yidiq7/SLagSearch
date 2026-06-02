@@ -6,7 +6,7 @@ compute_holomorphic_form, plus canonical-basis sign correction in
 compute_Omega_restriction) and prints per-patch histograms.
 
 Usage:
-    python diagnose_phases.py --ansatz {d1,rp3} --n_bins 30
+    python -m diagnostics.diagnose_phases --ansatz {d1,rp3} --n_bins 30
 """
 
 import argparse

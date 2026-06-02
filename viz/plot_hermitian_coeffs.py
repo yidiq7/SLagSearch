@@ -4,7 +4,7 @@ lives in hermitian_coeffs.py (pure numpy), so the symmetry tests and
 permute_coeffs.py can share it without pulling in matplotlib.
 
 Usage:
-    python plot_hermitian_coeffs.py --coeffs gd_runs/gd_<job>_step<N>.pkl \
+    python -m viz.plot_hermitian_coeffs --coeffs gd_runs/gd_<job>_step<N>.pkl \
         [--out_dir hermitian_plots] [--job_id <label>] [--log_scale]
 """
 import argparse

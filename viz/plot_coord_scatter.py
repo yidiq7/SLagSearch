@@ -22,11 +22,11 @@ panels (i != j) draw the y = x line for visual reference.
 Output filenames carry the color mode: coord_scatter_{re,im,abs}_{patch,fitness}.png.
 
 Usage:
-    python plot_coord_scatter.py --filepath plots_slag_run/min_set.pkl
-    python plot_coord_scatter.py --filepath plots_slag_run/min_set.pkl --part im
-    python plot_coord_scatter.py --filepath plots_slag_run/min_set.pkl --part abs
-    python plot_coord_scatter.py --filepath plots_slag_run/min_set.pkl --color fitness
-    python plot_coord_scatter.py --filepath my_dir/refined_cloud.pkl \
+    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl
+    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl --part im
+    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl --part abs
+    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl --color fitness
+    python -m viz.plot_coord_scatter --filepath my_dir/refined_cloud.pkl \
         --out_dir my_dir/scatter/ --fitness_path my_dir/refined_norms.npy \
         --color fitness
 """
