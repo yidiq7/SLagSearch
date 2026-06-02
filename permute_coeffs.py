@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from plot_hermitian_coeffs import (
+from hermitian_coeffs import (
     _BLOCK, _SYM_DIM, coeffs_row_to_hermitian, _load_coeffs,
 )
 from test_permutation_symmetry import monomial_permutation

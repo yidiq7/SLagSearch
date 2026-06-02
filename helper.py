@@ -217,66 +217,6 @@ def canonicalize_coeffs_QR_decomposition(coeffs: jnp.ndarray) -> jnp.ndarray:
     return fully_canonical_q
 
 
-def reconstruct_hermitian_matrices(coeffs_array: jnp.array) -> jnp.array:
-    """
-    Reconstructs a batch of 5x5 complex Hermitian matrices from coefficients.
-
-    This function takes an array of shape (N, 25) and returns an array
-    of shape (N, 5, 5), where N is the number of matrices.
-
-    Args:
-        coeffs_array: A jnp.array of shape (N, 25). Each row contains the
-                      25 coefficients for one Hermitian matrix.
-
-    Returns:
-        A jnp.array of shape (N, 5, 5) containing the batch of reconstructed
-        Hermitian matrices.
-    """
-    # Ensure the input has the correct dimensions (N, 25)
-    if coeffs_array.ndim != 2 or coeffs_array.shape[1] != 25:
-        raise ValueError("Input must be a 2D array with shape (N, 25).")
-
-    # Define the reconstruction logic for a *single* matrix (one row).
-    # This is often done as a private helper function or a local function.
-    def _reconstruct_single(coeffs: jnp.array) -> jnp.array:
-        
-        # Start with an empty 5x5 complex matrix
-        H = jnp.zeros((5, 5), dtype=jnp.complex64)
-        
-        # Split coefficients into imaginary and real parts
-        imag_coeffs = coeffs[:10]
-        real_coeffs = coeffs[10:]
-
-        # 1. Populate imaginary parts for the strictly upper triangle (i < j)
-        imag_idx = 0
-        for i in range(5):
-            for j in range(i + 1, 5):
-                H = H.at[i, j].add(-1j * imag_coeffs[imag_idx] / 2)
-                imag_idx += 1
-
-        # 2. Populate real parts for the diagonal and upper triangle (i <= j)
-        real_idx = 0
-        for i in range(5):
-            for j in range(i, 5):
-                if i == j:
-                    H = H.at[i, j].add(real_coeffs[real_idx])
-                else:
-                    H = H.at[i, j].add(real_coeffs[real_idx] / 2)
-                real_idx += 1
-        
-        # 3. Complete the matrix using the Hermitian property H = H_upper + H_upper^†
-        H_upper = jnp.triu(H, k=1)
-        H_final = H + jnp.conjugate(H_upper.T)
-
-        return H_final
-
-    # Use vmap to "vectorize" the single-reconstruction function, telling it
-    # to map over the first axis (the rows) of the input `coeffs_array`.
-    reconstruct_batch = jax.vmap(_reconstruct_single, in_axes=0)
-    
-    # Apply the vectorized function to the entire batch of coefficients
-    return reconstruct_batch(coeffs_array)
-
 def format_array_with_commas(arr):
     if not isinstance(arr, jnp.ndarray):
         return str(arr)

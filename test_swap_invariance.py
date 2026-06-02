@@ -28,7 +28,7 @@ import jax
 import jax.numpy as jnp
 
 from helper import evaluate_equations_single_point
-from plot_hermitian_coeffs import _load_coeffs
+from hermitian_coeffs import _load_coeffs
 
 
 def load_min_set_real(path: Path) -> np.ndarray:

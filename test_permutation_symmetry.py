@@ -35,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 
-from plot_hermitian_coeffs import (
+from hermitian_coeffs import (
     _SYM_DIM, extract_hermitians, _load_coeffs,
 )
 
@@ -188,6 +188,39 @@ _GROUPS: dict[str, list[tuple[tuple[int, ...], str]]] = {
         ((1, 0, 2, 3, 4), "(0 1)  [moves 0 out of {0,4}]"),
         ((0, 4, 2, 3, 1), "(1 4)  [moves 4 out of {0,4}]"),
         ((1, 2, 3, 4, 0), "(0 1 2 3 4)  [5-cycle]"),
+    ],
+    # All 26 involutions of S_5: identity, 10 transpositions, 15 double-trans.
+    # Pairing with complex conjugation in anti mode tests every distinct
+    # anti-holomorphic involution z_i -> conj(z_{sigma(i)}) of the quintic.
+    "involutions": [
+        ((0, 1, 2, 3, 4), "identity (= pure conj in anti mode = RP^3)"),
+        # transpositions
+        ((1, 0, 2, 3, 4), "(0 1)"),
+        ((2, 1, 0, 3, 4), "(0 2)"),
+        ((3, 1, 2, 0, 4), "(0 3)"),
+        ((4, 1, 2, 3, 0), "(0 4)"),
+        ((0, 2, 1, 3, 4), "(1 2)"),
+        ((0, 3, 2, 1, 4), "(1 3)"),
+        ((0, 4, 2, 3, 1), "(1 4)"),
+        ((0, 1, 3, 2, 4), "(2 3)"),
+        ((0, 1, 4, 3, 2), "(2 4)"),
+        ((0, 1, 2, 4, 3), "(3 4)"),
+        # double transpositions (disjoint 2-cycles)
+        ((1, 0, 3, 2, 4), "(0 1)(2 3)"),
+        ((1, 0, 4, 3, 2), "(0 1)(2 4)"),
+        ((1, 0, 2, 4, 3), "(0 1)(3 4)"),
+        ((2, 3, 0, 1, 4), "(0 2)(1 3)"),
+        ((2, 4, 0, 3, 1), "(0 2)(1 4)"),
+        ((2, 1, 0, 4, 3), "(0 2)(3 4)"),
+        ((3, 2, 1, 0, 4), "(0 3)(1 2)"),
+        ((3, 4, 2, 0, 1), "(0 3)(1 4)"),
+        ((3, 1, 4, 0, 2), "(0 3)(2 4)"),
+        ((4, 2, 1, 3, 0), "(0 4)(1 2)"),
+        ((4, 3, 2, 1, 0), "(0 4)(1 3)"),
+        ((4, 1, 3, 2, 0), "(0 4)(2 3)"),
+        ((0, 2, 1, 4, 3), "(1 2)(3 4)"),
+        ((0, 3, 4, 1, 2), "(1 3)(2 4)"),
+        ((0, 4, 3, 2, 1), "(1 4)(2 3)"),
     ],
 }
 
