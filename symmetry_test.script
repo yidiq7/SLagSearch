@@ -4,110 +4,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:nvidia_a100-sxm4-80gb:2  # Request 4 GPUs
 #SBATCH --cpus-per-task=8   # Grant exclusive access to the node
-#SBATCH --mem=16G                             # '0' tells Slurm to allocate all available memory on the node
-
-# Tests whether the (2 3) symmetry of the d=3 sLag candidate is genuine
-# under S_5 relabeling. For each of the 10 transpositions (i j) of S_5 we
-# build a permuted coeffs file, then run three diagnostics:
-#   (1) gradient_descent.py --plots_only -> fitness plots
-#       (Lagrangian + special-condition histograms; should be identical
-#       across all 10 if (2 3) is a true sLag symmetry up to S_5)
-#   (2) plot_hermitian_coeffs.py -> per-degree Hermitian heatmaps + spectra
-#       (the d=2 (0,4)-tile should move to (tau(0), tau(4)))
-#   (3) test_permutation_symmetry.py --group transpositions --mode holo ->
-#       the symmetry transposition should shift from (2 3) to (i j)
-
-#set -euo pipefail
-#
-## --- User-editable: path to the source d=3 checkpoint ---------------------
-#SOURCE_PKL="${SOURCE_PKL:-gd_runs/gd_d3_from_d1_step3000.pkl}"
-#MAX_DEGREE="${MAX_DEGREE:-3}"
-#
-## --- Output layout --------------------------------------------------------
-#OUT_ROOT="symmetry_test"
-#PERM_DIR="$OUT_ROOT/permuted_coeffs"
-#GD_DIR="$OUT_ROOT/gd_plots"
-#HERM_DIR="$OUT_ROOT/hermitian"
-#LOG_DIR="$OUT_ROOT/symmetry_logs"
-#mkdir -p "$PERM_DIR" "$GD_DIR" "$HERM_DIR" "$LOG_DIR"
-#
-## --- Env: uv-managed (no conda on this cluster) ---------------------------
-## All python invocations below are prefixed with `uv run` so dependencies are
-## resolved against the project's pyproject.toml / uv.lock.
-#
-#echo "==============================================="
-#echo "Symmetry test:  source pkl = $SOURCE_PKL"
-#echo "                output root = $OUT_ROOT"
-#echo "Started at $(date)"
-#echo "==============================================="
-#
-#if [ ! -f "$SOURCE_PKL" ]; then
-#    echo "ERROR: SOURCE_PKL not found: $SOURCE_PKL"
-#    echo "Edit the top of this script (or pass SOURCE_PKL=... in the env)."
-#    exit 1
-#fi
-#
-## --- Step 0: generate the 10 permuted coeffs pkls -------------------------
-#echo
-#echo "--- [0/3] permute_coeffs.py -> $PERM_DIR ---"
-#uv run python permute_coeffs.py --coeffs "$SOURCE_PKL" --out_dir "$PERM_DIR" \
-#    2>&1 | tee "$LOG_DIR/permute_coeffs.log"
-#
-## --- Step 1: fitness plots for each permutation (plots_only) --------------
-## These take the longest (each one mines a fresh min-set and runs the
-## fitness pipeline). Done serially since each one uses the full GPU.
-#echo
-#echo "--- [1/3] gradient_descent.py --plots_only (fitness plots) ---"
-#for f in "$PERM_DIR"/*.pkl; do
-#    job=$(basename "$f" .pkl)
-#    echo
-#    echo ">>> $job"
-#    uv run python gradient_descent.py \
-#        --job_id "$job" \
-#        --plots_only \
-#        --resume "$f" \
-#        --max_degree "$MAX_DEGREE" \
-#        --out_dir "$GD_DIR" \
-#        2>&1 | tee "$LOG_DIR/${job}_gd_plots.log"
-#done
-#
-## --- Step 2: Hermitian heatmaps + spectra ---------------------------------
-#echo
-#echo "--- [2/3] plot_hermitian_coeffs.py -> $HERM_DIR ---"
-#for f in "$PERM_DIR"/*.pkl; do
-#    job=$(basename "$f" .pkl)
-#    echo ">>> $job"
-#    uv run python plot_hermitian_coeffs.py \
-#        --coeffs "$f" \
-#        --job_id "$job" \
-#        --out_dir "$HERM_DIR" \
-#        --no_print \
-#        2>&1 | tee "$LOG_DIR/${job}_hermitian.log"
-#done
-#
-## --- Step 3: permutation symmetry test ------------------------------------
-#echo
-#echo "--- [3/3] test_permutation_symmetry.py (transpositions, holo) ---"
-#for f in "$PERM_DIR"/*.pkl; do
-#    job=$(basename "$f" .pkl)
-#    echo
-#    echo ">>> $job"
-#    uv run python test_permutation_symmetry.py \
-#        --coeffs "$f" \
-#        --group transpositions \
-#        --mode holo \
-#        2>&1 | tee "$LOG_DIR/${job}_symmetry.log"
-#done
-#
-#echo
-#echo "==============================================="
-#echo "Done at $(date)"
-#echo "Outputs:"
-#echo "  $PERM_DIR/       - 10 permuted coeffs pkls"
-#echo "  $GD_DIR/         - per-job fitness plots (plots_slag_<job>/...)"
-#echo "  $HERM_DIR/       - per-job Hermitian heatmaps + spectra + npz"
-#echo "  $LOG_DIR/        - per-step stdout/stderr"
-#echo "==============================================="
+#SBATCH --mem=64G                             # '0' tells Slurm to allocate all available memory on the node
 
 
 ## Test (2 3) on the original (not-permuted) d=3 candidate:
@@ -122,4 +19,33 @@
 #    --coeffs gd_runs/gd_d3_from_d1_step3000.pkl \
 #    --swap 0 1
 #
-uv run python plot_coord_scatter.py gd_runs/plots_slag_d3_from_d1
+#uv run python plot_coord_scatter.py gd_runs/plots_slag_d3_from_d1
+
+#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
+#    --methods umap mapper --sweep --out_subdir 3D_fs
+
+#uv run python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
+#      --methods intrinsic_dim --out_subdir intrinsic_dim
+
+#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
+#      --methods umap \
+#      --umap_n_neighbors 200 --umap_min_dist 0.3 \
+#      --out_subdir 3D_fs_v2
+#
+#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d4_run \
+#      --methods umap \
+#      --umap_n_neighbors 100 --umap_min_dist 0.3 \
+#      --out_subdir 3D_fs_v2
+#
+
+#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
+#      --methods mapper \
+#      --mapper_filter first-pc \
+#      --mapper_n_cubes 30 \
+#      --mapper_overlap 0.5 \
+#      --mapper_eps_percentile 50 \
+#      --out_subdir 3D_fs_v2
+
+#uv run --extra viz-3d python split_clusters.py gd_runs/plots_slag_d4_run --n_clusters 2
+uv run python -m viz.plot_coord_scatter --filepath gd_runs/plots_slag_d4_run/cluster_split/cluster_0_points.pkl\
+    --out_dir gd_runs/plots_slag_d4_run/cluster_split/scatter_0

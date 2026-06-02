@@ -8,9 +8,14 @@
 
 START_TIME=$SECONDS
 uv run --extra persistent-homology python persistent_homology/persistent_homology_witness_h0h1.py \
-    --filepath gd_runs/plots_slag_d3_from_d1/min_set.pkl \
-    --coeffs_pkl gd_runs/gd_d3_from_d1_step5000.pkl \
-    --psi 0 --landmarks 1000,2000,5000
+    --filepath gd_runs/plots_slag_d4_run/min_set.pkl \
+    --coeffs_pkl gd_runs/gd_d4_run_step3000.pkl \
+    --psi 0 --landmarks 1000,2000,3000 \
+    --subsamp 200000 --max_alpha 0.55 \
+    --no_newton_filter \
+    --witness_type weak \
+    --out_dir gd_runs/plots_slag_d4_run/PH_witness_weak
 ELAPSED_TIME=$(($SECONDS - $START_TIME))
 
 echo "Total execution time: $(($ELAPSED_TIME/3600))h $((($ELAPSED_TIME/60)%60))m $(($ELAPSED_TIME%60))s"
+    #--coeffs_pkl gd_runs/gd_d3_from_d1_step5000.pkl \
