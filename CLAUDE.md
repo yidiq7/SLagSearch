@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+Never open responses with filler phrases like "Great question!", "Of course!", "Certainly!", or similar warmups. Start every response with the actual answer. No preamble, no acknowledgment of the question.
+Match response length to task complexity. Simple questions get direct, short answers. Complex tasks get full, detailed responses. Never pad responses with restatements of the question or closing sentences that repeat what you just said.
+Before any significant task, show me 2-3 ways you could approach this work. Wait for me to choose before proceeding.
+If you are uncertain about any fact, statistic, date, or piece of technical information: say so explicitly before including it. Never fill gaps in your knowledge with plausible-sounding information. When in doubt, say so.
+
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this project does
@@ -43,7 +49,7 @@ GA is the search tool (broad exploration of the d=1 landscape); GD is the refine
        --init_pkl gd_runs/gd_d3_step2000.pkl
    ```
 
-3. **Inspect.** GD auto-emits histograms at the end (`plots_slag_<job_id>/`, plus per-degree truncation overlays for `max_degree >= 3`). PCA: `python plot_pca.py gd_runs/plots_slag_<job_id>`.
+3. **Inspect.** GD auto-emits histograms at the end (`plots_slag_<job_id>/`, plus per-degree truncation overlays for `max_degree >= 3`). 3D viz of `min_set.pkl`: `python plot_3D.py gd_runs/plots_slag_<job_id>` (PCA / UMAP / Mapper / intrinsic_dim).
 
 ### Extracting candidates from a mid-run checkpoint
 
@@ -65,7 +71,7 @@ Note: `load_ga_checkpoint` uses each species's stored `representative` (current 
 
 Path resolution has two layers:
 
-1. **Per-script `POINTS_FILE` variable** — every module-level script (`GA.py`, `sLagSearch2.py`, `plot_histograms.py`) sets `POINTS_FILE` once at the top, default `dwork_points_path(PSI, SEED)`. Edit that single line to point at any pickle. CLI scripts (`gradient_descent.py`, `profile_pipeline.py`, `plot_d1_coeffs.py`) accept `--points_file <path>` instead.
+1. **Per-script `POINTS_FILE` variable** — every module-level script (`GA.py`, `sLagSearch2.py`) sets `POINTS_FILE` once at the top, default `dwork_points_path(PSI, SEED)`. Edit that single line to point at any pickle. CLI scripts (`gradient_descent.py`, `profile_pipeline.py`, `fitness_plots.py`) accept `--points_file <path>` instead.
 2. **Repo-wide `helper.POINTS_DIR`** — default `"."` (cwd). The directory that `dwork_points_path` joins with `dwork_filename`. Edit this if all your data lives in one shared spot and you want every Dwork-family script to find it without per-script edits.
 
 The Dwork-family helpers (`dwork_points_path`, `dwork_filename`) are scoped to the one-parameter Dwork pencil `Σ z_i^5 + ψ · Π z_i = 0`. The filename convention is `1mil_patch_all_psi{psi_str}_seed{seed}.pkl`; integer-real psi keeps the legacy form (`psi0`, `psi10`), fractional real becomes `psi0.5`, complex becomes `psi1+2j` / `psi1-2j`.
@@ -118,7 +124,7 @@ python GA.py --job_id <label> --preload_d1
 
 GA hyperparameters live as module-level constants at the top of `GA.py` (population, generations, mutation/crossover rates, speciation thresholds, sigma adaptation, `MINSET_SIZE`, `NEWTON_STEPS`, `DIST_CHUNK_SIZE`). Edit them in-source — there are no CLI flags for them. The expensive ones to tune for memory/perf are `MINSET_SIZE`, `NEWTON_STEPS`, `FITNESS_MINI_BATCH_SIZE`, and `DIST_CHUNK_SIZE`.
 
-`PSI` and `SEED` at the top of `GA.py` (and `psi`/`metric` at the top of `sLagSearch2.py` and `plot_histograms.py`) select the point cloud — resolution goes through `helper.points_path(PSI, SEED)`, so edit `helper.POINTS_DIR` once to point all of them at your data location.
+`PSI` and `SEED` at the top of `GA.py` (and `psi`/`metric` at the top of `sLagSearch2.py`) select the point cloud — resolution goes through `helper.points_path(PSI, SEED)`, so edit `helper.POINTS_DIR` once to point all of them at your data location.
 
 ### Cluster (Slurm)
 
@@ -178,6 +184,8 @@ Checkpoints land in `--out_dir` (default `./gd_runs/`) as `gd_<job_id>_step<N>.p
 - For `max_degree=3`: `plots_slag_<job_id>_d2_vs_d3/` and `plots_slag_<job_id>_d1_d2_d3/` (truncations of the GD result, each row re-normalized).
 - For `max_degree=4`: `plots_slag_<job_id>_d3_vs_d4/` and `plots_slag_<job_id>_d1_d2_d3_d4/`.
 
+Each folder contains the two fitness histograms (`Kahler_form_loss_histogram.png`, `circular_phase_histogram.png`), the 5×5 coord-pair scatter grids colored by Lagrangian fitness (`coord_scatter_{re,im,abs}_fitness.png`, via `plot_coord_scatter.plot_pairs`), and the mined point cloud as `min_set.pkl` + sidecar `frobenius_norms.npy` (re-use the sidecar with `python plot_coord_scatter.py <folder> --color fitness` or by hand).
+
 ## Profiling
 
 ```bash
@@ -192,8 +200,9 @@ Reports per-phase timing for `compute_distances_batched`, Newton refine, repulsi
 ## Auxiliary diagnostic scripts
 
 - `plot_gd_history.py <path>` — plots loss + fitness curves from either a GD stdout log or a `gd_runs/*.pkl` checkpoint's `history` field. Writes `<prefix>_loss.png` and `<prefix>_fitness.png`.
-- `plot_d1_coeffs.py` — runs `make_fitness_plots` directly on a hardcoded d=1 coefficient matrix (no training). Useful for sanity-checking the baseline.
-- `plot_pca.py <folder> ...` — 3D / 2D-pairs PCA scatter of `min_set.pkl` produced inside each `plots_slag_*` folder, colored by affine-patch index.
+- `fitness_plots.py [--coeffs_pkl <path>] [--points_file <path>] [--psi <c>] [--metric <m>] [--parent_folder <dir>]` — library (`make_fitness_plots`, imported by GA/GD) + CLI. CLI runs the full fitness-diagnostics pipeline on any `(3, w)` coeffs (loads from `--coeffs_pkl`; defaults to a d=1 baseline hardcoded in the file). Outputs the two histograms + sidecars + fitness-colored coord-scatter PNGs.
+- `plot_3D.py <folder> [--methods coord pca umap mapper intrinsic_dim]` — 3D topology-aware viz of `min_set.pkl`: coord-aligned scatters, linear PCA (explained-variance readout + 2D-pairs), UMAP, Mapper (β₁ readout), and intrinsic-dim estimators (TwoNN / MLE / PH-dim). Colored by affine-patch index; `--metric fs|euclidean` controls feature representation for PCA/UMAP/Mapper.
+- `plot_coord_scatter.py --filepath <pkl> [--out_dir <dir>] [--fitness_path <npy>] [--part re|im|abs|all] [--color patch|fitness]` — 5×5 grid of coord-pair scatters from any `(N, 5)` complex pickle (diagonal panels show Re z_i vs Im z_i; off-diagonals draw y=x for swap-symmetry checks). `--out_dir` defaults to `--filepath`'s parent. `--color patch` (default) is pure-numpy; `--color fitness` reads a `frobenius_norms.npy` sidecar (from `--fitness_path`, or `<filepath_dir>/frobenius_norms.npy`) and colors by `exp(-10·||K_R||_F/√||K_U||_F)`. GA/GD auto-emit the fitness-colored variant at run-end.
 - `diagnose_phases.py --ansatz {d1,rp3}` — prints per-patch Ω-phase histograms via the production code path (`compute_holomorphic_form` + `compute_Omega_restriction`, including the `(-1)^(patch_idx+max_idx)` and basis-orientation signs). The `rp3` ansatz (`Im(z_0 z̄_1)=Im(z_0 z̄_2)=Im(z_0 z̄_3)=0`) is a known check: expects 5 peaks at odd multiples of π/5.
 
 ## Code architecture
@@ -220,13 +229,12 @@ GA.py / gradient_descent.py
 - `slag_condition.py` — Geometry. `calculate_complex_metric_FS` is auto-diff'd from the FS Kähler potential; `calculate_complex_metric_k4` uses Donaldson's `k=4` algebraic metric for the Fermat quintic with hardcoded balanced coefficients (see the canonical-form table near `_QUINTIC_EXPONENTS`). Switching `METRIC` between `'FS'` and `'k4_fermat'` selects between them. Differentiable `compute_special_condition_fitness_smooth` is the GD loss; histogram-entropy `compute_special_condition_fitness` is the GA fitness.
 - `get_restriction.py` — affine Jacobian, tangent-space restriction matrices, and `compute_Omega_restriction` used by both Newton and the Kähler-form pullback.
 - `helper.py` — basis generation up to degree 4 (`generate_basis_*_order_single_point` for d=1/2/3/4 with sizes 25/225/1225/4900), real⇄complex (10D⇄5D) conversions, patch detection, distance matrices. `canonicalize_coeffs` is currently a no-op; the RREF code is kept as a docstring for future use.
-- `sharding.py` — tiny helpers (`device_put_sharded`, `shard_leading_axis`, `unshard_leading_axis`, `take_replicated`) for the leading-device-axis sharding pattern used by GD multi-GPU and by `plots.make_fitness_plots`. The pattern: an outer "device" axis of size `D = jax.local_device_count()` is consumed by `pmap` with `axis_name="x"`.
-- `plots.py` — diagnostics shared by both optimizers. `make_fitness_plots` accepts:
+- `sharding.py` — tiny helpers (`device_put_sharded`, `shard_leading_axis`, `unshard_leading_axis`, `take_replicated`) for the leading-device-axis sharding pattern used by GD multi-GPU and by `fitness_plots.make_fitness_plots`. The pattern: an outer "device" axis of size `D = jax.local_device_count()` is consumed by `pmap` with `axis_name="x"`.
+- `fitness_plots.py` — fitness-diagnostics pipeline (mining → Kähler/phase diagnostics → histograms + sidecar + coord-scatter). Shared by both optimizers via `make_fitness_plots`, plus a standalone CLI (see auxiliary scripts above). `make_fitness_plots` accepts:
   - `compare_with`: `None` | `"random"` | `jnp.ndarray` for the comparison overlay.
   - `extra_comparisons`: list of `{"coeffs", "label", "color"}` dicts for additional overlays (used by the d=1+2+3 / d=1+2+3+4 multi-truncation plots).
   - `primary_color/label`, `compare_color/label`, `fix_kahler_x_range` to style the histograms.
   - `num_devices > 1` shards `filter_and_refine` across GPUs (host-side chunked diagnostics still bound peak VRAM via `chunk_size`).
-- `plot_histograms.py` — additional histogram-only diagnostics.
 
 ### GA structure (GA.py)
 
@@ -255,7 +263,7 @@ Both `--minset_size` and `--plot_k` must be divisible by `num_devices`; the load
 - Points are stored as `(N, 10)` real arrays: first 5 = `Re(z)`, last 5 = `Im(z)`. Convert with helpers in `helper.py`. The 5D complex form is used inside metric/Kähler computations.
 - An individual's coefficient matrix has shape `(3, w)` with `w ∈ {25, 250, 1475, 6375}` (see the table at the top). Slicing `coeffs[:, :w']` to a smaller `w'` selects a lower-degree truncation; `normalize_coeffs` re-normalizes each row independently (used by both training and the d=1/d=2/d=3 truncation plots).
 - `psi` is the complex deformation parameter of the quintic; `PSI=0` gives the Fermat quintic. Several `.pkl` point clouds for different psi values live under `data_psi/` on the cluster.
-- JAX precision: `GA.py` and `profile_pipeline.py` set `'jax_default_matmul_precision'='high'` (TF32 on Ampere+); `gradient_descent.py` and `diagnose_phases.py` set `'jax_enable_x64'=True` (strict FP64 throughout). `sLagSearch2.py`/`plot_histograms.py` use `'highest'` (strict FP32). Match the precision when reproducing results.
+- JAX precision: `GA.py` and `profile_pipeline.py` set `'jax_default_matmul_precision'='high'` (TF32 on Ampere+); `gradient_descent.py` and `diagnose_phases.py` set `'jax_enable_x64'=True` (strict FP64 throughout). `sLagSearch2.py` uses `'highest'` (strict FP32). Match the precision when reproducing results.
 - GA checkpoints (`checkpoints/checkpoint_gen_*.pkl`) save population, key, and a slim version of `species_list` (members pruned, representative + sigma + stagnation kept). `Species._id_counter` is restored on load to avoid ID collisions.
 - GD checkpoints (`gd_runs/gd_<job_id>_step<N>.pkl`) save `coeffs`, `opt_state`, `history`, `step`, and the parsed `args` dict.
 - `.pkl` files and `checkpoints/` are git-ignored; the 80MB `1mil_patch_all_psi0_seed1024.pkl` in the repo root is the local fallback point cloud (the GD `load_points` tries the cluster path first, then falls back to this local file).

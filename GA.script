@@ -15,7 +15,6 @@ conda activate sLagSearch
 python GA.py --job_id "$SLURM_JOB_ID" --load_checkpoint
 #python GA.py --job_id "$SLURM_JOB_ID"
 #python plot_scatter.py
-#python plot_histograms.py
 
 # Kill the nvidia-smi logger now that the main application is done.
 #kill $SMI_PID

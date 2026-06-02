@@ -69,7 +69,7 @@ from helper import (
     format_array_with_commas,
     load_points as _load_points,
 )
-from plots import make_fitness_plots
+from fitness_plots import make_fitness_plots
 from sharding import device_put_sharded, shard_leading_axis, take_replicated
 from slag_condition import (
     compute_holomorphic_form_restricted,

@@ -2,10 +2,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import os
-import re
 import pickle
 import matplotlib.pyplot as plt
 from functools import partial
+from pathlib import Path
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
 from sharding import shard_leading_axis
 from slag_condition import (
@@ -18,6 +18,7 @@ from slag_condition import (
 )
 from get_restriction import compute_Omega_restriction
 from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
+from plot_coord_scatter import render_from_folder
 from typing import Optional
 
 
@@ -285,148 +286,104 @@ def make_fitness_plots(
     plt.savefig(os.path.join(parent_folder, 'circular_phase_histogram.png'), bbox_inches='tight')
     plt.close()
 
-    make_scatter_plots(min_set_real, frobenius_norms, parent_folder)
-    save_min_set(min_set_real, parent_folder)
+    save_min_set_and_diagnostics(min_set_real, frobenius_norms, parent_folder)
+    # Coord-scatter via the sidecar contract: single owner for "render
+    # coord-scatter from a folder" lives in plot_coord_scatter. Costs one
+    # extra pkl/npy load, which is negligible next to the diagnostics above.
+    render_from_folder(Path(parent_folder) / "min_set.pkl", color="fitness")
 
 
-def make_scatter_plots(
-    min_set_real: jnp.ndarray,
-    frobenius_norms: jnp.ndarray,
-    parent_folder: str
-):
-
-    lagrangian_fitness = jnp.exp(-10*frobenius_norms)
-    # Define the coordinate pairs and labels for plotting.
-    plot_configs = [
-        {'x_idx': 0, 'y_idx': 5, 'xlabel': 'z0 real', 'ylabel': 'z0 imag', 'file_part': 'z0rz0i'},
-        {'x_idx': 1, 'y_idx': 2, 'xlabel': 'z1 real', 'ylabel': 'z2 real', 'file_part': 'z1rz2r'},
-        {'x_idx': 3, 'y_idx': 4, 'xlabel': 'z3 real', 'ylabel': 'z4 real', 'file_part': 'z3rz4r'},
-        {'x_idx': 6, 'y_idx': 7, 'xlabel': 'z1 imag', 'ylabel': 'z2 imag', 'file_part': 'z1iz2i'},
-        {'x_idx': 8, 'y_idx': 9, 'xlabel': 'z3 imag', 'ylabel': 'z4 imag', 'file_part': 'z3iz4i'},
-        {'x_idx': 1, 'y_idx': 6, 'xlabel': 'z1 real', 'ylabel': 'z1 imag', 'file_part': 'z1rz1i'},
-    ]
-
-    for config in plot_configs:
-        min_set_x = min_set_real[:, config['x_idx']]
-        min_set_y = min_set_real[:, config['y_idx']]
-
-        # --- Colored by Lagrangian Fitness ---
-        plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(min_set_x, min_set_y, c=lagrangian_fitness, cmap='viridis', s=0.05, edgecolor=None)
-        plt.colorbar(scatter, label='Lagrangian Fitness')
-        plt.title(f'Scatter Plot of {config["ylabel"]} vs {config["xlabel"]} (Color by Lagrangian Fitness)')
-        plt.xlabel(config['xlabel'])
-        plt.ylabel(config['ylabel'])
-        plt.grid(True, linestyle='--', alpha=0.6)
-        output_filename = os.path.join(parent_folder, f"scatter_{config['file_part']}.png")
-        plt.savefig(output_filename, dpi=300)
-        plt.close()
-
-def save_min_set(min_set_real: jnp.ndarray, parent_folder: str) -> None:
-    min_set = min_set_real[:,:5]+min_set_real[:,5:]*1j
+def save_min_set_and_diagnostics(min_set_real: jnp.ndarray,
+                                 frobenius_norms: np.ndarray,
+                                 parent_folder: str) -> None:
+    """Write min_set.pkl (legacy (N, 5) complex array) and the sidecar
+    frobenius_norms.npy that plot_coord_scatter.py --color fitness consumes.
+    """
+    min_set = np.asarray(min_set_real)[:, :5] + np.asarray(min_set_real)[:, 5:] * 1j
     with open(os.path.join(parent_folder, "min_set.pkl"), "wb") as f:
-        pickle.dump(min_set, f) 
+        pickle.dump(min_set, f)
+    np.save(os.path.join(parent_folder, "frobenius_norms.npy"),
+            np.asarray(frobenius_norms))
 
 
-def plot_slag_data(jobid, max_rank, coordinates):
+# ---------------------------------------------------------------------------
+#  Standalone CLI: fitness plots for a coeffs array (absorbed from
+#  plot_d1_coeffs.py). Defaults to the d=1 baseline below if no
+#  --coeffs_pkl is supplied; --coeffs_pkl accepts a bare (3, w) array or
+#  a checkpoint dict with a "coeffs" key.
+# ---------------------------------------------------------------------------
+D1_COEFFS = jnp.asarray([
+    [-0.7303538918495178, 0.08144077658653259, 0.0508277602493763, 0.1342628300189972, 0.10492400079965591, 0.026059845462441444, 0.08795911818742752, 0.18202504515647888, -0.2318553328514099, 0.19111207127571106, 0.12272824347019196, -0.18792606890201569, -0.010629810392856598, 0.03757120668888092, -0.03072214126586914, 0.1476466804742813, -0.09663095325231552, 0.013276210054755211, -0.02938280999660492, 0.0015832323115319014, -0.232550248503685, -0.24750050902366638, -0.09898191690444946, -0.25930696725845337, -0.13821059465408325],
+    [-0.30552297830581665, 0.05322077125310898, 0.026228293776512146, 0.0475473515689373, 0.09884151816368103, -0.0022952028084546328, 0.07855669409036636, -0.5385099649429321, 0.48728707432746887, -0.5061385631561279, 0.05925785377621651, -0.08616615831851959, -0.05580515041947365, -0.03696516156196594, 0.04638112708926201, 0.06312626600265503, -0.04773535579442978, -0.018126241862773895, 0.013317487202584743, -0.03146995231509209, -0.10255347937345505, -0.15281900763511658, -0.008377314545214176, -0.19228313863277435, -0.07119646668434143],
+    [-0.742755651473999, -0.02884053625166416, -0.09886687248945236, -0.027701135724782944, -0.19895869493484497, -0.16314652562141418, -0.2282542735338211, 0.1384347826242447, -0.12351837754249573, 0.09779400378465652, 0.08285680413246155, -0.07458371669054031, 0.22398249804973602, 0.21140094101428986, 0.19246235489845276, 0.10321154445409775, -0.10807567834854126, 0.029491063207387924, -0.023275744169950485, -0.009872819297015667, 0.17578807473182678, 0.17009639739990234, -0.06591708213090897, 0.14255480468273163, -0.14826683700084686],
+])
+
+
+def _load_coeffs_pkl(path: str) -> jnp.ndarray:
+    """Load a coeffs array from a pickle. Accepts a bare (3, w) ndarray or a
+    checkpoint dict with a 'coeffs' key (matches gradient_descent checkpoints).
     """
-    Finds, loads, and plots data from GA output folders, automatically
-    creating a 2D or 3D scatter plot based on the length of 'coordinates'.
+    with open(path, "rb") as f:
+        obj = pickle.load(f)
+    if isinstance(obj, dict) and "coeffs" in obj:
+        return jnp.asarray(obj["coeffs"])
+    return jnp.asarray(obj)
 
-    Args:
-        jobid (str or int): The job ID used in the folder names.
-        max_rank (int): The maximum rank to include in the plot.
-        coordinates (tuple of int): A tuple of 2 or 3 integer indices 
-                                    specifying which coordinates to plot.
-    """
-    # This list provides labels for the 10 real coordinates
-    coord_list = [
-        'z0_real', 'z1_real', 'z2_real', 'z3_real', 'z4_real',
-        'z0_img', 'z1_img', 'z2_img', 'z3_img', 'z4_img'
-    ]
 
-    # --- 1. Argument Validation ---
-    if not isinstance(coordinates, (list, tuple)) or not (2 <= len(coordinates) <= 3):
-        print("Error: 'coordinates' must be a tuple or list containing 2 or 3 integers.")
-        return
+def main() -> None:
+    import argparse
+    from helper import assert_metric_psi_compatible, dwork_points_path, load_points
 
-    main_folder = f"plots_slag_{jobid}"
-    if not os.path.isdir(main_folder):
-        print(f"Error: Base directory '{main_folder}' not found.")
-        return
+    parser = argparse.ArgumentParser(
+        description="Generate fitness plots (Kahler-form histogram, "
+                    "Omega-phase polar, fitness-colored coord-scatter) for "
+                    "a coeffs array. Defaults to a d=1 baseline if no "
+                    "--coeffs_pkl is supplied.")
+    parser.add_argument("--coeffs_pkl", default=None,
+                        help="Path to a pickle holding either a (3, w) coeffs "
+                             "array (w in {25, 250, 1475, 6375}) or a "
+                             "checkpoint dict with a 'coeffs' key. Defaults "
+                             "to the d=1 baseline hardcoded in this file.")
+    parser.add_argument("--points_file", default=None,
+                        help="Override path to point cloud pkl. "
+                             "Default: helper.dwork_points_path(psi).")
+    parser.add_argument("--psi", type=complex, default=0+0j,
+                        help="Dwork parameter (complex). 0 = Fermat quintic.")
+    parser.add_argument("--metric", default="k4_fermat",
+                        help="'k4_fermat' (psi=0 only) or 'FS' (any psi).")
+    parser.add_argument("--k", type=int, default=80000)
+    parser.add_argument("--n_refine_steps", type=int, default=80)
+    parser.add_argument("--parent_folder", default="plots_d1_manual",
+                        help="Output directory for histograms + sidecars + "
+                             "coord-scatter PNGs.")
+    parser.add_argument("--compare_with", default="random",
+                        help="'None', 'random', or unused (manual ndarray "
+                             "not exposed here).")
+    args = parser.parse_args()
 
-    # --- 2. Data Aggregation ---
-    all_points = []
-    pattern = re.compile(f"plots_slag_{jobid}_(\\d+)_id\\d+")
-    print(f"Searching for subfolders in '{main_folder}' with rank < {max_rank}...")
+    assert_metric_psi_compatible(args.metric, args.psi)
+    points_file = (args.points_file if args.points_file is not None
+                   else dwork_points_path(args.psi, seed=1024))
+    points_real = load_points(points_file)
+    print(f"Loaded {points_real.shape[0]} points from {points_file}")
 
-    # Use sorted() to process folders in a predictable order
-    for subfolder_name in sorted(os.listdir(main_folder)):
-        full_path = os.path.join(main_folder, subfolder_name)
-        if os.path.isdir(full_path):
-            match = pattern.match(subfolder_name)
-            if match:
-                rank = int(match.group(1))
-                if rank < max_rank:
-                    pkl_path = os.path.join(full_path, "min_set.pkl")
-                    if os.path.exists(pkl_path):
-                        try:
-                            with open(pkl_path, 'rb') as f:
-                                min_set_complex = pickle.load(f)
-                                min_set_complex_np = np.asarray(min_set_complex)
-                                # Convert N x 5 complex to N x 10 real
-                                min_set_real = np.hstack([min_set_complex_np.real, min_set_complex_np.imag])
-                                all_points.append(min_set_real)
-                        except Exception as e:
-                            print(f"Warning: Could not process file {pkl_path}. Error: {e}")
+    coeffs = (_load_coeffs_pkl(args.coeffs_pkl) if args.coeffs_pkl is not None
+              else D1_COEFFS)
+    print(f"Coeffs shape: {coeffs.shape}"
+          + (f"  (from {args.coeffs_pkl})" if args.coeffs_pkl is not None
+             else "  (default D1 baseline)"))
 
-    if not all_points:
-        print("No data found to plot. Check folder names and paths.")
-        return
+    compare_with = None if args.compare_with.lower() == "none" else args.compare_with
 
-    # Consolidate all data into a single NumPy array
-    all_points_real = np.vstack(all_points)
-    print(f"Plotting {len(all_points_real)} total points.")
+    make_fitness_plots(
+        points_real, coeffs, jnp.asarray(args.psi),
+        k=args.k, n_refine_steps=args.n_refine_steps,
+        metric=args.metric, compare_with=compare_with,
+        parent_folder=args.parent_folder,
+    )
+    print(f"Plots written to {args.parent_folder}/")
 
-    # --- 3. Plotting (2D or 3D based on input) ---
-    fig = plt.figure(figsize=(13, 11))
 
-    # --- 3A. 3D Plotting Logic ---
-    if len(coordinates) == 3:
-        c1, c2, c3 = coordinates
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(
-            all_points_real[:, c1], 
-            all_points_real[:, c2], 
-            all_points_real[:, c3], 
-            s=0.5, alpha=0.7
-        )
-        ax.set_title(f"3D Scatter Plot for Job ID: {jobid} (Ranks < {max_rank})", fontsize=16)
-        ax.set_xlabel(f"{coord_list[c1]}", fontsize=12)
-        ax.set_ylabel(f"{coord_list[c2]}", fontsize=12)
-        ax.set_zlabel(f"{coord_list[c3]}", fontsize=12)
-        filename = f'scatter_plot_3D_{jobid}_{c1}_{c2}_{c3}.png'
-
-    # --- 3B. 2D Plotting Logic ---
-    else: # This will be len(coordinates) == 2
-        c1, c2 = coordinates
-        ax = fig.add_subplot(111)
-        ax.scatter(
-            all_points_real[:, c1], 
-            all_points_real[:, c2], 
-            s=0.5, alpha=0.7, edgecolors='none'
-        )
-        ax.set_title(f"2D Scatter Plot for Job ID: {jobid} (Ranks < {max_rank})", fontsize=16)
-        ax.set_xlabel(f"{coord_list[c1]}", fontsize=12)
-        ax.set_ylabel(f"{coord_list[c2]}", fontsize=12)
-        filename = f'scatter_plot_2D_{jobid}_{c1}_{c2}.png'
-        
-    # --- 4. Finalize and Save Plot ---
-    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    fig.tight_layout()
-    
-    save_path = os.path.join(main_folder, filename)
-    plt.savefig(save_path, dpi=150) # dpi improves resolution
-    plt.close(fig) # Close the figure to free up memory
-    print(f"Plot successfully saved to: {save_path}")
-
+if __name__ == "__main__":
+    jax.config.update("jax_default_matmul_precision", "high")
+    main()

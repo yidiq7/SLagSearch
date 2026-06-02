@@ -1,10 +1,16 @@
 """3D topology-aware visualizations of min_set.pkl point clouds.
 
-Three methods, all colored by affine patch index to match the 2D plots:
+Five methods, all colored by affine patch index to match the 2D plots:
 
   coord  : coordinate-aligned 3D scatter for a small set of physically
            interesting triples (|z_0|, |z_4|, |z_1|; (Re z_2, Re z_3, Re z_0);
            etc.). Always renders three orbit views per triple.
+
+  pca    : Linear PCA into 3D via SVD on the centered feature matrix.
+           Writes a 6-angle PNG, a PC1-2/PC1-3/PC2-3 pairs PNG, an
+           interactive plotly HTML, and prints explained-variance ratios
+           for the top 10 PCs -- the interpretable linear baseline that
+           UMAP doesn't give you.
 
   umap   : UMAP embedding into 3D. Preserves local neighborhoods + component
            structure. Requires `umap-learn`.
@@ -23,7 +29,7 @@ Three methods, all colored by affine patch index to match the 2D plots:
            H_0 persistence = MST edge-weight sum vs sub-sample size N).
            For a sLag in a CY 3-fold the expected answer is d = 3.
 
-For umap and mapper, the distance metric on min_set is selectable via
+For pca, umap, and mapper, the distance metric on min_set is selectable via
 --metric:
   - 'euclidean': raw 10D real coords. Patch-dependent (a point's 10D
     representation depends on which affine patch normalizes it), so two
@@ -35,7 +41,7 @@ For umap and mapper, the distance metric on min_set is selectable via
     a small-distance approximation).
 
 Usage:
-    python plot_3D.py <folder> [--methods coord umap mapper]
+    python plot_3D.py <folder> [--methods coord pca umap mapper]
                               [--metric fs|euclidean]
                               [--sweep] [--max_points N]
 """
@@ -208,7 +214,117 @@ def plot_coord_triples(z: np.ndarray, patches: np.ndarray, out_dir: Path,
 
 
 # ---------------------------------------------------------------------------
-#  Method 2: UMAP 3D embedding
+#  Method 2: PCA (linear projection, with explained-variance readout)
+# ---------------------------------------------------------------------------
+def _pca_project(X: np.ndarray, n_components: int = 3
+                 ) -> tuple[np.ndarray, np.ndarray]:
+    """SVD-based PCA on centered X.
+
+    Returns (projection (N, n_components), explained-variance ratios (D,)).
+    """
+    Xc = X - X.mean(axis=0)
+    _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    proj = Xc @ Vt[:n_components].T
+    var = S ** 2 / max(Xc.shape[0] - 1, 1)
+    return proj, var / var.sum()
+
+
+def _render_pca_html(emb: np.ndarray, patches: np.ndarray, out_path: Path,
+                     title: str) -> None:
+    """Interactive 3D scatter HTML via plotly. Mirrors _render_umap_html."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("  plotly not installed; skipping HTML. "
+              "`uv sync --extra viz-3d` to enable.")
+        return
+
+    n_total = int(emb.shape[0])
+    msize = 1.5
+    mopacity = float(min(0.6, 12000.0 / max(n_total, 1)))
+    traces = []
+    for p in range(5):
+        mask = patches == p
+        if not mask.any():
+            continue
+        traces.append(go.Scatter3d(
+            x=emb[mask, 0], y=emb[mask, 1], z=emb[mask, 2],
+            mode="markers",
+            marker=dict(size=msize, color=_PATCH_COLORS[p], opacity=mopacity),
+            name=f"patch {p}  ({int(mask.sum())} pts)",
+        ))
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title=title,
+        scene=dict(xaxis_title="PC1", yaxis_title="PC2",
+                   zaxis_title="PC3", aspectmode="data"),
+        legend=dict(itemsizing="constant"),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    fig.write_html(str(out_path))
+    print(f"  wrote {out_path}")
+
+
+def plot_pca_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
+                max_points: int, seed: int, metric: str = "fs") -> None:
+    z_sub, patches_sub = subsample(z, patches, max_points, seed=seed)
+    X = to_features(z_sub, metric)
+    print(f"  feature dim: {X.shape[1]} ({metric} metric)")
+
+    proj, ratio = _pca_project(X, n_components=3)
+    cum = np.cumsum(ratio)
+    n_show = min(len(ratio), 10)
+    print(f"  Explained variance ratio (top {n_show} of {len(ratio)} PCs):")
+    for i in range(n_show):
+        print(f"    PC{i+1}: {ratio[i]:.4f}   (cumulative {cum[i]:.4f})")
+    print(f"  Top 3 capture {cum[2]:.3f} of total variance")
+
+    many_angles = [(15, az) for az in (0, 60, 120, 180, 240, 300)]
+    alpha_pts = _auto_alpha(proj.shape[0])
+    fig = plt.figure(figsize=(15, 10))
+    for k, (elev, azim) in enumerate(many_angles):
+        ax = fig.add_subplot(2, 3, k + 1, projection="3d")
+        ax.scatter(proj[:, 0], proj[:, 1], proj[:, 2], c=patches_sub,
+                   cmap="tab10", vmin=-0.5, vmax=4.5,
+                   s=0.7, alpha=alpha_pts, edgecolors="none")
+        ax.view_init(elev=elev, azim=azim)
+        ax.set_title(f"elev={elev}, az={azim}", fontsize=9)
+        ax.tick_params(labelsize=6)
+    fig.suptitle(f"PCA 3D (metric={metric}, top 3 PCs: {cum[2]:.1%})",
+                 fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    out_path = out_dir / f"pca3d_{metric}.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  wrote {out_path}")
+
+    pairs = [(0, 1), (0, 2), (1, 2)]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    sc = None
+    for ax, (i, j) in zip(axes, pairs):
+        sc = ax.scatter(proj[:, i], proj[:, j], c=patches_sub,
+                        cmap="tab10", vmin=-0.5, vmax=4.5,
+                        s=0.5, alpha=0.5, edgecolors="none")
+        ax.set_xlabel(f"PC{i + 1}")
+        ax.set_ylabel(f"PC{j + 1}")
+        ax.grid(True, linestyle="--", alpha=0.5)
+    cbar = fig.colorbar(sc, ax=axes, label="patch index", shrink=0.8)
+    cbar.set_ticks([0, 1, 2, 3, 4])
+    fig.suptitle(f"PCA 2D pairs  (metric={metric}, PC1/2/3 capture "
+                 f"{ratio[0]:.1%}/{ratio[1]:.1%}/{ratio[2]:.1%})")
+    out_path = out_dir / f"pca_2d_pairs_{metric}.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out_path}")
+
+    html_path = out_dir / f"pca3d_{metric}.html"
+    _render_pca_html(proj, patches_sub, html_path,
+                     title=f"PCA 3D  (metric={metric}, "
+                           f"top 3 PCs: {cum[2]:.1%}, N={proj.shape[0]})")
+
+
+# ---------------------------------------------------------------------------
+#  Method 3: UMAP 3D embedding
 # ---------------------------------------------------------------------------
 def _run_umap(X: np.ndarray, n_neighbors: int, min_dist: float,
               seed: int) -> np.ndarray:
@@ -337,7 +453,7 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
 
 
 # ---------------------------------------------------------------------------
-#  Method 3: Mapper graph
+#  Method 4: Mapper graph
 # ---------------------------------------------------------------------------
 def _lens_from_spec(z_sub: np.ndarray, X: np.ndarray,
                     filter_spec: str) -> tuple[np.ndarray, str]:
@@ -509,7 +625,7 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
 
 
 # ---------------------------------------------------------------------------
-#  Method 4: intrinsic dimension estimators
+#  Method 5: intrinsic dimension estimators
 # ---------------------------------------------------------------------------
 def _twonn_estimate(X: np.ndarray, n_jobs: int = -1
                     ) -> tuple[float, np.ndarray, np.ndarray]:
@@ -732,11 +848,11 @@ def main() -> None:
     parser.add_argument("folder", type=Path,
                         help="Folder containing min_set.pkl.")
     parser.add_argument("--methods", nargs="+",
-                        choices=["coord", "umap", "mapper", "intrinsic_dim",
-                                 "all"],
+                        choices=["coord", "pca", "umap", "mapper",
+                                 "intrinsic_dim", "all"],
                         default=["all"],
                         help="Which methods to run (default: all -- includes "
-                             "intrinsic_dim).")
+                             "pca and intrinsic_dim).")
     parser.add_argument("--max_points", type=int, default=None,
                         help="Subsample to this many points "
                              "(default: use all points). Pass an integer "
@@ -751,7 +867,7 @@ def main() -> None:
                              "sweep instead of a single setting. coord "
                              "method is unaffected.")
     parser.add_argument("--metric", choices=["euclidean", "fs"], default="fs",
-                        help="Distance metric for UMAP / Mapper. "
+                        help="Feature representation for PCA / UMAP / Mapper. "
                              "'euclidean' uses raw 10D real coords "
                              "(patch-dependent). 'fs' (default) maps each "
                              "point to its rank-1 projector z conj(z)^T / "
@@ -801,12 +917,19 @@ def main() -> None:
 
     methods = set(args.methods)
     if "all" in methods:
-        methods = {"coord", "umap", "mapper", "intrinsic_dim"}
+        methods = {"coord", "pca", "umap", "mapper", "intrinsic_dim"}
 
     if "coord" in methods:
         print("\n--- coord-aligned 3D scatters ---")
         plot_coord_triples(z, patches, out_dir, DEFAULT_TRIPLES,
                            max_points=args.max_points)
+
+    if "pca" in methods:
+        print("\n--- PCA 3D ---")
+        plot_pca_3d(z, patches, out_dir,
+                    max_points=args.max_points,
+                    seed=args.seed,
+                    metric=args.metric)
 
     if "umap" in methods:
         print("\n--- UMAP 3D ---")
