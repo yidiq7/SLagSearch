@@ -21,12 +21,17 @@ panels (i != j) draw the y = x line for visual reference.
 
 Output filenames carry the color mode: coord_scatter_{re,im,abs}_{patch,fitness}.png.
 
+Output goes to --out_dir (full path) or <min_set_dir>/<out_subdir>/ (subdir
+name); these two flags are mutually exclusive. Default: <min_set_dir>.
+
 Usage:
-    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl
-    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl --part im
-    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl --part abs
-    python -m viz.plot_coord_scatter --filepath plots_slag_run/min_set.pkl --color fitness
-    python -m viz.plot_coord_scatter --filepath my_dir/refined_cloud.pkl \
+    python -m viz.plot_coord_scatter --min_set plots_slag_run/min_set.pkl
+    python -m viz.plot_coord_scatter --min_set plots_slag_run/min_set.pkl --part im
+    python -m viz.plot_coord_scatter --min_set plots_slag_run/min_set.pkl --part abs
+    python -m viz.plot_coord_scatter --min_set plots_slag_run/min_set.pkl --color fitness
+    python -m viz.plot_coord_scatter --min_set plots_slag_run/min_set.pkl \
+        --out_subdir scatter_v2 --color fitness
+    python -m viz.plot_coord_scatter --min_set my_dir/refined_cloud.pkl \
         --out_dir my_dir/scatter/ --fitness_path my_dir/refined_norms.npy \
         --color fitness
 """
@@ -162,7 +167,7 @@ def _load_fitness_colors(norms_path: Path, n_expected: int) -> np.ndarray:
     return np.exp(-10.0 * frobenius_norms)
 
 
-def render_from_folder(filepath: Path, out_dir: Path | None = None,
+def render_from_folder(min_set: Path, out_dir: Path | None = None,
                        part: str = "all", color: str = "patch",
                        fitness_path: Path | None = None,
                        max_points: int | None = None) -> None:
@@ -173,12 +178,12 @@ def render_from_folder(filepath: Path, out_dir: Path | None = None,
     frobenius_norms.npy), so the histogram path and the scatter path share
     one rendering implementation.
     """
-    filepath = Path(filepath)
-    out_dir = Path(out_dir) if out_dir is not None else filepath.parent
+    min_set = Path(min_set)
+    out_dir = Path(out_dir) if out_dir is not None else min_set.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    z = load_min_set_complex(filepath)
-    print(f"Loaded {z.shape[0]} points from {filepath}")
+    z = load_min_set_complex(min_set)
+    print(f"Loaded {z.shape[0]} points from {min_set}")
 
     if color == "patch":
         color_values = patch_indices_from_complex(z)
@@ -186,7 +191,7 @@ def render_from_folder(filepath: Path, out_dir: Path | None = None,
             f"p{i}:{int((color_values == i).sum())}" for i in range(5)))
     elif color == "fitness":
         norms_path = (Path(fitness_path) if fitness_path is not None
-                      else filepath.parent / "frobenius_norms.npy")
+                      else min_set.parent / "frobenius_norms.npy")
         color_values = _load_fitness_colors(norms_path, z.shape[0])
         print(f"Fitness coloring from {norms_path}: exp(-10*frobenius_norms), "
               f"range=[{color_values.min():.3f}, {color_values.max():.3f}], "
@@ -194,7 +199,7 @@ def render_from_folder(filepath: Path, out_dir: Path | None = None,
     else:
         raise ValueError(f"unknown color {color!r}; expected 'patch' or 'fitness'")
 
-    title_tag = filepath.parent.name or filepath.stem
+    title_tag = min_set.parent.name or min_set.stem
     parts = ["re", "im", "abs"] if part == "all" else [part]
     for p in parts:
         out_path = out_dir / f"coord_scatter_{p}_{color}.png"
@@ -207,16 +212,20 @@ def render_from_folder(filepath: Path, out_dir: Path | None = None,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--filepath", type=Path, required=True,
+    parser.add_argument("--min_set", type=Path, required=True,
                         help="Path to a pickle holding an (N, 5) complex "
                              "point cloud (e.g. min_set.pkl).")
-    parser.add_argument("--out_dir", type=Path, default=None,
-                        help="Output directory for the PNGs. Defaults to "
-                             "the directory containing --filepath.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: parent directory of --min_set.")
+    out_group.add_argument("--out_subdir", type=str, default=None,
+                           help="Output subdirectory name appended to "
+                                "--min_set's parent directory.")
     parser.add_argument("--fitness_path", type=Path, default=None,
                         help="Path to the frobenius_norms.npy sidecar "
                              "(only used with --color fitness). Defaults to "
-                             "<filepath_dir>/frobenius_norms.npy.")
+                             "<min_set_dir>/frobenius_norms.npy.")
     parser.add_argument("--part", choices=["re", "im", "abs", "all"],
                         default="all",
                         help="Which projection: re, im, abs, or all (writes "
@@ -234,7 +243,14 @@ def main() -> None:
                              "to subsample.")
     args = parser.parse_args()
 
-    render_from_folder(args.filepath, out_dir=args.out_dir, part=args.part,
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = args.min_set.parent / args.out_subdir
+    else:
+        out_dir = args.min_set.parent
+
+    render_from_folder(args.min_set, out_dir=out_dir, part=args.part,
                        color=args.color, fitness_path=args.fitness_path,
                        max_points=args.max_points)
 

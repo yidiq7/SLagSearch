@@ -8,44 +8,52 @@
 
 
 ## Test (2 3) on the original (not-permuted) d=3 candidate:
-#uv run python test_swap_invariance.py \
+#uv run python -m diagnostics.test_swap_invariance \
 #    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
 #    --coeffs gd_runs/gd_d3_from_d1_step3000.pkl \
 #    --swap 2 3
 #
 ## Or any other transposition to compare baselines:
-#uv run python test_swap_invariance.py \
+#uv run python -m diagnostics.test_swap_invariance \
 #    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
 #    --coeffs gd_runs/gd_d3_from_d1_step3000.pkl \
 #    --swap 0 1
 #
-#uv run python plot_coord_scatter.py gd_runs/plots_slag_d3_from_d1
+#uv run python -m viz.plot_coord_scatter \
+#    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl
 
-#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
+#uv run --extra viz-3d python -m viz.plot_3D \
+#    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
 #    --methods umap mapper --sweep --out_subdir 3D_fs
 
-#uv run python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
-#      --methods intrinsic_dim --out_subdir intrinsic_dim
+#uv run python -m viz.plot_3D \
+#    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
+#    --methods intrinsic_dim --out_subdir intrinsic_dim
 
-#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
-#      --methods umap \
-#      --umap_n_neighbors 200 --umap_min_dist 0.3 \
-#      --out_subdir 3D_fs_v2
+#uv run --extra viz-3d python -m viz.plot_3D \
+#    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
+#    --methods umap \
+#    --umap_n_neighbors 200 --umap_min_dist 0.3 \
+#    --out_subdir 3D_fs_v2
 #
-#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d4_run \
-#      --methods umap \
-#      --umap_n_neighbors 100 --umap_min_dist 0.3 \
-#      --out_subdir 3D_fs_v2
+#uv run --extra viz-3d python -m viz.plot_3D \
+#    --min_set gd_runs/plots_slag_d4_run/min_set.pkl \
+#    --methods umap \
+#    --umap_n_neighbors 100 --umap_min_dist 0.3 \
+#    --out_subdir 3D_fs_v2
 #
 
-#uv run --extra viz-3d python plot_3D.py gd_runs/plots_slag_d3_from_d1 \
-#      --methods mapper \
-#      --mapper_filter first-pc \
-#      --mapper_n_cubes 30 \
-#      --mapper_overlap 0.5 \
-#      --mapper_eps_percentile 50 \
-#      --out_subdir 3D_fs_v2
+#uv run --extra viz-3d python -m viz.plot_3D \
+#    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
+#    --methods mapper \
+#    --mapper_filter first-pc \
+#    --mapper_n_cubes 30 \
+#    --mapper_overlap 0.5 \
+#    --mapper_eps_percentile 50 \
+#    --out_subdir 3D_fs_v2
 
-#uv run --extra viz-3d python split_clusters.py gd_runs/plots_slag_d4_run --n_clusters 2
-uv run python -m viz.plot_coord_scatter --filepath gd_runs/plots_slag_d4_run/cluster_split/cluster_0_points.pkl\
+#uv run --extra viz-3d python -m diagnostics.split_clusters \
+#    --min_set gd_runs/plots_slag_d4_run/min_set.pkl --n_clusters 2
+uv run python -m viz.plot_coord_scatter \
+    --min_set gd_runs/plots_slag_d4_run/cluster_split/cluster_0_points.pkl \
     --out_dir gd_runs/plots_slag_d4_run/cluster_split/scatter_0

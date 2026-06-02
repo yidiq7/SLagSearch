@@ -389,7 +389,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
         points_real, coeffs, psi,
         k=args.plot_k, n_refine_steps=args.plot_newton_steps,
         metric=args.metric, compare_with="random",
-        parent_folder=base,
+        out_dir=base,
         num_devices=num_devices,
     )
 
@@ -399,7 +399,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
         points_real, d1_coeffs_full, psi,
         k=args.plot_k, n_refine_steps=args.plot_newton_steps,
         metric=args.metric, compare_with="random",
-        parent_folder=d1_folder,
+        out_dir=d1_folder,
         primary_label="d=1 baseline",
         num_devices=num_devices,
     )
@@ -416,7 +416,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
         primary_color="steelblue",
         compare_color="skyblue",
         fix_kahler_x_range=False,
-        parent_folder=vs_d1_folder,
+        out_dir=vs_d1_folder,
         num_devices=num_devices,
     )
 
@@ -436,7 +436,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
             primary_color="steelblue",
             compare_color="skyblue",
             fix_kahler_x_range=False,
-            parent_folder=d2_vs_d3_folder,
+            out_dir=d2_vs_d3_folder,
             num_devices=num_devices,
         )
 
@@ -457,7 +457,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
                 "label": "d=1",
                 "color": "lightblue",
             }],
-            parent_folder=d1_d2_d3_folder,
+            out_dir=d1_d2_d3_folder,
             num_devices=num_devices,
         )
 
@@ -478,7 +478,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
             primary_color="steelblue",
             compare_color="skyblue",
             fix_kahler_x_range=False,
-            parent_folder=d3_vs_d4_folder,
+            out_dir=d3_vs_d4_folder,
             num_devices=num_devices,
         )
 
@@ -498,7 +498,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
                 {"coeffs": d2_truncated, "label": "d=2", "color": "lightblue"},
                 {"coeffs": d1_truncated, "label": "d=1", "color": "lightsteelblue"},
             ],
-            parent_folder=d1_d2_d3_d4_folder,
+            out_dir=d1_d2_d3_d4_folder,
             num_devices=num_devices,
         )
 

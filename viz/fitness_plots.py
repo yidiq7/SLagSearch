@@ -2,17 +2,19 @@
 
 Mines a min-set with Newton refinement, computes Kahler-form Frobenius norms
 and Omega phases on it, and writes two histograms + a min_set.pkl +
-frobenius_norms.npy sidecar + fitness-colored coord-scatter PNGs into
---parent_folder. Library entry point `make_fitness_plots` is imported by
+frobenius_norms.npy sidecar + fitness-colored coord-scatter PNGs into the
+output directory. Library entry point `make_fitness_plots` is imported by
 GA.py and gradient_descent.py for their end-of-run plots.
 
 Usage (CLI):
-    python -m viz.fitness_plots --coeffs_pkl gd_runs/gd_<job>_step<N>.pkl \
+    python -m viz.fitness_plots --coeffs gd_runs/gd_<job>_step<N>.pkl \
         [--points_file <path>] [--psi <c>] [--metric k4_fermat|FS] \
-        [--parent_folder <dir>] [--k 80000] [--n_refine_steps 80]
+        [--out_dir <dir> | --out_subdir <name>] [--k 80000] [--n_refine_steps 80]
 
---coeffs_pkl is required and accepts either a bare (3, w) array or a
+--coeffs is required and accepts either a bare (3, w) array or a
 checkpoint dict with a "coeffs" key (matches gradient_descent checkpoints).
+--out_dir / --out_subdir are mutually exclusive; default writes to the
+parent directory of --coeffs.
 """
 import jax
 import jax.numpy as jnp
@@ -154,7 +156,7 @@ def make_fitness_plots(
     n_refine_steps: int = 100,
     metric: str = 'FS',
     compare_with=None,
-    parent_folder: Optional[str] = 'plots_slag',
+    out_dir: Optional[str] = 'plots_slag',
     patch_index: Optional[int] = None,
     chunk_size: int = 10000,
     primary_label: str = 'Potential sLag',
@@ -186,7 +188,7 @@ def make_fitness_plots(
     use the host-side chunked loop on the gathered (k, 10) min_set_real,
     which is memory-safe at d=4 because chunk_size bounds per-call VRAM.
     """
-    os.makedirs(parent_folder, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     # --- Primary set ---
     min_set_real, distances = _mine_on_one_or_many(
@@ -260,7 +262,7 @@ def make_fitness_plots(
     plt.title('Distribution of the norm of the Kahler form')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
-    plt.savefig(os.path.join(parent_folder, 'Kahler_form_loss_histogram.png'))
+    plt.savefig(os.path.join(out_dir, 'Kahler_form_loss_histogram.png'))
     plt.close()
 
     # --- Phase histogram (polar, always [0, 2*pi)) ---
@@ -299,35 +301,35 @@ def make_fitness_plots(
     ax.set_rlim(0, baseline_radius + max_count * 1.05)
     ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
     ax.legend(bbox_to_anchor=(1.1, 1.05))
-    plt.savefig(os.path.join(parent_folder, 'circular_phase_histogram.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(out_dir, 'circular_phase_histogram.png'), bbox_inches='tight')
     plt.close()
 
-    save_min_set_and_diagnostics(min_set_real, frobenius_norms, parent_folder)
+    save_min_set_and_diagnostics(min_set_real, frobenius_norms, out_dir)
     # Coord-scatter via the sidecar contract: single owner for "render
     # coord-scatter from a folder" lives in plot_coord_scatter. Costs one
     # extra pkl/npy load, which is negligible next to the diagnostics above.
-    render_from_folder(Path(parent_folder) / "min_set.pkl", color="fitness")
+    render_from_folder(Path(out_dir) / "min_set.pkl", color="fitness")
 
 
 def save_min_set_and_diagnostics(min_set_real: jnp.ndarray,
                                  frobenius_norms: np.ndarray,
-                                 parent_folder: str) -> None:
+                                 out_dir: str) -> None:
     """Write min_set.pkl (legacy (N, 5) complex array) and the sidecar
     frobenius_norms.npy that plot_coord_scatter.py --color fitness consumes.
     """
     min_set = np.asarray(min_set_real)[:, :5] + np.asarray(min_set_real)[:, 5:] * 1j
-    with open(os.path.join(parent_folder, "min_set.pkl"), "wb") as f:
+    with open(os.path.join(out_dir, "min_set.pkl"), "wb") as f:
         pickle.dump(min_set, f)
-    np.save(os.path.join(parent_folder, "frobenius_norms.npy"),
+    np.save(os.path.join(out_dir, "frobenius_norms.npy"),
             np.asarray(frobenius_norms))
 
 
 # ---------------------------------------------------------------------------
-#  Standalone CLI: fitness plots for a coeffs array. --coeffs_pkl is
+#  Standalone CLI: fitness plots for a coeffs array. --coeffs is
 #  required and accepts a bare (3, w) array or a checkpoint dict with a
 #  "coeffs" key.
 # ---------------------------------------------------------------------------
-def _load_coeffs_pkl(path: str) -> jnp.ndarray:
+def _load_coeffs(path: str) -> jnp.ndarray:
     """Load a coeffs array from a pickle. Accepts a bare (3, w) ndarray or a
     checkpoint dict with a 'coeffs' key (matches gradient_descent checkpoints).
     """
@@ -346,7 +348,7 @@ def main() -> None:
         description="Generate fitness plots (Kahler-form histogram, "
                     "Omega-phase polar, fitness-colored coord-scatter) for "
                     "a coeffs array.")
-    parser.add_argument("--coeffs_pkl", required=True,
+    parser.add_argument("--coeffs", required=True,
                         help="Path to a pickle holding either a (3, w) coeffs "
                              "array (w in {25, 250, 1475, 6375}) or a "
                              "checkpoint dict with a 'coeffs' key.")
@@ -359,9 +361,13 @@ def main() -> None:
                         help="'k4_fermat' (psi=0 only) or 'FS' (any psi).")
     parser.add_argument("--k", type=int, default=80000)
     parser.add_argument("--n_refine_steps", type=int, default=80)
-    parser.add_argument("--parent_folder", default="plots_fitness_manual",
-                        help="Output directory for histograms + sidecars + "
-                             "coord-scatter PNGs.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: parent directory of --coeffs.")
+    out_group.add_argument("--out_subdir", type=str, default=None,
+                           help="Output subdirectory name appended to "
+                                "--coeffs's parent directory.")
     parser.add_argument("--compare_with", default="random",
                         help="'None', 'random', or unused (manual ndarray "
                              "not exposed here).")
@@ -373,8 +379,16 @@ def main() -> None:
     points_real = load_points(points_file)
     print(f"Loaded {points_real.shape[0]} points from {points_file}")
 
-    coeffs = _load_coeffs_pkl(args.coeffs_pkl)
-    print(f"Coeffs shape: {coeffs.shape}  (from {args.coeffs_pkl})")
+    coeffs = _load_coeffs(args.coeffs)
+    print(f"Coeffs shape: {coeffs.shape}  (from {args.coeffs})")
+
+    coeffs_parent = Path(args.coeffs).parent
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = coeffs_parent / args.out_subdir
+    else:
+        out_dir = coeffs_parent
 
     compare_with = None if args.compare_with.lower() == "none" else args.compare_with
 
@@ -382,9 +396,9 @@ def main() -> None:
         points_real, coeffs, jnp.asarray(args.psi),
         k=args.k, n_refine_steps=args.n_refine_steps,
         metric=args.metric, compare_with=compare_with,
-        parent_folder=args.parent_folder,
+        out_dir=str(out_dir),
     )
-    print(f"Plots written to {args.parent_folder}/")
+    print(f"Plots written to {out_dir}/")
 
 
 if __name__ == "__main__":

@@ -1,26 +1,30 @@
 """Plot GD training history.
 
-Usage:
-    python -m viz.plot_gd_history <path>
-    python -m viz.plot_gd_history ~/Downloads/GD_history.txt
-    python -m viz.plot_gd_history gd_runs/gd_run1_step2000.pkl
-
-<path> can be either:
+--filepath can be either:
   - a text log captured from gradient_descent.py stdout
   - a *.pkl checkpoint produced by gradient_descent.py (uses its 'history' field)
 
-Output: a two-panel figure
-  top:    lag_loss, spec_loss, total loss (lag + spec)
-  bottom: lag_fit,  spec_fit,  total fitness (lag * spec)
+Output: two PNGs (<input_stem>_loss.png and <input_stem>_fitness.png).
+  loss panel:    lag_loss, spec_loss, total loss (lag + spec)
+  fitness panel: lag_fit,  spec_fit,  total fitness (lag * spec)
 
 The total in each panel is drawn as a thicker black line; lag/spec are
 in the same accent colors (steelblue/orange) across the two panels so
 trends across rows are easy to compare.
+
+Output goes to --out_dir (full path) or <filepath_dir>/<out_subdir>/ (subdir
+name); these two flags are mutually exclusive. Default: <filepath_dir>.
+
+Usage:
+    python -m viz.plot_gd_history --filepath ~/Downloads/GD_history.txt
+    python -m viz.plot_gd_history --filepath gd_runs/gd_run1_step2000.pkl
+    python -m viz.plot_gd_history --filepath gd_runs/gd_run1_step2000.pkl \
+        --out_subdir history --max_step 1000
 """
 import argparse
-import os
 import pickle
 import re
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -114,21 +118,27 @@ def plot_history(h, loss_path, fit_path, title=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("path", help="text log or .pkl checkpoint")
-    parser.add_argument("--out_prefix",
-                        help="output prefix; writes <prefix>_loss.png and "
-                             "<prefix>_fitness.png. Default: <input> with "
-                             "extension stripped, alongside the input.")
+    parser.add_argument("--filepath", type=Path, required=True,
+                        help="Path to a text log (gradient_descent.py stdout) "
+                             "or a *.pkl checkpoint.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: parent directory of --filepath.")
+    out_group.add_argument("--out_subdir", type=str, default=None,
+                           help="Output subdirectory name appended to "
+                                "--filepath's parent directory.")
     parser.add_argument("--title", help="figure title suffix")
     parser.add_argument("--max_step", type=int, default=None,
                         help="Drop rows with step > max_step (useful when "
                              "the run plateaus early and the tail is noise).")
     args = parser.parse_args()
 
-    if args.path.endswith(".pkl"):
-        h = parse_pickle(args.path)
+    path = str(args.filepath)
+    if path.endswith(".pkl"):
+        h = parse_pickle(path)
     else:
-        h = parse_text_log(args.path)
+        h = parse_text_log(path)
 
     if args.max_step is not None:
         mask = h["step"] <= args.max_step
@@ -140,8 +150,19 @@ def main():
           f"lag_fit={h['lag_fit'][-1]:.4f} spec_fit={h['spec_fit'][-1]:.4f} "
           f"total_fit={h['lag_fit'][-1] * h['spec_fit'][-1]:.4f}")
 
-    prefix = args.out_prefix or os.path.splitext(args.path)[0]
-    plot_history(h, f"{prefix}_loss.png", f"{prefix}_fitness.png", title=args.title)
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = args.filepath.parent / args.out_subdir
+    else:
+        out_dir = args.filepath.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = args.filepath.stem
+    plot_history(h,
+                 str(out_dir / f"{stem}_loss.png"),
+                 str(out_dir / f"{stem}_fitness.png"),
+                 title=args.title)
 
 
 if __name__ == "__main__":

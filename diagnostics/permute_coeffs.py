@@ -15,7 +15,10 @@ plot_hermitian_coeffs.py and gradient_descent.py --plots_only.
 
 Usage:
     python -m diagnostics.permute_coeffs --coeffs gd_runs/<job>.pkl \
-        [--out_dir permuted_coeffs]
+        [--out_dir <dir> | --out_subdir <name>]
+
+Output goes to --out_dir (full path) or <coeffs_dir>/<out_subdir>/ (subdir
+name, default 'permuted'); these flags are mutually exclusive.
 
 Then see the printed next-steps block for the three follow-up commands.
 """
@@ -94,25 +97,34 @@ def main() -> None:
     parser.add_argument("--coeffs", required=True, type=Path,
                         help="Source coeffs pkl (bare (3,w) array or dict "
                              "with 'coeffs' key).")
-    parser.add_argument("--out_dir", type=Path, default=Path("permuted_coeffs"),
-                        help="Directory to write 10 output pkls into.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory for the 10 permuted "
+                                "pkls. Default: <coeffs_dir>/permuted/.")
+    out_group.add_argument("--out_subdir", type=str, default="permuted",
+                           help="Subdirectory name appended to --coeffs's "
+                                "parent directory. Default: 'permuted'.")
     args = parser.parse_args()
 
     coeffs = _load_coeffs(args.coeffs)
     print(f"Loaded coeffs {coeffs.shape} from {args.coeffs}")
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    else:
+        out_dir = args.coeffs.parent / args.out_subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
     stem = args.coeffs.stem
     if stem.endswith(".pkl"):
         stem = stem[:-4]
 
-    print(f"\nWriting 10 permuted coeffs into {args.out_dir}/:")
+    print(f"\nWriting 10 permuted coeffs into {out_dir}/:")
     print(f"  {'target sym':<11} | {'tau':<22} | output")
     print(f"  {'-'*11} | {'-'*22} | {'-'*40}")
     for (i, j) in combinations(range(5), 2):
         perm = tau_for_target(i, j)
         new_coeffs = apply_permutation_to_coeffs(coeffs, perm)
-        out_path = args.out_dir / f"{stem}_perm{i}{j}.pkl"
+        out_path = out_dir / f"{stem}_perm{i}{j}.pkl"
         with open(out_path, "wb") as f:
             pickle.dump({"coeffs": np.asarray(new_coeffs)}, f)
         sym = f"({i} {j})"
@@ -123,7 +135,7 @@ def main() -> None:
     print(f"  # (1) Fitness plots (Lagrangian + special condition). All 10")
     print(f"  #     should be IDENTICAL up to numerical noise if (2 3) is a")
     print(f"  #     true sLag symmetry up to S_5 relabeling.")
-    print(f"  for f in {args.out_dir}/*.pkl; do")
+    print(f"  for f in {out_dir}/*.pkl; do")
     print(f"      job=$(basename $f .pkl)")
     print(f"      python gradient_descent.py --job_id $job --plots_only \\")
     print(f"          --resume $f --max_degree 3")
@@ -131,13 +143,13 @@ def main() -> None:
     print()
     print(f"  # (2) Hermitian heatmaps + spectra. The d=2 (0,4)-tile should")
     print(f"  #     move to (tau(0), tau(4)) in each version.")
-    print(f"  for f in {args.out_dir}/*.pkl; do")
+    print(f"  for f in {out_dir}/*.pkl; do")
     print(f"      python -m viz.plot_hermitian_coeffs --coeffs $f")
     print(f"  done")
     print()
     print(f"  # (3) Symmetry test -- the holomorphic symmetry transposition")
     print(f"  #     should shift to match each filename suffix.")
-    print(f"  for f in {args.out_dir}/*.pkl; do")
+    print(f"  for f in {out_dir}/*.pkl; do")
     print(f"      python -m diagnostics.test_permutation_symmetry --coeffs $f \\")
     print(f"          --group transpositions --mode holo")
     print(f"  done")

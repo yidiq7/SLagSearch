@@ -810,10 +810,10 @@ if __name__ == '__main__':
             pickle.dump(np.asarray(best_member), f)
         print(f"Saved best member to {coeffs_out}")
 
-        parent_folder = os.path.join(
+        out_dir = os.path.join(
             f'plots_slag_{args.job_id}',
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", parent_folder=parent_folder)
+        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir)
         rank += 1

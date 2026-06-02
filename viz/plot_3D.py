@@ -40,10 +40,13 @@ For pca, umap, and mapper, the distance metric on min_set is selectable via
     distance on CP^4 -- monotone with FS, patch-independent, exact (not
     a small-distance approximation).
 
+Output goes to --out_dir (full path) or <min_set_dir>/<out_subdir>/ (subdir
+name); these two flags are mutually exclusive. Default: <min_set_dir>.
+
 Usage:
-    python -m viz.plot_3D <folder> [--methods coord pca umap mapper]
-                                   [--metric fs|euclidean]
-                                   [--sweep] [--max_points N]
+    python -m viz.plot_3D --min_set plots_slag_run/min_set.pkl \
+        [--methods coord pca umap mapper] [--metric fs|euclidean] \
+        [--out_dir <dir> | --out_subdir <name>] [--sweep] [--max_points N]
 """
 import argparse
 import os
@@ -62,8 +65,9 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # registers 3d projection
 # ---------------------------------------------------------------------------
 #  Shared utilities
 # ---------------------------------------------------------------------------
-def load_min_set_complex(folder: Path) -> np.ndarray:
-    with open(folder / "min_set.pkl", "rb") as f:
+def load_min_set_complex(path: Path) -> np.ndarray:
+    """Load an (N, 5) complex point cloud from a pickle file."""
+    with open(path, "rb") as f:
         z = np.asarray(pickle.load(f))  # (N, 5) complex
     if z.ndim != 2 or z.shape[1] != 5:
         raise ValueError(f"expected (N, 5) complex array, got {z.shape}")
@@ -845,8 +849,16 @@ def plot_intrinsic_dim(z: np.ndarray, patches: np.ndarray, out_dir: Path,
 # ---------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("folder", type=Path,
-                        help="Folder containing min_set.pkl.")
+    parser.add_argument("--min_set", type=Path, required=True,
+                        help="Path to an (N, 5) complex pickle (e.g. min_set.pkl).")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: parent directory of --min_set.")
+    out_group.add_argument("--out_subdir", type=str, default=None,
+                           help="Output subdirectory name appended to "
+                                "--min_set's parent directory. "
+                                "E.g., --out_subdir topology.")
     parser.add_argument("--methods", nargs="+",
                         choices=["coord", "pca", "umap", "mapper",
                                  "intrinsic_dim", "all"],
@@ -858,10 +870,6 @@ def main() -> None:
                              "(default: use all points). Pass an integer "
                              "if UMAP / Mapper runtime needs to be capped.")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--out_subdir", type=str, default=None,
-                        help="If set, write all outputs to "
-                             "<folder>/<out_subdir>/ instead of <folder>/. "
-                             "E.g., --out_subdir topology.")
     parser.add_argument("--sweep", action="store_true",
                         help="For UMAP / Mapper: run a 3x3 hyperparameter "
                              "sweep instead of a single setting. coord "
@@ -903,17 +911,20 @@ def main() -> None:
                              "fewer / larger nodes). Default 50.")
     args = parser.parse_args()
 
-    z = load_min_set_complex(args.folder)
+    z = load_min_set_complex(args.min_set)
     patches = patch_indices_from_complex(z)
-    print(f"Loaded {z.shape[0]} points from {args.folder}/min_set.pkl")
+    print(f"Loaded {z.shape[0]} points from {args.min_set}")
     print(f"Patch counts: " + ", ".join(
         f"p{i}:{int((patches == i).sum())}" for i in range(5)))
 
-    out_dir = args.folder if args.out_subdir is None else (
-        args.folder / args.out_subdir)
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = args.min_set.parent / args.out_subdir
+    else:
+        out_dir = args.min_set.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    if args.out_subdir is not None:
-        print(f"Writing outputs to {out_dir}/")
+    print(f"Writing outputs to {out_dir}/")
 
     methods = set(args.methods)
     if "all" in methods:

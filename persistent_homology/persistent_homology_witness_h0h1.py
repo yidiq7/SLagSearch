@@ -28,18 +28,18 @@ so the diagrams are in raw FS-distance units (comparable to the VR script).
 Usage:
     # d=4 coeffs, 50k subsample, default L sweep:
     uv run python persistent_homology/persistent_homology_witness_h0h1.py \
-        --filepath plots_slag_d4_run/min_set.pkl \
-        --coeffs_pkl gd_runs/gd_d4_run_step3000.pkl --psi 0
+        --min_set plots_slag_d4_run/min_set.pkl \
+        --coeffs gd_runs/gd_d4_run_step3000.pkl --psi 0
 
     # Custom L sweep and Newton step count:
     uv run python persistent_homology/persistent_homology_witness_h0h1.py \
-        --filepath plots_slag_d4_run/min_set.pkl \
-        --coeffs_pkl gd_runs/gd_d4_run_step3000.pkl \
+        --min_set plots_slag_d4_run/min_set.pkl \
+        --coeffs gd_runs/gd_d4_run_step3000.pkl \
         --landmarks 500,1000,2000 --newton_steps 100
 
     # Skip the Newton filter (PH on raw min_set):
     uv run python persistent_homology/persistent_homology_witness_h0h1.py \
-        --filepath plots_slag_d4_run/min_set.pkl --no_newton_filter
+        --min_set plots_slag_d4_run/min_set.pkl --no_newton_filter
 """
 
 import argparse
@@ -88,9 +88,9 @@ def _fs_distance_from_index(Zn, idx):
 
 # ------------------------------------------------------------------- data layer
 
-def load_points(filepath, subsamp, seed):
+def load_points(min_set, subsamp, seed):
     print("=== LOADING POINTS FROM PICKLE ===")
-    with open(filepath, 'rb') as f:
+    with open(min_set, 'rb') as f:
         Z = pickle.load(f)
     Z = np.asarray(Z, dtype=np.complex128)
     n0 = Z.shape[0]
@@ -111,7 +111,7 @@ def load_points(filepath, subsamp, seed):
     return Z
 
 
-def filter_newton_check(Z_complex, coeffs_pkl, psi, n_steps, threshold,
+def filter_newton_check(Z_complex, coeffs, psi, n_steps, threshold,
                         dist_chunk_size=50000):
     """Newton-refine + per-point residual filter via slag's filter_and_refine.
 
@@ -121,7 +121,7 @@ def filter_newton_check(Z_complex, coeffs_pkl, psi, n_steps, threshold,
     Threshold semantics match newton_check (find_smooth_submanifold.py:418).
     """
     print(f"\n=== NEWTON_CHECK FILTER ({n_steps} steps, threshold={threshold:.1e}) ===")
-    with open(coeffs_pkl, 'rb') as f:
+    with open(coeffs, 'rb') as f:
         coeffs_obj = pickle.load(f)
     if isinstance(coeffs_obj, dict) and 'coeffs' in coeffs_obj:
         coeffs_np = np.asarray(coeffs_obj['coeffs'])
@@ -449,13 +449,13 @@ def plot_comparison(per_L, infinity_val, n_sample, output_file):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--filepath',
+    p.add_argument('--min_set',
                    default='/home/y.qi/projects/SLagSearch/plots_slag/min_set_psi0.pkl')
     p.add_argument('--subsamp', type=int, default=50000)
     p.add_argument('--landmarks', default='300,500,750,1000',
                    help='Comma-separated L values to sweep.')
     p.add_argument('--seed', type=int, default=42)
-    p.add_argument('--coeffs_pkl', default=None,
+    p.add_argument('--coeffs', default=None,
                    help='Coeffs pkl that produced this min_set (3, w) array, '
                         'or a checkpoint dict with a "coeffs" key. Required '
                         'unless --no_newton_filter is set.')
@@ -486,10 +486,14 @@ def parse_args():
                         'face of sigma is witnessed by the same w, which '
                         'prunes the late-alpha noise band by 1-2 orders of '
                         'magnitude. "weak" is the de Silva-Carlsson default.')
-    p.add_argument('--out_dir', default=None,
-                   help='Output directory for PNGs and cache files. '
-                        'Defaults to the directory containing --filepath '
-                        '(e.g. gd_runs/plots_slag_<job>/ alongside min_set.pkl).')
+    out_group = p.add_mutually_exclusive_group()
+    out_group.add_argument('--out_dir', default=None,
+                           help='Full output directory for PNGs and cache '
+                                'files. Default: parent directory of --min_set '
+                                '(e.g. gd_runs/plots_slag_<job>/).')
+    out_group.add_argument('--out_subdir', type=str, default=None,
+                           help='Output subdirectory name appended to '
+                                "--min_set's parent directory.")
     p.add_argument('--out_prefix', default='persistent_homology_witness_h0h1')
     p.add_argument('--cache_landmarks', default='witness_landmarks_cache.pkl')
     p.add_argument('--cache_diagrams', default='witness_diagrams_cache.pkl')
@@ -512,7 +516,13 @@ def main():
 
     # Resolve output directory (defaults to the min_set's folder, e.g.
     # gd_runs/plots_slag_<job>/). All PNGs and caches land here.
-    out_dir = args.out_dir or (os.path.dirname(os.path.abspath(args.filepath)) or '.')
+    min_set_parent = os.path.dirname(os.path.abspath(args.min_set)) or '.'
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = os.path.join(min_set_parent, args.out_subdir)
+    else:
+        out_dir = min_set_parent
     os.makedirs(out_dir, exist_ok=True)
     cache_landmarks_path = os.path.join(out_dir, args.cache_landmarks)
     cache_diagrams_path = os.path.join(out_dir, args.cache_diagrams)
@@ -522,7 +532,7 @@ def main():
     # diagrams cache check can use it without running the Newton filter.
     filter_sig = {
         'no_newton_filter': args.no_newton_filter,
-        'coeffs_pkl': args.coeffs_pkl,
+        'coeffs': args.coeffs,
         'psi': args.psi,
         'newton_steps': args.newton_steps,
         'newton_threshold': args.newton_threshold,
@@ -530,7 +540,7 @@ def main():
 
     # ---- try diagrams cache first (fast path: skip filter + landmarks + gudhi)
     requested_sig = {
-        'filepath': args.filepath,
+        'min_set': args.min_set,
         'subsamp': args.subsamp,
         'seed': args.seed,
         'filter_sig': filter_sig,
@@ -581,19 +591,19 @@ def main():
 
     if per_L is None:
         # ---- load + filter
-        Z = load_points(args.filepath, args.subsamp, args.seed)
+        Z = load_points(args.min_set, args.subsamp, args.seed)
         if args.no_newton_filter:
             print("\nNewton-residual filter disabled (--no_newton_filter).")
         else:
-            if args.coeffs_pkl is None:
+            if args.coeffs is None:
                 raise SystemExit(
-                    "ERROR: --coeffs_pkl is required to run the Newton filter. "
+                    "ERROR: --coeffs is required to run the Newton filter. "
                     "Pass --no_newton_filter to skip filtering entirely."
                 )
             psi_val = complex(args.psi)
             Z, _, _ = filter_newton_check(
                 Z,
-                coeffs_pkl=args.coeffs_pkl,
+                coeffs=args.coeffs,
                 psi=psi_val,
                 n_steps=args.newton_steps,
                 threshold=args.newton_threshold,
@@ -608,7 +618,7 @@ def main():
         if not args.no_cache and os.path.exists(cache_landmarks_path):
             with open(cache_landmarks_path, 'rb') as f:
                 lm_data = pickle.load(f)
-            if (lm_data.get('filepath') == args.filepath
+            if (lm_data.get('min_set') == args.min_set
                     and lm_data.get('subsamp') == args.subsamp
                     and lm_data.get('seed') == args.seed
                     and lm_data.get('filter_sig') == filter_sig
@@ -630,7 +640,7 @@ def main():
             if not args.no_cache:
                 with open(cache_landmarks_path, 'wb') as f:
                     pickle.dump({
-                        'filepath': args.filepath, 'subsamp': args.subsamp,
+                        'min_set': args.min_set, 'subsamp': args.subsamp,
                         'seed': args.seed, 'filter_sig': filter_sig,
                         'n_sample': n_sample, 'L_max': L_max,
                         'lm_idx': lm_idx, 'dist_table': dist_table,
@@ -676,7 +686,7 @@ def main():
                     'top_k_landmarks': args.top_k_landmarks,
                     'n_sample': n_sample,
                     'L_values': L_values,
-                    'filepath': args.filepath,
+                    'min_set': args.min_set,
                     'subsamp': args.subsamp,
                     'seed': args.seed,
                     'filter_sig': filter_sig,

@@ -5,7 +5,7 @@ scripts (or anything else that consumes min_set.pkl) can be pointed at each
 cluster directly.
 
 Pipeline:
-  1. Load <folder>/min_set.pkl  (N, 5) complex.
+  1. Load --min_set  (N, 5) complex pickle.
   2. Build the 25-dim FS feature embedding (projective-invariant).
   3. Run UMAP -> 3D embedding.
   4. KMeans with --n_clusters on the chosen --basis ('umap' = on the 3D
@@ -14,11 +14,15 @@ Pipeline:
   5. Save each cluster as cluster_<k>_points.pkl (complex (n_k, 5)).
   6. Save a 4-view PNG showing the split in UMAP space.
 
+Output goes to --out_dir (full path) or <min_set_dir>/<out_subdir>/ (subdir
+name, default 'cluster_split'); these flags are mutually exclusive.
+
 Usage:
-    python -m diagnostics.split_clusters <folder> [--n_clusters 2] [--basis umap]
+    python -m diagnostics.split_clusters --min_set plots_slag_run/min_set.pkl \\
+        [--n_clusters 2] [--basis umap]
     # then for each cluster:
     python persistent_homology/persistent_homology_witness_h0h1.py \\
-        --filepath <folder>/cluster_split/cluster_0_points.pkl
+        --min_set plots_slag_run/cluster_split/cluster_0_points.pkl
 """
 import argparse
 import pickle
@@ -37,8 +41,8 @@ from viz.plot_3D import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("folder", type=Path,
-                        help="Folder containing min_set.pkl.")
+    parser.add_argument("--min_set", type=Path, required=True,
+                        help="Path to an (N, 5) complex pickle (e.g. min_set.pkl).")
     parser.add_argument("--n_clusters", type=int, default=2,
                         help="Number of clusters (default 2).")
     parser.add_argument("--basis", choices=["umap", "fs"], default="umap",
@@ -53,8 +57,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--umap_n_neighbors", type=int, default=100)
     parser.add_argument("--umap_min_dist", type=float, default=0.3)
-    parser.add_argument("--out_subdir", type=str, default="cluster_split",
-                        help="Output subdir under <folder>.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: <min_set_dir>/cluster_split/.")
+    out_group.add_argument("--out_subdir", type=str, default="cluster_split",
+                           help="Subdirectory name appended to --min_set's "
+                                "parent directory. Default: 'cluster_split'.")
     args = parser.parse_args()
 
     try:
@@ -63,9 +72,9 @@ def main() -> None:
         print("scikit-learn missing. `uv sync --extra viz-3d`.")
         return
 
-    z = load_min_set_complex(args.folder)
+    z = load_min_set_complex(args.min_set)
     patches = patch_indices_from_complex(z)
-    print(f"Loaded {z.shape[0]} points from {args.folder}/min_set.pkl")
+    print(f"Loaded {z.shape[0]} points from {args.min_set}")
     print(f"Patch counts: " + ", ".join(
         f"p{i}:{int((patches == i).sum())}" for i in range(5)))
 
@@ -98,7 +107,10 @@ def main() -> None:
                for p in range(5)]
         print(f"   c{c}:    " + "  ".join(f"{v:5d}" for v in row))
 
-    out_dir = args.folder / args.out_subdir
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    else:
+        out_dir = args.min_set.parent / args.out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ----- save each cluster's complex points (min_set.pkl format) -----

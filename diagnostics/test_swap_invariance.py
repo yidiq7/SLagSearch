@@ -10,11 +10,14 @@ mined points (baseline) and on the swapped points sigma.p. If sigma is a
 symmetry of L = {f_k = 0}, sigma.p still satisfies f_k ~ 0; if not, the
 swapped points fall off the locus and ||f_k(sigma.p)|| grows substantially.
 
+Output goes to --out_dir (full path) or <min_set_dir>/<out_subdir>/ (subdir
+name); these flags are mutually exclusive. Default: <min_set_dir>.
+
 Usage:
     python -m diagnostics.test_swap_invariance \
         --min_set <plots_slag_<job>/min_set.pkl> \
         --coeffs gd_runs/gd_<job>_step<N>.pkl \
-        [--swap 2 3] [--psi 0]
+        [--swap 2 3] [--psi 0] [--out_dir <dir> | --out_subdir <name>]
 """
 import argparse
 import pickle
@@ -65,8 +68,13 @@ def main() -> None:
     parser.add_argument("--psi", type=float, default=0.0,
                         help="Quintic deformation parameter (default 0 = "
                              "Fermat).")
-    parser.add_argument("--out_dir", type=Path, default=Path("swap_test"),
-                        help="Where to write the comparison plot.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: parent directory of --min_set.")
+    out_group.add_argument("--out_subdir", type=str, default=None,
+                           help="Output subdirectory name appended to "
+                                "--min_set's parent directory.")
     parser.add_argument("--job_id", type=str, default=None,
                         help="Label for output filenames; defaults to the "
                              "coeffs stem.")
@@ -136,9 +144,15 @@ def main() -> None:
         s = float(np.mean(np.abs(swap_user[:, k])))
         print(f"  f_{k}: baseline {b:.3e}   swapped {s:.3e}   ratio {s/max(b,1e-30):.2f}")
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = args.min_set.parent / args.out_subdir
+    else:
+        out_dir = args.min_set.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     job_id = args.job_id or args.coeffs.stem
-    out_path = args.out_dir / f"swap_invariance_{i}{j}_{job_id}.png"
+    out_path = out_dir / f"swap_invariance_{i}{j}_{job_id}.png"
 
     fig, ax = plt.subplots(figsize=(8, 5))
     lo = max(min(norm_base_user.min(), norm_swap_user.min()), 1e-15)

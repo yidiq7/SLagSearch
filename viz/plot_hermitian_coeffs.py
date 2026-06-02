@@ -3,9 +3,12 @@ from a GD/GA coeffs pkl. The coefficient row -> Hermitian matrix conversion
 lives in hermitian_coeffs.py (pure numpy), so the symmetry tests and
 permute_coeffs.py can share it without pulling in matplotlib.
 
+Output goes to --out_dir (full path) or <coeffs_dir>/<out_subdir>/ (subdir
+name); these two flags are mutually exclusive. Default: <coeffs_dir>.
+
 Usage:
     python -m viz.plot_hermitian_coeffs --coeffs gd_runs/gd_<job>_step<N>.pkl \
-        [--out_dir hermitian_plots] [--job_id <label>] [--log_scale]
+        [--out_dir <dir> | --out_subdir <name>] [--job_id <label>] [--log_scale]
 """
 import argparse
 from pathlib import Path
@@ -195,8 +198,13 @@ def main() -> None:
     parser.add_argument("--coeffs", required=True, type=Path,
                         help="Path to a coeff pkl (bare (3,w) array or dict "
                              "with 'coeffs' key, e.g. a GD checkpoint).")
-    parser.add_argument("--out_dir", type=Path, default=Path("hermitian_plots"),
-                        help="Directory to write PNGs into.")
+    out_group = parser.add_mutually_exclusive_group()
+    out_group.add_argument("--out_dir", type=Path, default=None,
+                           help="Full output directory. "
+                                "Default: parent directory of --coeffs.")
+    out_group.add_argument("--out_subdir", type=str, default=None,
+                           help="Output subdirectory name appended to "
+                                "--coeffs's parent directory.")
     parser.add_argument("--job_id", type=str, default=None,
                         help="Label for filenames; defaults to coeffs stem.")
     parser.add_argument("--log_scale", action="store_true",
@@ -228,13 +236,19 @@ def main() -> None:
             for d, Hs in hermitians.items()
         }
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out_dir is not None:
+        out_dir = args.out_dir
+    elif args.out_subdir is not None:
+        out_dir = args.coeffs.parent / args.out_subdir
+    else:
+        out_dir = args.coeffs.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     job_id = args.job_id or args.coeffs.stem
 
-    heatmap_path = args.out_dir / f"hermitian_heatmaps_{job_id}.png"
-    spectra_path = args.out_dir / f"hermitian_spectra_{job_id}.png"
-    text_path = args.out_dir / f"hermitian_matrices_{job_id}.txt"
-    npz_path = args.out_dir / f"hermitian_matrices_{job_id}.npz"
+    heatmap_path = out_dir / f"hermitian_heatmaps_{job_id}.png"
+    spectra_path = out_dir / f"hermitian_spectra_{job_id}.png"
+    text_path = out_dir / f"hermitian_matrices_{job_id}.txt"
+    npz_path = out_dir / f"hermitian_matrices_{job_id}.npz"
 
     write_matrices_text(
         hermitians, text_path,
