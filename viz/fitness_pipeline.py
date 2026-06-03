@@ -223,7 +223,12 @@ def run_fitness_pipeline(
     # --- Primary set ---
     if min_set_override is not None:
         min_set_real = np.asarray(min_set_override)
-        distances = np.zeros(min_set_real.shape[0], dtype=np.float32)
+        # Real per-point Newton-step residuals so the printed Min/Max/Mean
+        # actually indicate whether the override points lie on the manifold.
+        from find_smooth_submanifold import compute_distances_batched
+        distances = np.asarray(compute_distances_batched(
+            jnp.asarray(min_set_real), coeffs, psi
+        ))
     else:
         min_set_real, distances = _mine_on_one_or_many(
             points_real, coeffs, psi, k, n_refine_steps, num_devices,
@@ -385,9 +390,12 @@ def main() -> None:
     out_group.add_argument("--out_subdir", type=str, default=None,
                            help="Output subdirectory name appended to "
                                 "--coeffs's parent directory.")
-    parser.add_argument("--compare_with", default="random",
-                        help="'None', 'random', or unused (manual ndarray "
-                             "not exposed here).")
+    parser.add_argument("--compare_with", default=None,
+                        help="'random' to mine a random-coeffs overlay, "
+                             "'none' or omitted for self-only. Default: "
+                             "'random' when --min_set is NOT given; 'none' "
+                             "when --min_set is given (the cluster-fitness "
+                             "use case rarely wants a full random overlay).")
     args = parser.parse_args()
 
     assert_metric_psi_compatible(args.metric, args.psi)
@@ -421,7 +429,14 @@ def main() -> None:
     else:
         out_dir = default_parent
 
-    compare_with = None if args.compare_with.lower() == "none" else args.compare_with
+    if args.compare_with is None:
+        # Default per the help text above: random when mining the primary;
+        # self-only when the user has supplied an explicit --min_set.
+        compare_with = None if args.min_set is not None else "random"
+    elif args.compare_with.lower() == "none":
+        compare_with = None
+    else:
+        compare_with = args.compare_with
 
     min_set_override = None
     if args.min_set is not None:
