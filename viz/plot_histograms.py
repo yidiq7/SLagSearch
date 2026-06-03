@@ -232,8 +232,16 @@ def main() -> None:
         })
 
     if args.vs == "random":
-        first_coeffs = _load_coeffs_from_run(args.runs[0])
-        width = first_coeffs.shape[1]
+        # Width comes from any run that has a coeffs.pkl sidecar.
+        # --min_set fitness folders skip writing one; just look at the next.
+        width = None
+        for r in args.runs:
+            if (Path(r) / "coeffs.pkl").exists():
+                width = _load_coeffs_from_run(r).shape[1]
+                break
+        if width is None:
+            parser.error("--vs random: no coeffs.pkl found in any --runs folder "
+                         "(needed to infer the random-coeffs width).")
         cache_dir = _ensure_random_cache(
             width=width, seed=args.random_seed,
             psi=args.psi, metric=args.metric,
