@@ -113,6 +113,18 @@ def main() -> None:
         out_dir = args.min_set.parent / args.out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # If the input min_set lives next to a coeffs.pkl sidecar (the
+    # viz.fitness_pipeline run-folder contract), propagate it so the
+    # downstream cluster-fitness / persistent-homology auto-discovery works
+    # against the cluster_split/ folder.
+    src_coeffs = args.min_set.parent / "coeffs.pkl"
+    if src_coeffs.exists():
+        import shutil
+        dst_coeffs = out_dir / "coeffs.pkl"
+        if not dst_coeffs.exists():
+            shutil.copy2(src_coeffs, dst_coeffs)
+            print(f"  copied coeffs sidecar {src_coeffs} -> {dst_coeffs}")
+
     # ----- save each cluster's complex points (min_set.pkl format) -----
     for c in range(args.n_clusters):
         mask = labels == c

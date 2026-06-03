@@ -352,10 +352,13 @@ def main() -> None:
         description="Generate fitness plots (Kahler-form histogram, "
                     "Omega-phase polar, fitness-colored coord-scatter) for "
                     "a coeffs array.")
-    parser.add_argument("--coeffs", required=True,
+    parser.add_argument("--coeffs", default=None,
                         help="Path to a pickle holding either a (3, w) coeffs "
                              "array (w in {25, 250, 1475, 6375}) or a "
-                             "checkpoint dict with a 'coeffs' key.")
+                             "checkpoint dict with a 'coeffs' key. Required "
+                             "unless --min_set is given and a coeffs.pkl exists "
+                             "in the min_set's parent folder, in which case it "
+                             "is auto-discovered.")
     parser.add_argument("--points_file", default=None,
                         help="Override path to point cloud pkl. "
                              "Default: helper.dwork_points_path(psi).")
@@ -390,16 +393,30 @@ def main() -> None:
     points_real = load_points(points_file)
     print(f"Loaded {points_real.shape[0]} points from {points_file}")
 
-    coeffs = _load_coeffs(args.coeffs)
-    print(f"Coeffs shape: {coeffs.shape}  (from {args.coeffs})")
+    coeffs_path = args.coeffs
+    if coeffs_path is None:
+        if args.min_set is None:
+            parser.error("--coeffs is required (or pass --min_set whose parent "
+                         "folder has a coeffs.pkl sidecar).")
+        candidate = Path(args.min_set).parent / "coeffs.pkl"
+        if not candidate.exists():
+            parser.error(f"--coeffs not given and no coeffs.pkl found at {candidate}")
+        coeffs_path = str(candidate)
+        print(f"[fitness_pipeline] auto-discovered coeffs at {coeffs_path}")
+    coeffs = _load_coeffs(coeffs_path)
+    print(f"Coeffs shape: {coeffs.shape}  (from {coeffs_path})")
 
-    coeffs_parent = Path(args.coeffs).parent
+    # When --min_set is given, the user's mental model is "I'm analyzing THIS
+    # min_set" (the coeffs is a sibling lookup), so resolve out_subdir against
+    # the min_set's parent. Otherwise resolve against the coeffs' parent.
+    default_parent = (Path(args.min_set).parent if args.min_set is not None
+                      else Path(coeffs_path).parent)
     if args.out_dir is not None:
         out_dir = args.out_dir
     elif args.out_subdir is not None:
-        out_dir = coeffs_parent / args.out_subdir
+        out_dir = default_parent / args.out_subdir
     else:
-        out_dir = coeffs_parent
+        out_dir = default_parent
 
     compare_with = None if args.compare_with.lower() == "none" else args.compare_with
 

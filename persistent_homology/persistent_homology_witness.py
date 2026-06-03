@@ -524,6 +524,15 @@ def main():
     else:
         out_dir = min_set_parent
     os.makedirs(out_dir, exist_ok=True)
+
+    # Auto-discover coeffs.pkl from the min_set's parent if --coeffs wasn't
+    # given. Matches the sidecar contract from viz.fitness_pipeline so the
+    # PH script Just Works when pointed at a run folder.
+    if args.coeffs is None and not args.no_newton_filter:
+        candidate = os.path.join(min_set_parent, 'coeffs.pkl')
+        if os.path.exists(candidate):
+            args.coeffs = candidate
+            print(f"[ph_witness] auto-discovered coeffs at {candidate}")
     cache_landmarks_path = os.path.join(out_dir, args.cache_landmarks)
     cache_diagrams_path = os.path.join(out_dir, args.cache_diagrams)
     print(f"Output directory: {out_dir}")
