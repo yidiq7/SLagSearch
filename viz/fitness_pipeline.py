@@ -191,6 +191,7 @@ def run_fitness_pipeline(
     extra_comparisons: Optional[list] = None,
     num_devices: int = 1,
     min_set_override: Optional[jnp.ndarray] = None,
+    min_set_source: Optional[str] = None,
     ) -> None:
     """Plot Kahler-norm and Omega-phase distributions for `coeffs`, optionally
     overlaid with one or more comparison distributions.
@@ -217,6 +218,11 @@ def run_fitness_pipeline(
     primary min-set. Used e.g. for plotting fitness on a single UMAP cluster
     of an existing run. `points_real` is then only consumed by `compare_with`
     / `extra_comparisons` mining (if any).
+
+    min_set_source: optional path to the (N, 5) complex pkl that
+    min_set_override was loaded from. When given, save_run_sidecars writes
+    out_dir/min_set.pkl as a symlink to this path instead of pickling a
+    duplicate copy.
     """
     os.makedirs(out_dir, exist_ok=True)
 
@@ -288,7 +294,8 @@ def run_fitness_pipeline(
 
     # Persist sidecars before drawing histograms so the run folder is
     # already valid input to viz.plot_histograms.
-    save_run_sidecars(out_dir, coeffs, min_set_real, frobenius_norms, phases)
+    save_run_sidecars(out_dir, coeffs, min_set_real, frobenius_norms, phases,
+                      min_set_source=min_set_source)
 
     # --- Histograms (delegated to the single owner) ---
     runs_for_plot = [{
@@ -309,14 +316,24 @@ def run_fitness_pipeline(
     # Coord-scatter via the sidecar contract: single owner for "render
     # coord-scatter from a folder" lives in plot_coord_scatter. Costs one
     # extra pkl/npy load, which is negligible next to the diagnostics above.
-    render_from_folder(Path(out_dir) / "min_set.pkl", color="fitness")
+    # When min_set_source is given we didn't write min_set.pkl into out_dir;
+    # point the scatter renderer at the source pkl and pass fitness_path
+    # explicitly so it picks up the freshly-written frobenius_norms.npy.
+    if min_set_source is not None:
+        render_from_folder(
+            Path(min_set_source), out_dir=Path(out_dir), color="fitness",
+            fitness_path=Path(out_dir) / "frobenius_norms.npy",
+        )
+    else:
+        render_from_folder(Path(out_dir) / "min_set.pkl", color="fitness")
 
 
 def save_run_sidecars(out_dir: str,
                       coeffs: jnp.ndarray,
                       min_set_real: jnp.ndarray,
                       frobenius_norms: np.ndarray,
-                      phases: np.ndarray) -> None:
+                      phases: np.ndarray,
+                      min_set_source: Optional[str] = None) -> None:
     """Write the canonical run-folder sidecars:
         coeffs.pkl              -- the coeffs that defined the submanifold
         min_set.pkl             -- (N, 5) complex points on the mined min-set
@@ -325,13 +342,23 @@ def save_run_sidecars(out_dir: str,
 
     This is the contract consumed by viz.plot_histograms (overlay) and
     viz.plot_coord_scatter (fitness coloring).
+
+    If min_set_source is given (signals that the caller supplied
+    min_set_real explicitly, so coeffs.pkl and min_set.pkl already live
+    elsewhere on disk), skip writing both inputs into out_dir -- only the
+    fitness sidecars (frobenius_norms.npy, phases.npy) and the plots are
+    written. This avoids duplicating large pkls in the --min_set CLI path
+    (e.g. cluster-fitness folders).
     """
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "coeffs.pkl"), "wb") as f:
-        pickle.dump(np.asarray(coeffs), f)
-    min_set = np.asarray(min_set_real)[:, :5] + np.asarray(min_set_real)[:, 5:] * 1j
-    with open(os.path.join(out_dir, "min_set.pkl"), "wb") as f:
-        pickle.dump(min_set, f)
+
+    if min_set_source is None:
+        with open(os.path.join(out_dir, "coeffs.pkl"), "wb") as f:
+            pickle.dump(np.asarray(coeffs), f)
+        min_set = np.asarray(min_set_real)[:, :5] + np.asarray(min_set_real)[:, 5:] * 1j
+        with open(os.path.join(out_dir, "min_set.pkl"), "wb") as f:
+            pickle.dump(min_set, f)
+
     np.save(os.path.join(out_dir, "frobenius_norms.npy"), np.asarray(frobenius_norms))
     np.save(os.path.join(out_dir, "phases.npy"), np.asarray(phases))
 
@@ -466,6 +493,7 @@ def main() -> None:
         metric=args.metric, compare_with=compare_with,
         out_dir=str(out_dir),
         min_set_override=min_set_override,
+        min_set_source=args.min_set,
         num_devices=num_devices,
     )
     print(f"Plots written to {out_dir}/")
