@@ -535,7 +535,11 @@ def compute_combined_fitness(
     if debug_mode:
         kahler_form_restricted = compute_kahler_form_restricted(min_set, restrictions, patch_indices, metric=metric)
         normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-        kahler_form_restricted_normalized = kahler_form_restricted / jnp.sqrt(normalization_factor[:, None, None])
+        # Match the convention in compute_lagrangian_condition_fitness: the
+        # per-point ratio ||K_R||_F / ||K_U||_F. Dividing the *matrix* by
+        # normalization_factor (a scalar per point) gives a matrix whose
+        # Frobenius norm is exactly that ratio.
+        kahler_form_restricted_normalized = kahler_form_restricted / normalization_factor[:, None, None]
         # Test
         #kahler_form_restricted_normalized = kahler_form_restricted 
         #kahler_form_unrestricted_normalized = compute_kahler_form_unrestricted(min_set, constant_coord=constant_coord)

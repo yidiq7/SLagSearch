@@ -117,14 +117,17 @@ def _per_chunk_diagnostics(
     psi: jnp.ndarray,
     metric: str,
 ):
-    """Returns per-point (frobenius_norms_plot, norms_for_fitness, phases_2pi).
+    """Returns per-point (frobenius_norms, norms_for_fitness, phases_2pi).
 
     Phases are returned on [0, 2*pi) for plotting (so the user can see the
     raw distribution, not the mod-pi reduction used by training).
-    frobenius_norms_plot mirrors compute_combined_fitness debug-mode output:
-      ||K_restricted||_F / sqrt(||K_unrestricted||_F)
-    norms_for_fitness is what compute_lagrangian_condition_fitness uses:
+    Both per-point arrays use the same normalization convention as
+    compute_lagrangian_condition_fitness -- rescale the Frobenius norm of
+    the pulled-back Kahler form by the Frobenius norm before pull-back:
       ||K_restricted||_F / ||K_unrestricted||_F
+    They are identical here; kept as separate names for call-site clarity
+    (frobenius_norms is what gets saved to the sidecar / histogrammed;
+    norms_for_fitness is what the bottom-99% mean is taken over).
     """
     min_set = convert_real_to_complex_batch(min_set_real_chunk)
     patch_indices = determine_patches_batch(min_set)
@@ -134,8 +137,8 @@ def _per_chunk_diagnostics(
     kahler_restricted = compute_kahler_form_restricted(min_set, restrictions, patch_indices, metric=metric)
     norms_unrestricted = jnp.linalg.norm(kahler_unrestricted, axis=(1, 2))
     norms_restricted = jnp.linalg.norm(kahler_restricted, axis=(1, 2))
-    frobenius_norms_plot = norms_restricted / jnp.sqrt(norms_unrestricted)
-    norms_for_fitness = norms_restricted / norms_unrestricted
+    frobenius_norms_plot = norms_restricted / norms_unrestricted
+    norms_for_fitness = frobenius_norms_plot
     # Bypass compute_holomorphic_form_restricted so we can use mod 2*pi for the
     # plot; training/fitness still use the mod-pi reduction (applied below).
     Omega, _, Omega_coord = compute_holomorphic_form(min_set, patch_indices, psi)
@@ -312,7 +315,7 @@ def save_run_sidecars(out_dir: str,
     """Write the canonical run-folder sidecars:
         coeffs.pkl              -- the coeffs that defined the submanifold
         min_set.pkl             -- (N, 5) complex points on the mined min-set
-        frobenius_norms.npy     -- per-point ||K_R||_F / sqrt(||K_U||_F)
+        frobenius_norms.npy     -- per-point ||K_R||_F / ||K_U||_F
         phases.npy              -- per-point Omega phase mod 2*pi
 
     This is the contract consumed by viz.plot_histograms (overlay) and

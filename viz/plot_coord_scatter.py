@@ -145,7 +145,7 @@ def plot_pairs(z: np.ndarray, color_values: np.ndarray, out_path: Path,
         cbar = fig.colorbar(last_sc, ax=axes.ravel().tolist(),
                             shrink=0.6, pad=0.02,
                             label=r"Lagrangian fitness  "
-                                  r"$\exp(-10\,\|K_R\|_F / \sqrt{\|K_U\|_F})$")
+                                  r"$\exp(-10\,\|K_R\|_F / \|K_U\|_F)$")
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
