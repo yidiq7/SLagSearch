@@ -450,12 +450,23 @@ def main() -> None:
         print(f"Loaded min_set override: {min_set_complex.shape[0]} points "
               f"from {args.min_set}")
 
+    # Multi-GPU: shard mining across local devices, same pattern GD uses.
+    # Library function defaults num_devices=1 so callers don't accidentally
+    # opt into pmap; the CLI explicitly opts in here.
+    num_devices = jax.local_device_count()
+    if num_devices > 1:
+        if args.k % num_devices != 0:
+            parser.error(f"--k {args.k} not divisible by num_devices={num_devices}; "
+                         f"pass a multiple of {num_devices}.")
+        print(f"Detected {num_devices} GPU(s); sharding mining across them.")
+
     run_fitness_pipeline(
         points_real, coeffs, jnp.asarray(args.psi),
         k=args.k, n_refine_steps=args.newton_steps,
         metric=args.metric, compare_with=compare_with,
         out_dir=str(out_dir),
         min_set_override=min_set_override,
+        num_devices=num_devices,
     )
     print(f"Plots written to {out_dir}/")
 
