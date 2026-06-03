@@ -783,40 +783,28 @@ if __name__ == '__main__':
     else:
         top_fitness_score = 0.0
 
-    # Per-species run folders. Every species gets a folder containing at
-    # least coeffs.pkl (cheap; lets you revisit any species's candidate
-    # later via `gradient_descent.py --init_pkl <folder>/coeffs.pkl`).
-    # Only species with best_fitness >= 0.5 * top_fitness_score also get
-    # the expensive sidecar mining + diagnostic plots via run_fitness_pipeline.
-    # Species list is fitness-descending, so the threshold partitions cleanly.
-    plot_threshold = 0.5 * top_fitness_score
+    # Per-species run folders for species with best_fitness >= 0.5 * top_fitness_score.
+    # run_fitness_pipeline writes coeffs.pkl as part of the sidecar contract,
+    # so each species's folder is self-contained (coeffs + sidecars + plots).
+    # Species list is fitness-descending, so we break at the first below-threshold.
     rank = 1
     for s in final_species_list:
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
         best_member = s.members[best_member_idx]
         best_fitness = s.fitness_values[best_member_idx]
 
-        out_dir = os.path.join(
-            f'plots_slag_{args.job_id}',
-            f'plots_slag_{args.job_id}_{rank}_id{s.id}'
-        )
-        os.makedirs(out_dir, exist_ok=True)
-
-        # Cheap save: just the coeffs, every species.
-        coeffs_path = os.path.join(out_dir, 'coeffs.pkl')
-        with open(coeffs_path, 'wb') as f:
-            pickle.dump(np.asarray(best_member), f)
-
-        if best_fitness < plot_threshold:
-            print(f"Species {s.id} (rank {rank}, fitness {best_fitness:.5f}): "
-                  f"coeffs saved, plots skipped (< 0.5 * top = {plot_threshold:.5f})")
-            rank += 1
-            continue
+        if best_fitness < 0.5 * top_fitness_score:
+            print(f"\nStopping plot generation: Species {s.id} fitness ({best_fitness:.5f}) is below half of the top fitness ({top_fitness_score:.5f}).")
+            break
 
         print(f"\n--- Species {s.id} (Best Fitness: {best_fitness:.5f}) ---")
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")
         print(format_array_with_commas(best_member))
 
+        out_dir = os.path.join(
+            f'plots_slag_{args.job_id}',
+            f'plots_slag_{args.job_id}_{rank}_id{s.id}'
+        )
         run_fitness_pipeline(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir)
         rank += 1
