@@ -187,7 +187,7 @@ def run_fitness_pipeline(
     compare_label: str = 'Random intersection',
     primary_color: str = 'skyblue',
     compare_color: str = 'orange',
-    fix_kahler_x_range: bool = True,
+    fix_kahler_x_range: Optional[bool] = None,
     extra_comparisons: Optional[list] = None,
     num_devices: int = 1,
     min_set_override: Optional[jnp.ndarray] = None,
@@ -207,7 +207,16 @@ def run_fitness_pipeline(
     static dispatch in evaluate_equations_single_point is accepted).
 
     primary_color / compare_color / primary_label / compare_label tune the
-    histograms; fix_kahler_x_range=True pins both the bin range and xlim to [0, 3].
+    histograms.
+
+    fix_kahler_x_range:
+        True  -- pin Kähler-histogram bin range + xlim to [0, 3].
+        False -- let matplotlib auto-range.
+        None (default) -- True iff compare_with == "random", else False.
+                          (The [0, 3] window is calibrated to keep a random
+                          overlay's bulk visible alongside a tight primary;
+                          for self-only or coeffs-vs-coeffs overlays, auto
+                          gives a more informative view.)
 
     num_devices > 1 shards filter_and_refine across GPUs (per-device mines
     k/num_devices points from its slice of points_real). Diagnostics still
@@ -224,6 +233,8 @@ def run_fitness_pipeline(
     out_dir/min_set.pkl as a symlink to this path instead of pickling a
     duplicate copy.
     """
+    if fix_kahler_x_range is None:
+        fix_kahler_x_range = isinstance(compare_with, str) and compare_with == "random"
     os.makedirs(out_dir, exist_ok=True)
 
     # --- Primary set ---
