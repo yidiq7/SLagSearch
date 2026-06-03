@@ -21,7 +21,7 @@ Usage:
     python -m diagnostics.split_clusters --min_set plots_slag_run/min_set.pkl \\
         [--n_clusters 2] [--basis umap]
     # then for each cluster:
-    python persistent_homology/persistent_homology_witness_h0h1.py \\
+    python persistent_homology/persistent_homology_witness.py \\
         --min_set plots_slag_run/cluster_split/cluster_0_points.pkl
 """
 import argparse
@@ -191,7 +191,7 @@ def main() -> None:
     # ----- next-steps printout -----
     print(f"\nNext: run persistent homology on each cluster, e.g.")
     for c in range(args.n_clusters):
-        print(f"  uv run python persistent_homology/persistent_homology_witness_h0h1.py \\")
+        print(f"  uv run python persistent_homology/persistent_homology_witness.py \\")
         print(f"      --min_set {out_dir}/cluster_{c}_points.pkl")
 
 

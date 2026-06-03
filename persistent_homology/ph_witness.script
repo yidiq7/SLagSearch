@@ -7,7 +7,7 @@
 #SBATCH --mem=64G                             # '0' tells Slurm to allocate all available memory on the node
 
 START_TIME=$SECONDS
-uv run --extra persistent-homology python persistent_homology/persistent_homology_witness_h0h1.py \
+uv run --extra persistent-homology python persistent_homology/persistent_homology_witness.py \
     --min_set gd_runs/plots_slag_d4_run/min_set.pkl \
     --coeffs gd_runs/gd_d4_run_step3000.pkl \
     --psi 0 --landmarks 1000,2000,3000 \

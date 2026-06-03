@@ -1,6 +1,6 @@
 """Direct geometric test of a discrete coordinate permutation symmetry on a
 candidate sLag. Reuses the already-mined min_set.pkl (produced inside each
-plots_slag_<job>/ folder by make_fitness_plots) and the evaluation function
+plots_slag_<job>/ folder by run_fitness_pipeline) and the evaluation function
 in helper.evaluate_equations_single_point. No refinement is done -- if we
 Newton-refined the swapped points they could just slide back onto the
 candidate locus, defeating the test.
@@ -59,7 +59,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min_set", required=True, type=Path,
                         help="Path to a min_set.pkl produced by "
-                             "make_fitness_plots (inside plots_slag_<job>/).")
+                             "run_fitness_pipeline (inside plots_slag_<job>/).")
     parser.add_argument("--coeffs", required=True, type=Path,
                         help="Path to the corresponding coeffs pkl.")
     parser.add_argument("--swap", nargs=2, type=int, default=[2, 3],

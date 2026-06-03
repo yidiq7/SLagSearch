@@ -15,7 +15,7 @@ panels (i != j) draw the y = x line for visual reference.
   patch    (default) -- affine patch index = argmax_i |z_i|. Pure-numpy,
                         no extra files needed.
   fitness            -- loads frobenius_norms.npy (sidecar written by
-                        plots.make_fitness_plots) and colors by
+                        viz.fitness_pipeline.run_fitness_pipeline) and colors by
                         exp(-10 * frobenius_norms). Errors if the sidecar
                         isn't present.
 
@@ -155,7 +155,7 @@ def _load_fitness_colors(norms_path: Path, n_expected: int) -> np.ndarray:
     if not norms_path.exists():
         raise SystemExit(
             f"[error] --color fitness requires {norms_path}, but it "
-            f"doesn't exist. Re-run plots.make_fitness_plots to regenerate "
+            f"doesn't exist. Re-run viz.fitness_pipeline.run_fitness_pipeline to regenerate "
             f"the sidecar, pass --fitness_path explicitly, or use --color patch."
         )
     frobenius_norms = np.load(norms_path)
@@ -173,7 +173,7 @@ def render_from_folder(min_set: Path, out_dir: Path | None = None,
                        max_points: int | None = None) -> None:
     """Programmatic entry point: same flow as the CLI's main(), but callable.
 
-    Used by fitness_plots.make_fitness_plots to auto-emit fitness-colored
+    Used by fitness_viz.fitness_pipeline.run_fitness_pipeline to auto-emit fitness-colored
     scatter PNGs at run-end via the sidecar contract (min_set.pkl +
     frobenius_norms.npy), so the histogram path and the scatter path share
     one rendering implementation.

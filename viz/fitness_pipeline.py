@@ -1,27 +1,47 @@
 """Fitness-diagnostics pipeline for a candidate coeffs array.
 
 Mines a min-set with Newton refinement, computes Kahler-form Frobenius norms
-and Omega phases on it, and writes two histograms + a min_set.pkl +
-frobenius_norms.npy sidecar + fitness-colored coord-scatter PNGs into the
-output directory. Library entry point `make_fitness_plots` is imported by
-GA.py and gradient_descent.py for their end-of-run plots.
+and Omega phases on it, writes the run-folder sidecars
+(coeffs.pkl / min_set.pkl / frobenius_norms.npy / phases.npy) plus the two
+self-only histograms (delegated to viz.plot_histograms) and the
+fitness-colored coord-scatter PNGs. Library entry point `run_fitness_pipeline`
+is imported by GA.py and gradient_descent.py for their end-of-run plots.
+
+The run-folder shape is the same for every producer (GA species, GD result,
+manually mined runs):
+
+    <run_folder>/
+        coeffs.pkl
+        min_set.pkl
+        frobenius_norms.npy
+        phases.npy
+        Kahler_form_loss_histogram.png
+        circular_phase_histogram.png
+        coord_scatter_{re,im,abs}_fitness.png
+
+Cross-run overlay plots are produced by viz.plot_histograms; this module
+only emits self-only histograms.
 
 Usage (CLI):
-    python -m viz.fitness_plots --coeffs gd_runs/gd_<job>_step<N>.pkl \
-        [--points_file <path>] [--psi <c>] [--metric k4_fermat|FS] \
-        [--out_dir <dir> | --out_subdir <name>] [--k 80000] [--n_refine_steps 80]
+    python -m viz.fitness_pipeline --coeffs gd_runs/gd_<job>_step<N>.pkl \
+        [--min_set <pkl>] [--points_file <path>] [--psi <c>] \
+        [--metric k4_fermat|FS] [--out_dir <dir> | --out_subdir <name>] \
+        [--k 80000] [--newton_steps 80] [--vs random]
 
 --coeffs is required and accepts either a bare (3, w) array or a
 checkpoint dict with a "coeffs" key (matches gradient_descent checkpoints).
+--min_set <pkl> skips mining and uses the given (N, 5) complex points as the
+min-set (used e.g. for plotting fitness on one UMAP cluster output).
 --out_dir / --out_subdir are mutually exclusive; default writes to the
 parent directory of --coeffs.
+--vs random invokes viz.plot_histograms after the self-only plots to also
+emit a random-overlay histogram pair in <out_dir>_vs_random/.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 import os
 import pickle
-import matplotlib.pyplot as plt
 from functools import partial
 from pathlib import Path
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs
@@ -37,6 +57,7 @@ from slag_condition import (
 from get_restriction import compute_Omega_restriction
 from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
 from viz.plot_coord_scatter import render_from_folder
+from viz.plot_histograms import plot_overlay_histograms
 from typing import Optional
 
 
@@ -148,7 +169,7 @@ def _chunked_diagnostics(
         np.concatenate(ph_chunks),
     )
 
-def make_fitness_plots(
+def run_fitness_pipeline(
     points_real: jnp.ndarray,
     coeffs: jnp.ndarray,
     psi: jnp.ndarray,
@@ -166,6 +187,7 @@ def make_fitness_plots(
     fix_kahler_x_range: bool = True,
     extra_comparisons: Optional[list] = None,
     num_devices: int = 1,
+    min_set_override: Optional[jnp.ndarray] = None,
     ) -> None:
     """Plot Kahler-norm and Omega-phase distributions for `coeffs`, optionally
     overlaid with one or more comparison distributions.
@@ -187,13 +209,22 @@ def make_fitness_plots(
     k/num_devices points from its slice of points_real). Diagnostics still
     use the host-side chunked loop on the gathered (k, 10) min_set_real,
     which is memory-safe at d=4 because chunk_size bounds per-call VRAM.
+
+    min_set_override: skip mining and use these (N, 10) real points as the
+    primary min-set. Used e.g. for plotting fitness on a single UMAP cluster
+    of an existing run. `points_real` is then only consumed by `compare_with`
+    / `extra_comparisons` mining (if any).
     """
     os.makedirs(out_dir, exist_ok=True)
 
     # --- Primary set ---
-    min_set_real, distances = _mine_on_one_or_many(
-        points_real, coeffs, psi, k, n_refine_steps, num_devices,
-    )
+    if min_set_override is not None:
+        min_set_real = np.asarray(min_set_override)
+        distances = np.zeros(min_set_real.shape[0], dtype=np.float32)
+    else:
+        min_set_real, distances = _mine_on_one_or_many(
+            points_real, coeffs, psi, k, n_refine_steps, num_devices,
+        )
     if patch_index is not None:
         patch_indices = np.asarray(determine_patches_batch(
             convert_real_to_complex_batch(jnp.asarray(min_set_real))))
@@ -247,81 +278,54 @@ def make_fitness_plots(
             overlays.append({"fnorms": fnorms_ex, "phases": phases_ex,
                              "label": ex["label"], "color": ex["color"]})
 
-    # --- Kahler-form histogram ---
-    plt.figure(figsize=(10, 6))
-    hist_kwargs = dict(bins=200, alpha=0.7, density=True)
-    if fix_kahler_x_range:
-        hist_kwargs['range'] = (0, 3)
-    plt.hist(frobenius_norms, label=primary_label, color=primary_color, **hist_kwargs)
+    # Persist sidecars before drawing histograms so the run folder is
+    # already valid input to viz.plot_histograms.
+    save_run_sidecars(out_dir, coeffs, min_set_real, frobenius_norms, phases)
+
+    # --- Histograms (delegated to the single owner) ---
+    runs_for_plot = [{
+        "fnorms": np.asarray(frobenius_norms),
+        "phases": np.asarray(phases),
+        "label": primary_label,
+        "color": primary_color,
+    }]
     for ov in overlays:
-        plt.hist(ov["fnorms"], label=ov["label"], color=ov["color"], **hist_kwargs)
-    if fix_kahler_x_range:
-        plt.xlim(0, 3)
-    plt.xlabel('Frobenius norm')
-    plt.ylabel('Probability density')
-    plt.title('Distribution of the norm of the Kahler form')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.savefig(os.path.join(out_dir, 'Kahler_form_loss_histogram.png'))
-    plt.close()
-
-    # --- Phase histogram (polar, always [0, 2*pi)) ---
-    number_of_bins = 1000
-    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(8, 8))
-    width = 2 * np.pi / number_of_bins
-    counts, bin_edges = np.histogram(phases, bins=number_of_bins, range=(0, 2 * np.pi))
-    angles = bin_edges[:-1]
-    max_count = int(counts.max())
-    overlay_counts = []
-    for ov in overlays:
-        c, _ = np.histogram(ov["phases"], bins=number_of_bins, range=(0, 2 * np.pi))
-        overlay_counts.append(c)
-        max_count = max(max_count, int(c.max()))
-    baseline_radius = max_count / 2
-
-    ax.bar(angles, counts, width=width, alpha=0.7, color=primary_color,
-           label=primary_label, bottom=baseline_radius)
-    for ov, c in zip(overlays, overlay_counts):
-        ax.bar(angles, c, width=width, alpha=0.7, color=ov["color"],
-               label=ov["label"], bottom=baseline_radius)
-
-    ax.set_theta_zero_location('E')
-    ax.set_theta_direction(1)
-    ax.set_xticks([0, np.pi/2, np.pi, 3*np.pi/2])
-    ax.set_xticklabels(['0', 'π/2', 'π', '3π/2'], fontsize=12)
-    if overlays:
-        radial_grid_values = [baseline_radius + max_count * 0.25,
-                              baseline_radius + max_count * 0.5,
-                              baseline_radius + max_count * 0.75]
-    else:
-        radial_grid_values = [baseline_radius, baseline_radius + max_count * 0.5]
-    ax.set_rgrids(radial_grid_values, angle=22.5)
-    ax.set_yticklabels([])
-    ax.grid(True, linestyle='--', alpha=0.6)
-    ax.set_rlim(0, baseline_radius + max_count * 1.05)
-    ax.set_title('Distribution of the phases of the holomorphic 3-form', fontsize=16, pad=25)
-    ax.legend(bbox_to_anchor=(1.1, 1.05))
-    plt.savefig(os.path.join(out_dir, 'circular_phase_histogram.png'), bbox_inches='tight')
-    plt.close()
-
-    save_min_set_and_diagnostics(min_set_real, frobenius_norms, out_dir)
+        runs_for_plot.append({
+            "fnorms": np.asarray(ov["fnorms"]),
+            "phases": np.asarray(ov["phases"]),
+            "label": ov["label"],
+            "color": ov["color"],
+        })
+    plot_overlay_histograms(runs_for_plot, out_dir,
+                            fix_kahler_x_range=fix_kahler_x_range)
     # Coord-scatter via the sidecar contract: single owner for "render
     # coord-scatter from a folder" lives in plot_coord_scatter. Costs one
     # extra pkl/npy load, which is negligible next to the diagnostics above.
     render_from_folder(Path(out_dir) / "min_set.pkl", color="fitness")
 
 
-def save_min_set_and_diagnostics(min_set_real: jnp.ndarray,
-                                 frobenius_norms: np.ndarray,
-                                 out_dir: str) -> None:
-    """Write min_set.pkl (legacy (N, 5) complex array) and the sidecar
-    frobenius_norms.npy that plot_coord_scatter.py --color fitness consumes.
+def save_run_sidecars(out_dir: str,
+                      coeffs: jnp.ndarray,
+                      min_set_real: jnp.ndarray,
+                      frobenius_norms: np.ndarray,
+                      phases: np.ndarray) -> None:
+    """Write the canonical run-folder sidecars:
+        coeffs.pkl              -- the coeffs that defined the submanifold
+        min_set.pkl             -- (N, 5) complex points on the mined min-set
+        frobenius_norms.npy     -- per-point ||K_R||_F / sqrt(||K_U||_F)
+        phases.npy              -- per-point Omega phase mod 2*pi
+
+    This is the contract consumed by viz.plot_histograms (overlay) and
+    viz.plot_coord_scatter (fitness coloring).
     """
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "coeffs.pkl"), "wb") as f:
+        pickle.dump(np.asarray(coeffs), f)
     min_set = np.asarray(min_set_real)[:, :5] + np.asarray(min_set_real)[:, 5:] * 1j
     with open(os.path.join(out_dir, "min_set.pkl"), "wb") as f:
         pickle.dump(min_set, f)
-    np.save(os.path.join(out_dir, "frobenius_norms.npy"),
-            np.asarray(frobenius_norms))
+    np.save(os.path.join(out_dir, "frobenius_norms.npy"), np.asarray(frobenius_norms))
+    np.save(os.path.join(out_dir, "phases.npy"), np.asarray(phases))
 
 
 # ---------------------------------------------------------------------------
@@ -355,12 +359,19 @@ def main() -> None:
     parser.add_argument("--points_file", default=None,
                         help="Override path to point cloud pkl. "
                              "Default: helper.dwork_points_path(psi).")
+    parser.add_argument("--min_set", default=None,
+                        help="Path to a (N, 5) complex pkl to use as the "
+                             "min-set, skipping mining. Used e.g. to plot "
+                             "fitness on a single UMAP cluster of an "
+                             "existing run.")
     parser.add_argument("--psi", type=complex, default=0+0j,
                         help="Dwork parameter (complex). 0 = Fermat quintic.")
     parser.add_argument("--metric", default="k4_fermat",
                         help="'k4_fermat' (psi=0 only) or 'FS' (any psi).")
     parser.add_argument("--k", type=int, default=80000)
-    parser.add_argument("--n_refine_steps", type=int, default=80)
+    parser.add_argument("--newton_steps", type=int, default=80,
+                        help="Newton refinement steps in filter_and_refine "
+                             "(library kwarg: n_refine_steps).")
     out_group = parser.add_mutually_exclusive_group()
     out_group.add_argument("--out_dir", type=Path, default=None,
                            help="Full output directory. "
@@ -392,11 +403,24 @@ def main() -> None:
 
     compare_with = None if args.compare_with.lower() == "none" else args.compare_with
 
-    make_fitness_plots(
+    min_set_override = None
+    if args.min_set is not None:
+        with open(args.min_set, "rb") as f:
+            min_set_complex = np.asarray(pickle.load(f))
+        # Convert (N, 5) complex -> (N, 10) real (first 5 Re, last 5 Im).
+        min_set_override = jnp.concatenate(
+            [jnp.asarray(min_set_complex.real),
+             jnp.asarray(min_set_complex.imag)], axis=1
+        )
+        print(f"Loaded min_set override: {min_set_complex.shape[0]} points "
+              f"from {args.min_set}")
+
+    run_fitness_pipeline(
         points_real, coeffs, jnp.asarray(args.psi),
-        k=args.k, n_refine_steps=args.n_refine_steps,
+        k=args.k, n_refine_steps=args.newton_steps,
         metric=args.metric, compare_with=compare_with,
         out_dir=str(out_dir),
+        min_set_override=min_set_override,
     )
     print(f"Plots written to {out_dir}/")
 

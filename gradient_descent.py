@@ -69,7 +69,7 @@ from helper import (
     format_array_with_commas,
     load_points as _load_points,
 )
-from viz.fitness_plots import make_fitness_plots
+from viz.fitness_pipeline import run_fitness_pipeline
 from sharding import device_put_sharded, shard_leading_axis, take_replicated
 from slag_condition import (
     compute_holomorphic_form_restricted,
@@ -96,12 +96,24 @@ def genotype_shape(max_degree: int) -> tuple[int, int]:
     return (3, GENOTYPE_WIDTHS[max_degree])
 
 
-# Canonical d=1 baseline. Mirrors GA.py:409 d1_coeffs.
-D1_COEFFS = jnp.array([
-    [-0.2085878998041153, 0.08078225702047348, 0.12364989519119263, 0.42693421244621277, -0.4276507794857025, 0.05941963940858841, -0.19358153641223907, 0.2884068787097931, 0.2374262660741806, 0.17124612629413605, -0.03099866583943367, 0.07415380328893661, -0.22672683000564575, -0.1914607286453247, 0.09337177127599716, -0.053066715598106384, -0.06608302891254425, -0.3771730363368988, 0.05378381162881851, 0.0064529310911893845, 0.2938925623893738, 0.08852922171354294, 0.020463770255446434, 0.09666207432746887, -0.006990742404013872],
-    [-0.1065014973282814, 0.20087268948554993, 0.18935158848762512, -0.17352613806724548, 0.05884088575839996, -0.4646260440349579, -0.10628655552864075, -0.28338274359703064, -0.03379037603735924, 0.007989203557372093, -0.06132059171795845, -0.13810740411281586, 0.04504100978374481, 0.015115765854716301, -0.4030528962612152, -0.025872472673654556, -0.4061300754547119, -0.02022559940814972, -0.13893099129199982, 0.10193423181772232, 0.29334160685539246, 0.22542181611061096, -0.050897762179374695, 0.21366965770721436, -0.04277477413415909],
-    [0.054688308387994766, 0.07500440627336502, 0.060474496334791183, -0.3848169445991516, -0.3781052529811859, 0.38639041781425476, 0.021527282893657684, 0.4060642719268799, -0.15761728584766388, -0.1271764189004898, -0.01066557876765728, -0.13985656201839447, 0.1605837494134903, 0.15716029703617096, -0.32516127824783325, 0.016290534287691116, 0.2249980866909027, -0.2878168523311615, -0.12032820284366608, -0.04713383689522743, 0.025025269016623497, 0.08448748290538788, 0.05337755009531975, 0.05431513488292694, -0.03361976519227028]
-])
+# Canonical d=1 baseline. Loaded from the run-folder pkl written by GA
+# (or by tmp_dump_d1_coeffs.py for the historical literal).
+D1_BASELINE_COEFFS_PATH = "plots_slag_d1_search/plots_slag_6338568_1_id0/coeffs.pkl"
+
+
+def _load_d1_baseline_coeffs() -> jnp.ndarray:
+    """Lazy load: only the few call sites that need the d=1 baseline pay the
+    I/O cost, and a missing file gives an actionable error instead of an
+    import-time crash."""
+    if not os.path.exists(D1_BASELINE_COEFFS_PATH):
+        raise FileNotFoundError(
+            f"d=1 baseline coeffs not found at {D1_BASELINE_COEFFS_PATH}. "
+            "Run `python tmp_dump_d1_coeffs.py` once to materialize the "
+            "historical literal, or point --init_pkl at a GA species "
+            "coeffs.pkl instead."
+        )
+    with open(D1_BASELINE_COEFFS_PATH, "rb") as f:
+        return jnp.asarray(pickle.load(f))
 
 
 def init_coeffs(mode: str, init_pkl, shape: tuple[int, int], key) -> jnp.ndarray:
@@ -128,7 +140,8 @@ def init_coeffs(mode: str, init_pkl, shape: tuple[int, int], key) -> jnp.ndarray
     elif mode == "scratch":
         coeffs = jax.random.uniform(key, shape, minval=-0.1, maxval=0.1)
     elif mode == "d1_zeropad":
-        coeffs = jnp.zeros(shape).at[:, :25].set(D1_COEFFS)
+        d1 = _load_d1_baseline_coeffs()
+        coeffs = jnp.zeros(shape).at[:, :25].set(d1)
     else:
         raise ValueError(f"Unknown init mode {mode}")
     return jnp.asarray(coeffs, dtype=jnp.float64)
@@ -363,144 +376,32 @@ def load_points(psi, path=None):
 
 
 def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
-    """Driven by make_fitness_plots:
-      plots_slag_{job_id}/           GD coeffs vs random       (fixed x-range)
-      plots_slag_{job_id}_d1/        d=1 baseline vs random    (fixed x-range)
-      plots_slag_{job_id}_vs_d1/     GD vs d=1 canonical       (auto x-range, blue/blue)
+    """Emit one self-contained run folder for the final GD coeffs:
 
-    Additionally, when coeffs encodes a d=1+2+3 ansatz (shape (3, 1475)):
-      plots_slag_{job_id}_d2_vs_d3/  d=3 (full) vs d=2 truncation (coeffs[:, :250]), steel/sky blue
-      plots_slag_{job_id}_d1_d2_d3/  three-way: d=3 (steel) vs d=2 (sky) vs d=1 truncation (light blue)
-    The d=2/d=1 truncations slice the GD result and re-normalize each row.
+      plots_slag_<job_id>/  GD coeffs vs random  (fixed Kähler x-range)
+        coeffs.pkl, min_set.pkl, frobenius_norms.npy, phases.npy
+        Kahler_form_loss_histogram.png, circular_phase_histogram.png
+        coord_scatter_{re,im,abs}_fitness.png
 
-    When coeffs encodes a d=1+2+3+4 ansatz (shape (3, 6375)):
-      plots_slag_{job_id}_d3_vs_d4/     d=4 (full) vs d=3 truncation
-      plots_slag_{job_id}_d1_d2_d3_d4/  four-way: d=4 (steel) vs d=3 (sky) vs d=2 (light blue) vs d=1 (lightsteelblue)
+    Cross-degree / vs-d1 / truncation comparisons are no longer auto-emitted
+    here. Run them post-hoc against existing run folders:
+
+        python -m viz.plot_histograms \\
+            --runs gd_runs/plots_slag_d2 gd_runs/plots_slag_d3 gd_runs/plots_slag_d4 \\
+            --labels d=2 d=3 d=4 --out_dir gd_runs/compare_d2_d3_d4
 
     num_devices > 1 routes filter_and_refine and the per-point diagnostics
-    through a pmap'd path inside make_fitness_plots (see plots.py).
+    through a pmap'd path inside run_fitness_pipeline.
     """
-    d1_coeffs_full = jnp.zeros(coeffs.shape).at[:, :25].set(D1_COEFFS)
-    d1_coeffs_full = normalize_coeffs(d1_coeffs_full)
-
     base = os.path.join(args.out_dir, f"plots_slag_{args.job_id}")
     print(f"\n=== Plotting GD coeffs vs random -> {base} ===")
-    make_fitness_plots(
+    run_fitness_pipeline(
         points_real, coeffs, psi,
         k=args.plot_k, n_refine_steps=args.plot_newton_steps,
         metric=args.metric, compare_with="random",
         out_dir=base,
         num_devices=num_devices,
     )
-
-    d1_folder = base + "_d1"
-    print(f"\n=== Plotting d=1 baseline vs random -> {d1_folder} ===")
-    make_fitness_plots(
-        points_real, d1_coeffs_full, psi,
-        k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-        metric=args.metric, compare_with="random",
-        out_dir=d1_folder,
-        primary_label="d=1 baseline",
-        num_devices=num_devices,
-    )
-
-    vs_d1_folder = base + "_vs_d1"
-    print(f"\n=== Plotting GD vs d=1 baseline -> {vs_d1_folder} ===")
-    make_fitness_plots(
-        points_real, coeffs, psi,
-        k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-        metric=args.metric,
-        compare_with=d1_coeffs_full,
-        primary_label="GD result",
-        compare_label="d=1 baseline",
-        primary_color="steelblue",
-        compare_color="skyblue",
-        fix_kahler_x_range=False,
-        out_dir=vs_d1_folder,
-        num_devices=num_devices,
-    )
-
-    if coeffs.shape[1] == GENOTYPE_WIDTHS[3]:
-        d2_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[2]])
-        d1_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[1]])
-
-        d2_vs_d3_folder = base + "_d2_vs_d3"
-        print(f"\n=== Plotting d=3 vs d=2 truncation -> {d2_vs_d3_folder} ===")
-        make_fitness_plots(
-            points_real, coeffs, psi,
-            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-            metric=args.metric,
-            compare_with=d2_truncated,
-            primary_label="d=3",
-            compare_label="d=2",
-            primary_color="steelblue",
-            compare_color="skyblue",
-            fix_kahler_x_range=False,
-            out_dir=d2_vs_d3_folder,
-            num_devices=num_devices,
-        )
-
-        d1_d2_d3_folder = base + "_d1_d2_d3"
-        print(f"\n=== Plotting d=1 vs d=2 vs d=3 -> {d1_d2_d3_folder} ===")
-        make_fitness_plots(
-            points_real, coeffs, psi,
-            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-            metric=args.metric,
-            compare_with=d2_truncated,
-            primary_label="d=3",
-            compare_label="d=2",
-            primary_color="steelblue",
-            compare_color="skyblue",
-            fix_kahler_x_range=False,
-            extra_comparisons=[{
-                "coeffs": d1_truncated,
-                "label": "d=1",
-                "color": "lightblue",
-            }],
-            out_dir=d1_d2_d3_folder,
-            num_devices=num_devices,
-        )
-
-    if coeffs.shape[1] == GENOTYPE_WIDTHS[4]:
-        d3_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[3]])
-        d2_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[2]])
-        d1_truncated = normalize_coeffs(coeffs[:, :GENOTYPE_WIDTHS[1]])
-
-        d3_vs_d4_folder = base + "_d3_vs_d4"
-        print(f"\n=== Plotting d=4 vs d=3 truncation -> {d3_vs_d4_folder} ===")
-        make_fitness_plots(
-            points_real, coeffs, psi,
-            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-            metric=args.metric,
-            compare_with=d3_truncated,
-            primary_label="d=4",
-            compare_label="d=3",
-            primary_color="steelblue",
-            compare_color="skyblue",
-            fix_kahler_x_range=False,
-            out_dir=d3_vs_d4_folder,
-            num_devices=num_devices,
-        )
-
-        d1_d2_d3_d4_folder = base + "_d1_d2_d3_d4"
-        print(f"\n=== Plotting d=1 vs d=2 vs d=3 vs d=4 -> {d1_d2_d3_d4_folder} ===")
-        make_fitness_plots(
-            points_real, coeffs, psi,
-            k=args.plot_k, n_refine_steps=args.plot_newton_steps,
-            metric=args.metric,
-            compare_with=d3_truncated,
-            primary_label="d=4",
-            compare_label="d=3",
-            primary_color="steelblue",
-            compare_color="skyblue",
-            fix_kahler_x_range=False,
-            extra_comparisons=[
-                {"coeffs": d2_truncated, "label": "d=2", "color": "lightblue"},
-                {"coeffs": d1_truncated, "label": "d=1", "color": "lightsteelblue"},
-            ],
-            out_dir=d1_d2_d3_d4_folder,
-            num_devices=num_devices,
-        )
 
 
 def make_parallel_lbfgs_step(opt, total_loss_fn, num_devices: int,
@@ -701,11 +602,11 @@ def main():
                              "step counter, and training history.")
     parser.add_argument("--make_plots", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="Call make_fitness_plots on the final coeffs "
+                        help="Call run_fitness_pipeline on the final coeffs "
                              "(same plots as GA.py). Use --no-make_plots to skip.")
     parser.add_argument("--plots_only", action="store_true",
                         help="Skip training. Load --resume <ckpt>, run "
-                             "make_fitness_plots, exit.")
+                             "run_fitness_pipeline, exit.")
     parser.add_argument("--plot_k", type=int, default=80000,
                         help="Point cloud size for the final plots.")
     parser.add_argument("--plot_newton_steps", type=int, default=80,

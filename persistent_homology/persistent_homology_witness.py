@@ -27,18 +27,18 @@ so the diagrams are in raw FS-distance units (comparable to the VR script).
 
 Usage:
     # d=4 coeffs, 50k subsample, default L sweep:
-    uv run python persistent_homology/persistent_homology_witness_h0h1.py \
+    uv run python persistent_homology/persistent_homology_witness.py \
         --min_set plots_slag_d4_run/min_set.pkl \
         --coeffs gd_runs/gd_d4_run_step3000.pkl --psi 0
 
     # Custom L sweep and Newton step count:
-    uv run python persistent_homology/persistent_homology_witness_h0h1.py \
+    uv run python persistent_homology/persistent_homology_witness.py \
         --min_set plots_slag_d4_run/min_set.pkl \
         --coeffs gd_runs/gd_d4_run_step3000.pkl \
         --landmarks 500,1000,2000 --newton_steps 100
 
     # Skip the Newton filter (PH on raw min_set):
-    uv run python persistent_homology/persistent_homology_witness_h0h1.py \
+    uv run python persistent_homology/persistent_homology_witness.py \
         --min_set plots_slag_d4_run/min_set.pkl --no_newton_filter
 """
 
@@ -494,7 +494,7 @@ def parse_args():
     out_group.add_argument('--out_subdir', type=str, default=None,
                            help='Output subdirectory name appended to '
                                 "--min_set's parent directory.")
-    p.add_argument('--out_prefix', default='persistent_homology_witness_h0h1')
+    p.add_argument('--out_prefix', default='persistent_homology_witness')
     p.add_argument('--cache_landmarks', default='witness_landmarks_cache.pkl')
     p.add_argument('--cache_diagrams', default='witness_diagrams_cache.pkl')
     p.add_argument('--no_cache', action='store_true')

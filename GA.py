@@ -14,7 +14,7 @@ import sys
 from find_smooth_submanifold import filter_and_refine, normalize_coeffs, get_basis_labels, combine_to_complex_equations
 from slag_condition import compute_combined_fitness
 from helper import assert_metric_psi_compatible, canonicalize_coeffs, format_array_with_commas, calculate_distance_matrix, dwork_points_path, load_points
-from viz.fitness_plots import make_fitness_plots
+from viz.fitness_pipeline import run_fitness_pipeline
 
 jax.config.update('jax_default_matmul_precision', 'high')
 
@@ -815,5 +815,5 @@ if __name__ == '__main__':
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
 
-        make_fitness_plots(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir)
+        run_fitness_pipeline(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir)
         rank += 1

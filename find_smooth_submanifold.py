@@ -377,7 +377,7 @@ def filter_and_refine(
     # Side note: the repulsive sampling only seems to affecst the fake S1 case.
     # For the new slag cases it barely changes the results 
     if psi is None:
-        psi = jnp.complex64(0)
+        psi = jnp.complex128(0)
     
     # --- STEP 1: Initial filtering and refinement ---
     refine_fn = partial(

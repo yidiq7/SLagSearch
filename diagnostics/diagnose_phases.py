@@ -1,8 +1,9 @@
 """Diagnose Omega phase concentration per patch.
 
 Computes phases of Omega restricted to L (chosen ansatz) using the production
-code path (with all corrections: (-1)^(patch_idx+max_idx) in
-compute_holomorphic_form, plus canonical-basis sign correction in
+code path (with the (-1)^max_idx Poincaré-residue sign in
+compute_holomorphic_form -- the (-1)^patch_idx factor is intentionally dropped,
+see the comment there -- plus the canonical-basis sign correction in
 compute_Omega_restriction) and prints per-patch histograms.
 
 Usage:
@@ -22,7 +23,7 @@ from get_restriction import (
     compute_affine_jacobian,
     compute_restriction,
 )
-from gradient_descent import D1_COEFFS, GENOTYPE_SHAPE, load_points
+from gradient_descent import GENOTYPE_SHAPE, _load_d1_baseline_coeffs, load_points
 from helper import convert_real_to_complex_batch, determine_patches_batch
 from slag_condition import compute_holomorphic_form
 
@@ -107,7 +108,7 @@ def main():
 
     coeffs = jnp.zeros(GENOTYPE_SHAPE)
     if args.ansatz == "d1":
-        coeffs = coeffs.at[:, :25].set(D1_COEFFS)
+        coeffs = coeffs.at[:, :25].set(_load_d1_baseline_coeffs())
     elif args.ansatz == "rp3":
         # Im(z_0 z̄_1)=0, Im(z_0 z̄_2)=0, Im(z_0 z̄_3)=0 (basis indices 0, 1, 2).
         coeffs = coeffs.at[0, 0].set(1.0)
