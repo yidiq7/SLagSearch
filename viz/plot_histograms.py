@@ -24,7 +24,7 @@ CLI:
 --vs random:
     Auto-mines random coeffs (matching the shape inferred from the first
     input run's coeffs.pkl) into a deterministic cache folder
-    gd_runs/_cache/random_w<width>_seed<seed>/ if absent, and appends it
+    fitness_cache/random_w<width>_seed<seed>/ if absent, and appends it
     as the last overlay. The cache is keyed on (width, seed) so the same
     shape always hits the same folder.
 """
@@ -153,7 +153,7 @@ def _ensure_random_cache(
     k: int,
     n_refine_steps: int,
     points_file: Optional[str],
-    cache_root: str = "gd_runs/_cache",
+    cache_root: str = "fitness_cache",
 ) -> Path:
     """Mine random coeffs into a deterministic cache folder if absent.
     Returns the cache folder path.
@@ -202,7 +202,7 @@ def main() -> None:
                              "(default: built-in cycle).")
     parser.add_argument("--vs", choices=["random"], default=None,
                         help="Append a random-coeffs overlay. Auto-mines into "
-                             "gd_runs/_cache/random_w<width>_seed<seed>/ if absent.")
+                             "fitness_cache/random_w<width>_seed<seed>/ if absent.")
     parser.add_argument("--fix_kahler_x_range", action="store_true",
                         help="Pin Kähler histogram x-range to [0, 3].")
     parser.add_argument("--out_dir", type=Path, required=True)

@@ -55,15 +55,12 @@ python GA.py --job_id d1_search
 Edit `PSI`, `SEED`, `MINSET_SIZE`, `NEWTON_STEPS`, etc. as module-level
 constants at the top of `GA.py` (no CLI flags for these — by design).
 
-Output:
+Output (one run folder per top species, rank-ordered in the folder name —
+lower rank = better fitness):
 
 ```
 plots_slag_d1_search/
-  top_coeffs/
-    coeffs_rank1_id7.pkl                ← bare (3, 25) coeffs, lowest rank = best
-    coeffs_rank2_id12.pkl
-    ...
-  plots_slag_<gen>_<rank>_id<sid>/      ← one run folder per top species
+  plots_slag_d1_search_1_id7/           ← rank 1, species id 7 (best)
     coeffs.pkl
     min_set.pkl
     frobenius_norms.npy
@@ -71,6 +68,7 @@ plots_slag_d1_search/
     Kahler_form_loss_histogram.png      ← species vs random overlay
     circular_phase_histogram.png
     coord_scatter_{re,im,abs}_fitness.png
+  plots_slag_d1_search_2_id12/          ← rank 2
   ...
 ```
 
@@ -82,9 +80,9 @@ Each call writes a checkpoint into `gd_runs/` and a run folder
 `gd_runs/plots_slag_<job>/`:
 
 ```bash
-# d=2 seeded by the GA d=1 result
+# d=2 seeded by the GA d=1 result (best species's coeffs.pkl)
 python gradient_descent.py --job_id d2 --max_degree 2 --steps 2000 \
-    --init_pkl plots_slag_d1_search/plots_slag_6338568_1_id0/coeffs.pkl
+    --init_pkl plots_slag_d1_search/plots_slag_d1_search_1_id7/coeffs.pkl
 
 # d=3 seeded by the d=2 result (right-zero-padded to width 1475)
 python gradient_descent.py --job_id d3 --max_degree 3 --steps 2000 \
@@ -132,7 +130,7 @@ gd_runs/compare_d2_d3_d4/
 ```
 
 Add `--vs random` to also append a random-coeffs curve; it auto-mines
-into `gd_runs/_cache/random_w<width>_seed<seed>/` if absent, then reuses
+into `fitness_cache/random_w<width>_seed<seed>/` if absent, then reuses
 the cache on subsequent calls.
 
 ### Step 4 — drill down into the d=4 result
@@ -216,11 +214,11 @@ SLagSearch/
   1mil_patch_all_psi0_seed1024.pkl
   checkpoints/                          ← GA checkpoints (gitignored)
   plots_slag_d1_search/                 ← GA output
-    top_coeffs/coeffs_rank<r>_id<sid>.pkl
-    plots_slag_6338568_1_id0/           ← per-species run folder
+    plots_slag_d1_search_1_id7/         ← per-species run folder (rank 1)
       coeffs.pkl, min_set.pkl, frobenius_norms.npy, phases.npy
       Kahler_form_loss_histogram.png, circular_phase_histogram.png
       coord_scatter_{re,im,abs}_fitness.png
+    plots_slag_d1_search_2_id12/        ← rank 2
     ...
   gd_runs/                              ← GD output
     gd_d2_step2000.pkl, gd_d3_step2000.pkl, gd_d4_step2000.pkl
@@ -243,7 +241,8 @@ SLagSearch/
         ph/                                                 ← step 5b (cluster 0 PH)
         compare/                                            ← step 6
     compare_d2_d3_d4/                   ← step 3
-    _cache/random_w6375_seed1230/       ← --vs random auto-cached
+  fitness_cache/                        ← --vs random auto-cached runs (GA + GD)
+    random_w6375_seed1230/
 ```
 
 ## Quick reference
@@ -252,7 +251,7 @@ SLagSearch/
 |---|---|---|---|
 | `GA.py` | (module constants) | `plots_slag_<job>/<species>/` run folders | Search at d=1 |
 | `gradient_descent.py` | `--init_pkl` or `--resume` | `gd_runs/gd_<job>_step<N>.pkl` + `gd_runs/plots_slag_<job>/` | Refine at d=2/3/4 |
-| `viz.fitness_pipeline` | `--coeffs`, opt `--min_set` | run folder (full sidecars + plots) | Producer (also internal lib for GA/GD) |
+| `viz.fitness_pipeline` | `--coeffs` (auto-discovered if `--min_set` is given) | run folder (full sidecars + plots) | Producer (also internal lib for GA/GD) |
 | `viz.plot_histograms` | `--runs <dir>...` | two overlay PNGs | Cross-run histogram comparison |
 | `viz.plot_coord_scatter` | `--min_set` | scatter PNGs | 2D coord-pair grids |
 | `viz.plot_hermitian_coeffs` | `--coeffs` | heatmaps + spectra | Coeffs structure |
@@ -263,7 +262,7 @@ SLagSearch/
 | `diagnostics.permute_coeffs` | `--coeffs` | 10 permuted coeffs pkls | S₅ symmetry sweep |
 | `diagnostics.test_permutation_symmetry` | `--coeffs` | stdout residuals per permutation | Algebraic symmetry test |
 | `diagnostics.test_swap_invariance` | `--min_set`, `--coeffs` | residual histogram PNG | Geometric symmetry test |
-| `persistent_homology_witness.py` | `--min_set`, `--coeffs` | PH diagrams/barcodes/Betti curves | H₀/H₁/H₂ via witness complex |
+| `persistent_homology_witness.py` | `--min_set` (`--coeffs` auto-discovered from min_set's parent) | PH diagrams/barcodes/Betti curves | H₀/H₁/H₂ via witness complex |
 
 All CLIs follow the same convention: `--out_dir <full>` (full path) or
 `--out_subdir <name>` (relative to the input file's parent dir); mutually

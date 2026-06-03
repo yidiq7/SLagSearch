@@ -783,11 +783,10 @@ if __name__ == '__main__':
     else:
         top_fitness_score = 0.0
 
-    # Centralized destination for top species' best members. One pkl per species
-    # above the 0.5 * top_fitness threshold, ready for `gradient_descent.py --init_pkl`.
-    top_coeffs_dir = os.path.join(f'plots_slag_{args.job_id}', 'top_coeffs')
-    os.makedirs(top_coeffs_dir, exist_ok=True)
-
+    # Per-species run folders. run_fitness_pipeline writes coeffs.pkl as
+    # part of the sidecar contract, so the per-species folder is the single
+    # canonical home for both the coeffs and the diagnostic plots. The
+    # rank-ordered folder name keeps "best species first" sortable.
     rank = 1
     for s in final_species_list:
         best_member_idx = jnp.argmax(jnp.array(s.fitness_values))
@@ -802,13 +801,6 @@ if __name__ == '__main__':
         print(f"Size: {len(s.members)} members | Stagnated for: {s.generations_since_improvement} gens")
         print("Best Member's Coefficients:")
         print(format_array_with_commas(best_member))
-        # print("Complex equations:")
-        # print(combine_to_complex_equations(get_basis_labels(), best_member))
-
-        coeffs_out = os.path.join(top_coeffs_dir, f'coeffs_rank{rank}_id{s.id}.pkl')
-        with open(coeffs_out, 'wb') as f:
-            pickle.dump(np.asarray(best_member), f)
-        print(f"Saved best member to {coeffs_out}")
 
         out_dir = os.path.join(
             f'plots_slag_{args.job_id}',
