@@ -87,6 +87,112 @@ def subsample(z: np.ndarray, patches: np.ndarray, n: int | None,
     return z[idx], patches[idx]
 
 
+def subsample_indices(n_total: int, n: int | None, seed: int = 0) -> np.ndarray:
+    """Index array for jointly subsampling several aligned arrays."""
+    if n is None or n_total <= n:
+        return np.arange(n_total)
+    return np.random.default_rng(seed).choice(n_total, n, replace=False)
+
+
+# ---------------------------------------------------------------------------
+#  Color specs for UMAP (patch / fitness / phase)
+# ---------------------------------------------------------------------------
+def _phase_distance_mod_pi(phases: np.ndarray, target: float) -> np.ndarray:
+    """Distance on R / pi*Z between `phases` (raw, mod 2pi) and `target`.
+
+    Used because the special-condition fitness identifies theta ~ theta + pi:
+    the sLag condition is that Omega-phases concentrate on one line through
+    the origin, so we measure distance to that line (here: the one through
+    angle `target`). Result lies in [0, pi/2].
+    """
+    diff = (phases - target + np.pi / 2.0) % np.pi - np.pi / 2.0
+    return np.abs(diff)
+
+
+def _load_fitness_colors(norms_path: Path, n_expected: int) -> np.ndarray:
+    """Load frobenius_norms.npy and map to fitness = exp(-10 * norms)."""
+    if not norms_path.exists():
+        raise FileNotFoundError(
+            f"--color fitness requires {norms_path}, but it doesn't exist. "
+            f"Re-run viz.fitness_pipeline to regenerate the sidecar, or pass "
+            f"--fitness_path explicitly."
+        )
+    arr = np.load(norms_path)
+    if arr.shape[0] != n_expected:
+        raise ValueError(
+            f"{norms_path} has {arr.shape[0]} entries but min_set has "
+            f"{n_expected} points."
+        )
+    return np.exp(-10.0 * arr)
+
+
+def _load_phase_distances(phases_path: Path, n_expected: int,
+                          target: float) -> np.ndarray:
+    if not phases_path.exists():
+        raise FileNotFoundError(
+            f"--color phase requires {phases_path}, but it doesn't exist. "
+            f"Re-run viz.fitness_pipeline to regenerate the sidecar, or pass "
+            f"--phases_path explicitly."
+        )
+    arr = np.load(phases_path)
+    if arr.shape[0] != n_expected:
+        raise ValueError(
+            f"{phases_path} has {arr.shape[0]} entries but min_set has "
+            f"{n_expected} points."
+        )
+    return _phase_distance_mod_pi(arr, target)
+
+
+def build_color_specs(colors: Sequence[str], min_set_path: Path,
+                      n_points: int, fitness_path: Path | None,
+                      phases_path: Path | None,
+                      target_phase: float | None) -> list[dict]:
+    """Resolve --color arguments into a list of color spec dicts.
+
+    Each spec has:
+      name      : short tag used in filenames ('patch' / 'fitness' / 'phase')
+      kind      : 'discrete' (patch) or 'continuous' (fitness / phase)
+      values    : (N,) array, full length (subsampled later alongside z)
+      cmap      : matplotlib colormap name
+      label     : human-readable colorbar / legend label
+      vmin/vmax : color limits (None means autoscale)
+    """
+    specs: list[dict] = []
+    for c in colors:
+        if c == "patch":
+            specs.append(dict(
+                name="patch", kind="discrete", values=None,  # filled in caller
+                cmap="tab10", label="patch index",
+                vmin=-0.5, vmax=4.5,
+            ))
+        elif c == "fitness":
+            path = (fitness_path if fitness_path is not None
+                    else min_set_path.parent / "frobenius_norms.npy")
+            vals = _load_fitness_colors(path, n_points)
+            specs.append(dict(
+                name="fitness", kind="continuous", values=vals,
+                cmap="viridis",
+                label=r"Lagrangian fitness  $\exp(-10\,\|K_R\|_F/\|K_U\|_F)$",
+                vmin=0.0, vmax=1.0,
+            ))
+            print(f"  fitness coloring from {path}")
+        elif c == "phase":
+            assert target_phase is not None
+            path = (phases_path if phases_path is not None
+                    else min_set_path.parent / "phases.npy")
+            vals = _load_phase_distances(path, n_points, target_phase)
+            specs.append(dict(
+                name="phase", kind="continuous", values=vals,
+                cmap="magma_r",
+                label=rf"$|\theta - {target_phase:.4f}|\;\;(\mathrm{{mod}}\,\pi)$",
+                vmin=0.0, vmax=float(np.pi / 2.0),
+            ))
+            print(f"  phase coloring from {path}, target={target_phase}")
+        else:
+            raise ValueError(f"unknown --color value: {c!r}")
+    return specs
+
+
 def _auto_alpha(n: int) -> float:
     """Marker alpha that doesn't saturate for large clouds."""
     return float(min(0.4, 8000.0 / max(n, 1)))
@@ -344,9 +450,9 @@ def _run_umap(X: np.ndarray, n_neighbors: int, min_dist: float,
 _PATCH_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 
 
-def _render_umap_html(emb: np.ndarray, patches: np.ndarray, out_path: Path,
-                      title: str) -> None:
-    """Interactive 3D scatter HTML via plotly (free rotation in browser)."""
+def _render_umap_html(emb: np.ndarray, color_values: np.ndarray, spec: dict,
+                      out_path: Path, title: str) -> None:
+    """Interactive 3D scatter HTML via plotly. spec dict from build_color_specs."""
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -354,21 +460,39 @@ def _render_umap_html(emb: np.ndarray, patches: np.ndarray, out_path: Path,
               "`uv sync --extra viz-3d` to enable.")
         return
 
-    traces = []
     n_total = int(emb.shape[0])
-    # Marker size and opacity tuned for browser rendering of large clouds.
     msize = 1.5
     mopacity = float(min(0.6, 12000.0 / max(n_total, 1)))
-    for p in range(5):
-        mask = patches == p
-        if not mask.any():
-            continue
-        traces.append(go.Scatter3d(
-            x=emb[mask, 0], y=emb[mask, 1], z=emb[mask, 2],
+
+    if spec["kind"] == "discrete":
+        # Patch coloring: one trace per patch with discrete colors.
+        traces = []
+        for p in range(5):
+            mask = color_values == p
+            if not mask.any():
+                continue
+            traces.append(go.Scatter3d(
+                x=emb[mask, 0], y=emb[mask, 1], z=emb[mask, 2],
+                mode="markers",
+                marker=dict(size=msize, color=_PATCH_COLORS[p],
+                            opacity=mopacity),
+                name=f"patch {p}  ({int(mask.sum())} pts)",
+            ))
+    else:
+        # Continuous: single trace, colorbar.
+        traces = [go.Scatter3d(
+            x=emb[:, 0], y=emb[:, 1], z=emb[:, 2],
             mode="markers",
-            marker=dict(size=msize, color=_PATCH_COLORS[p], opacity=mopacity),
-            name=f"patch {p}  ({int(mask.sum())} pts)",
-        ))
+            marker=dict(
+                size=msize, color=color_values, opacity=mopacity,
+                colorscale="Viridis" if spec["name"] == "fitness" else "Magma",
+                reversescale=(spec["name"] == "phase"),
+                cmin=spec["vmin"], cmax=spec["vmax"],
+                colorbar=dict(title=spec["label"]),
+            ),
+            name=spec["name"],
+        )]
+
     fig = go.Figure(data=traces)
     fig.update_layout(
         title=title,
@@ -381,10 +505,27 @@ def _render_umap_html(emb: np.ndarray, patches: np.ndarray, out_path: Path,
     print(f"  wrote {out_path}")
 
 
+def _scatter_panel(ax, emb, color_values, spec, s=0.7, alpha=0.4):
+    """Render a single 3D scatter axis for one color spec."""
+    return ax.scatter(
+        emb[:, 0], emb[:, 1], emb[:, 2],
+        c=color_values, cmap=spec["cmap"],
+        vmin=spec["vmin"], vmax=spec["vmax"],
+        s=s, alpha=alpha, edgecolors="none",
+    )
+
+
 def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                  n_neighbors: int, min_dist: float, max_points: int,
                  seed: int, metric: str = "fs",
-                 sweep: bool = False) -> None:
+                 sweep: bool = False,
+                 color_specs: list[dict] | None = None) -> None:
+    """UMAP embed once, render once per color spec.
+
+    color_specs is a list of dicts from build_color_specs. The 'patch' spec
+    has values=None and gets populated from `patches` here. Each spec gets
+    its own PNG (and HTML in non-sweep mode).
+    """
     try:
         import umap  # noqa: F401
     except ImportError:
@@ -392,68 +533,104 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
               "enable.")
         return
 
-    z_sub, patches_sub = subsample(z, patches, max_points, seed=seed)
+    if color_specs is None:
+        color_specs = [dict(name="patch", kind="discrete", values=None,
+                            cmap="tab10", label="patch index",
+                            vmin=-0.5, vmax=4.5)]
+
+    # Joint subsample over z + patches + every continuous color array.
+    idx = subsample_indices(z.shape[0], max_points, seed=seed)
+    z_sub = z[idx]
+    patches_sub = patches[idx]
+    specs_sub: list[dict] = []
+    for spec in color_specs:
+        s2 = dict(spec)
+        if spec["name"] == "patch":
+            s2["values"] = patches_sub
+        else:
+            s2["values"] = spec["values"][idx]
+        specs_sub.append(s2)
+
     X = to_features(z_sub, metric)
     print(f"  feature dim: {X.shape[1]} ({metric} metric)")
-    angles = [(20, 45), (20, 135), (60, 30)]
 
     if not sweep:
         print(f"  UMAP on {X.shape[0]} points, n_neighbors={n_neighbors}, "
               f"min_dist={min_dist}")
         emb = _run_umap(X, n_neighbors, min_dist, seed)
-
-        # ----- Six PNG viewing angles -----
         many_angles = [(15, az) for az in (0, 60, 120, 180, 240, 300)]
         alpha_pts = _auto_alpha(emb.shape[0])
-        fig = plt.figure(figsize=(15, 10))
-        for k, (elev, azim) in enumerate(many_angles):
-            ax = fig.add_subplot(2, 3, k + 1, projection="3d")
-            ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], c=patches_sub,
-                       cmap="tab10", vmin=-0.5, vmax=4.5,
-                       s=0.7, alpha=alpha_pts, edgecolors="none")
-            ax.view_init(elev=elev, azim=azim)
-            ax.set_title(f"elev={elev}, az={azim}", fontsize=9)
-            ax.tick_params(labelsize=6)
-        fig.suptitle(f"UMAP 3D (metric={metric}, n_neighbors={n_neighbors}, "
-                     f"min_dist={min_dist})", fontsize=13)
-        fig.tight_layout(rect=(0, 0, 1, 0.95))
-        out_path = out_dir / f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}.png"
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
-        print(f"  wrote {out_path}")
 
-        # ----- Interactive HTML via plotly (free rotation in browser) -----
-        html_path = out_dir / (
-            f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}.html")
-        _render_umap_html(emb, patches_sub, html_path,
-                          title=f"UMAP 3D  (metric={metric}, "
-                                f"nn={n_neighbors}, md={min_dist}, "
-                                f"N={emb.shape[0]})")
+        for spec in specs_sub:
+            fig = plt.figure(figsize=(15, 10))
+            last_sc = None
+            for k, (elev, azim) in enumerate(many_angles):
+                ax = fig.add_subplot(2, 3, k + 1, projection="3d")
+                last_sc = _scatter_panel(ax, emb, spec["values"], spec,
+                                         s=0.7, alpha=alpha_pts)
+                ax.view_init(elev=elev, azim=azim)
+                ax.set_title(f"elev={elev}, az={azim}", fontsize=9)
+                ax.tick_params(labelsize=6)
+            if spec["kind"] == "continuous" and last_sc is not None:
+                fig.subplots_adjust(right=0.9)
+                cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+                fig.colorbar(last_sc, cax=cax, label=spec["label"])
+            fig.suptitle(
+                f"UMAP 3D (metric={metric}, n_neighbors={n_neighbors}, "
+                f"min_dist={min_dist}, color={spec['name']})", fontsize=13)
+            fig.tight_layout(rect=(0, 0, 0.9 if spec["kind"] == "continuous"
+                                   else 1.0, 0.95))
+            out_path = out_dir / (
+                f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}_"
+                f"color_{spec['name']}.png")
+            fig.savefig(out_path, dpi=150)
+            plt.close(fig)
+            print(f"  wrote {out_path}")
+
+            html_path = out_dir / (
+                f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}_"
+                f"color_{spec['name']}.html")
+            _render_umap_html(
+                emb, spec["values"], spec, html_path,
+                title=f"UMAP 3D  (metric={metric}, nn={n_neighbors}, "
+                      f"md={min_dist}, color={spec['name']}, "
+                      f"N={emb.shape[0]})")
         return
 
-    # Sweep: 3x3 grid over (n_neighbors, min_dist), single viewing angle.
+    # Sweep: 3x3 grid over (n_neighbors, min_dist), one PNG per color spec.
     nn_values = [50, 100, 200]
     md_values = [0.05, 0.3, 0.5]
-    fig = plt.figure(figsize=(15, 15))
+    # Cache embeddings so each color doesn't re-fit UMAP.
+    cells: list[tuple[int, int, float, float, np.ndarray]] = []
     for i, nn_v in enumerate(nn_values):
         for j, md_v in enumerate(md_values):
             print(f"  sweep cell ({i},{j}): nn={nn_v}, md={md_v}")
-            emb = _run_umap(X, nn_v, md_v, seed)
+            cells.append((i, j, nn_v, md_v, _run_umap(X, nn_v, md_v, seed)))
+
+    for spec in specs_sub:
+        fig = plt.figure(figsize=(15, 15))
+        last_sc = None
+        for i, j, nn_v, md_v, emb in cells:
             ax = fig.add_subplot(3, 3, i * 3 + j + 1, projection="3d")
-            ax.scatter(emb[:, 0], emb[:, 1], emb[:, 2], c=patches_sub,
-                       cmap="tab10", vmin=-0.5, vmax=4.5,
-                       s=0.6, alpha=_auto_alpha(emb.shape[0]),
-                       edgecolors="none")
+            last_sc = _scatter_panel(ax, emb, spec["values"], spec,
+                                     s=0.6, alpha=_auto_alpha(emb.shape[0]))
             ax.view_init(elev=20, azim=45)
             ax.set_title(f"nn={nn_v}, md={md_v}", fontsize=10)
             ax.tick_params(labelsize=6)
-    fig.suptitle(f"UMAP 3D sweep  (metric={metric}, N={X.shape[0]})",
-                 fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-    out_path = out_dir / f"umap3d_{metric}_sweep.png"
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"  wrote {out_path}")
+        if spec["kind"] == "continuous" and last_sc is not None:
+            fig.subplots_adjust(right=0.9)
+            cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+            fig.colorbar(last_sc, cax=cax, label=spec["label"])
+        fig.suptitle(
+            f"UMAP 3D sweep  (metric={metric}, N={X.shape[0]}, "
+            f"color={spec['name']})", fontsize=14)
+        fig.tight_layout(rect=(0, 0, 0.9 if spec["kind"] == "continuous"
+                               else 1.0, 0.97))
+        out_path = out_dir / (
+            f"umap3d_{metric}_sweep_color_{spec['name']}.png")
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"  wrote {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +715,7 @@ def _render_mapper_png(graph, patches_sub, ax, title, seed):
             G.add_edge(src, tgt)
     cmap = plt.get_cmap("tab10")
     node_colors = [cmap(G.nodes[n]["patch"] / 9.0) for n in G.nodes]
-    node_sizes = [max(20, G.nodes[n]["size"]) for n in G.nodes]
+    node_sizes = [max(20.0, 8.0 * np.sqrt(G.nodes[n]["size"])) for n in G.nodes]
     pos = nx.spring_layout(G, seed=seed)
     nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4, width=0.6)
     nx.draw_networkx_nodes(G, pos, ax=ax,
@@ -887,6 +1064,25 @@ def main() -> None:
     # UMAP knobs (used only if --sweep is not set).
     parser.add_argument("--umap_n_neighbors", type=int, default=100)
     parser.add_argument("--umap_min_dist", type=float, default=0.3)
+    parser.add_argument("--color", nargs="+",
+                        choices=["patch", "fitness", "phase"],
+                        default=["patch"],
+                        help="UMAP coloring(s) to emit. One PNG (+HTML) per "
+                             "value. 'patch' = argmax_i |z_i| (pure numpy). "
+                             "'fitness' = exp(-10 * frobenius_norms) from "
+                             "frobenius_norms.npy sidecar. 'phase' = "
+                             "distance on R/pi*Z between phases.npy and "
+                             "--target_phase (requires --target_phase).")
+    parser.add_argument("--target_phase", type=float, default=None,
+                        help="Target phase for --color phase (e.g. 0.31415 "
+                             "for pi/10). Required iff 'phase' in --color.")
+    parser.add_argument("--fitness_path", type=Path, default=None,
+                        help="Path to frobenius_norms.npy. Defaults to "
+                             "<min_set_dir>/frobenius_norms.npy. Used by "
+                             "--color fitness.")
+    parser.add_argument("--phases_path", type=Path, default=None,
+                        help="Path to phases.npy. Defaults to "
+                             "<min_set_dir>/phases.npy. Used by --color phase.")
 
     # Mapper knobs.
     parser.add_argument("--mapper_filter",
@@ -910,6 +1106,10 @@ def main() -> None:
                              "permissive clustering = more edges (and "
                              "fewer / larger nodes). Default 50.")
     args = parser.parse_args()
+
+    if "phase" in args.color and args.target_phase is None:
+        parser.error("--color phase requires --target_phase (e.g. "
+                     "--target_phase 0.3141592653589793 for pi/10).")
 
     z = load_min_set_complex(args.min_set)
     patches = patch_indices_from_complex(z)
@@ -944,13 +1144,20 @@ def main() -> None:
 
     if "umap" in methods:
         print("\n--- UMAP 3D ---")
+        color_specs = build_color_specs(
+            args.color, args.min_set, z.shape[0],
+            fitness_path=args.fitness_path,
+            phases_path=args.phases_path,
+            target_phase=args.target_phase,
+        )
         plot_umap_3d(z, patches, out_dir,
                      n_neighbors=args.umap_n_neighbors,
                      min_dist=args.umap_min_dist,
                      max_points=args.max_points,
                      seed=args.seed,
                      metric=args.metric,
-                     sweep=args.sweep)
+                     sweep=args.sweep,
+                     color_specs=color_specs)
 
     if "mapper" in methods:
         print("\n--- Mapper ---")
