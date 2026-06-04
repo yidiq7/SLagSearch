@@ -150,19 +150,25 @@ def build_color_specs(colors: Sequence[str], min_set_path: Path,
     """Resolve --color arguments into a list of color spec dicts.
 
     Each spec has:
-      name      : short tag used in filenames ('patch' / 'fitness' / 'phase')
-      kind      : 'discrete' (patch) or 'continuous' (fitness / phase)
-      values    : (N,) array, full length (subsampled later alongside z)
-      cmap      : matplotlib colormap name
-      label     : human-readable colorbar / legend label
-      vmin/vmax : color limits (None means autoscale)
+      name           : short tag used in filenames
+      kind           : 'discrete' (patch) or 'continuous' (fitness / phase)
+      values         : (N,) array, full length (subsampled later alongside z)
+      cmap           : matplotlib colormap name (also used to derive the
+                       plotly colorscale, guaranteeing identical PNG/HTML colors)
+      colorbar_label : short label printed next to the colorbar
+      equation       : longer human-readable formula shown on the figure
+                       subtitle (None for patch)
+      hover_unit     : short text (e.g. 'fitness', 'phase difference')
+                       displayed in plotly hover tooltips
+      vmin/vmax      : color limits
     """
     specs: list[dict] = []
     for c in colors:
         if c == "patch":
             specs.append(dict(
-                name="patch", kind="discrete", values=None,  # filled in caller
-                cmap="tab10", label="patch index",
+                name="patch", kind="discrete", values=None,
+                cmap="tab10", colorbar_label="patch index",
+                equation=None, hover_unit="patch",
                 vmin=-0.5, vmax=4.5,
             ))
         elif c == "fitness":
@@ -172,7 +178,9 @@ def build_color_specs(colors: Sequence[str], min_set_path: Path,
             specs.append(dict(
                 name="fitness", kind="continuous", values=vals,
                 cmap="viridis",
-                label=r"Lagrangian fitness  $\exp(-10\,\|K_R\|_F/\|K_U\|_F)$",
+                colorbar_label="Lagrangian fitness",
+                equation=r"$\exp(-10\,\|K_R\|_F / \|K_U\|_F)$",
+                hover_unit="fitness",
                 vmin=0.0, vmax=1.0,
             ))
             print(f"  fitness coloring from {path}")
@@ -183,14 +191,34 @@ def build_color_specs(colors: Sequence[str], min_set_path: Path,
             vals = _load_phase_distances(path, n_points, target_phase)
             specs.append(dict(
                 name="phase", kind="continuous", values=vals,
-                cmap="magma_r",
-                label=rf"$|\theta - {target_phase:.4f}|\;\;(\mathrm{{mod}}\,\pi)$",
+                # 'viridis_r' so distance ~ 0 (on-line) maps to bright yellow,
+                # matching the 'good = bright yellow' convention used by the
+                # fitness coloring (viridis with fitness in [0, 1]).
+                cmap="viridis_r",
+                colorbar_label="phase difference",
+                equation=(rf"$|((\theta - {target_phase:.4f}) + \pi/2)"
+                          rf"\,\mathrm{{mod}}\,\pi - \pi/2|$"),
+                hover_unit="phase difference",
                 vmin=0.0, vmax=float(np.pi / 2.0),
             ))
             print(f"  phase coloring from {path}, target={target_phase}")
         else:
             raise ValueError(f"unknown --color value: {c!r}")
     return specs
+
+
+def _plotly_colorscale_from_mpl(cmap_name: str, n: int = 32) -> list:
+    """Sample a matplotlib cmap to build an identical plotly colorscale.
+
+    Plotly's named colorscales ('Viridis', 'Magma', ...) are close but not
+    pixel-identical to matplotlib's. Sampling directly guarantees the HTML
+    colorbar visually matches the PNG one.
+    """
+    import matplotlib.cm as cm
+    cmap = cm.get_cmap(cmap_name)
+    xs = np.linspace(0.0, 1.0, n)
+    return [[float(x), f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"]
+            for x, (r, g, b, _) in zip(xs, cmap(xs))]
 
 
 def _auto_alpha(n: int) -> float:
@@ -451,8 +479,13 @@ _PATCH_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 
 
 def _render_umap_html(emb: np.ndarray, color_values: np.ndarray, spec: dict,
-                      out_path: Path, title: str) -> None:
-    """Interactive 3D scatter HTML via plotly. spec dict from build_color_specs."""
+                      out_path: Path, title: str,
+                      subtitle: str | None = None) -> None:
+    """Interactive 3D scatter HTML via plotly. spec dict from build_color_specs.
+
+    The HTML uses the same colorscale as the PNG (sampled from the matplotlib
+    cmap) and shows the color value in the hover tooltip alongside x/y/z.
+    """
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -465,7 +498,6 @@ def _render_umap_html(emb: np.ndarray, color_values: np.ndarray, spec: dict,
     mopacity = float(min(0.6, 12000.0 / max(n_total, 1)))
 
     if spec["kind"] == "discrete":
-        # Patch coloring: one trace per patch with discrete colors.
         traces = []
         for p in range(5):
             mask = color_values == p
@@ -477,29 +509,47 @@ def _render_umap_html(emb: np.ndarray, color_values: np.ndarray, spec: dict,
                 marker=dict(size=msize, color=_PATCH_COLORS[p],
                             opacity=mopacity),
                 name=f"patch {p}  ({int(mask.sum())} pts)",
+                hovertemplate=(
+                    "UMAP1: %{x:.3f}<br>"
+                    "UMAP2: %{y:.3f}<br>"
+                    "UMAP3: %{z:.3f}<br>"
+                    f"patch: {p}"
+                    "<extra></extra>"
+                ),
             ))
     else:
-        # Continuous: single trace, colorbar.
+        colorscale = _plotly_colorscale_from_mpl(spec["cmap"])
         traces = [go.Scatter3d(
             x=emb[:, 0], y=emb[:, 1], z=emb[:, 2],
             mode="markers",
             marker=dict(
                 size=msize, color=color_values, opacity=mopacity,
-                colorscale="Viridis" if spec["name"] == "fitness" else "Magma",
-                reversescale=(spec["name"] == "phase"),
+                colorscale=colorscale,
                 cmin=spec["vmin"], cmax=spec["vmax"],
-                colorbar=dict(title=spec["label"]),
+                colorbar=dict(title=spec["colorbar_label"]),
             ),
             name=spec["name"],
+            hovertemplate=(
+                "UMAP1: %{x:.3f}<br>"
+                "UMAP2: %{y:.3f}<br>"
+                "UMAP3: %{z:.3f}<br>"
+                f"{spec['hover_unit']}: "
+                "%{marker.color:.4f}"
+                "<extra></extra>"
+            ),
         )]
+
+    # Subtitle (equation) appears as a smaller second line under the title.
+    full_title = title if not subtitle else (
+        f"{title}<br><sub>{subtitle}</sub>")
 
     fig = go.Figure(data=traces)
     fig.update_layout(
-        title=title,
+        title=full_title,
         scene=dict(xaxis_title="UMAP 1", yaxis_title="UMAP 2",
                    zaxis_title="UMAP 3", aspectmode="data"),
         legend=dict(itemsizing="constant"),
-        margin=dict(l=0, r=0, t=40, b=0),
+        margin=dict(l=0, r=0, t=60, b=0),
     )
     fig.write_html(str(out_path))
     print(f"  wrote {out_path}")
@@ -571,15 +621,20 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                 ax.view_init(elev=elev, azim=azim)
                 ax.set_title(f"elev={elev}, az={azim}", fontsize=9)
                 ax.tick_params(labelsize=6)
-            if spec["kind"] == "continuous" and last_sc is not None:
+            has_cb = spec["kind"] == "continuous" and last_sc is not None
+            if has_cb:
                 fig.subplots_adjust(right=0.9)
                 cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-                fig.colorbar(last_sc, cax=cax, label=spec["label"])
-            fig.suptitle(
-                f"UMAP 3D (metric={metric}, n_neighbors={n_neighbors}, "
-                f"min_dist={min_dist}, color={spec['name']})", fontsize=13)
-            fig.tight_layout(rect=(0, 0, 0.9 if spec["kind"] == "continuous"
-                                   else 1.0, 0.95))
+                fig.colorbar(last_sc, cax=cax,
+                             label=spec["colorbar_label"])
+            main_title = (f"UMAP 3D (metric={metric}, "
+                          f"n_neighbors={n_neighbors}, min_dist={min_dist}, "
+                          f"color={spec['name']})")
+            fig.suptitle(main_title, fontsize=13, y=0.985)
+            if spec["equation"]:
+                fig.text(0.5, 0.95, spec["equation"], ha="center",
+                         fontsize=10, color="0.25")
+            fig.tight_layout(rect=(0, 0, 0.9 if has_cb else 1.0, 0.93))
             out_path = out_dir / (
                 f"umap3d_{metric}_nn{n_neighbors}_md{min_dist}_"
                 f"color_{spec['name']}.png")
@@ -592,9 +647,11 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                 f"color_{spec['name']}.html")
             _render_umap_html(
                 emb, spec["values"], spec, html_path,
-                title=f"UMAP 3D  (metric={metric}, nn={n_neighbors}, "
-                      f"md={min_dist}, color={spec['name']}, "
-                      f"N={emb.shape[0]})")
+                title=(f"UMAP 3D  (metric={metric}, nn={n_neighbors}, "
+                       f"md={min_dist}, color={spec['name']}, "
+                       f"N={emb.shape[0]})"),
+                subtitle=spec["equation"],
+            )
         return
 
     # Sweep: 3x3 grid over (n_neighbors, min_dist), one PNG per color spec.
@@ -617,15 +674,18 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
             ax.view_init(elev=20, azim=45)
             ax.set_title(f"nn={nn_v}, md={md_v}", fontsize=10)
             ax.tick_params(labelsize=6)
-        if spec["kind"] == "continuous" and last_sc is not None:
+        has_cb = spec["kind"] == "continuous" and last_sc is not None
+        if has_cb:
             fig.subplots_adjust(right=0.9)
             cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-            fig.colorbar(last_sc, cax=cax, label=spec["label"])
+            fig.colorbar(last_sc, cax=cax, label=spec["colorbar_label"])
         fig.suptitle(
             f"UMAP 3D sweep  (metric={metric}, N={X.shape[0]}, "
-            f"color={spec['name']})", fontsize=14)
-        fig.tight_layout(rect=(0, 0, 0.9 if spec["kind"] == "continuous"
-                               else 1.0, 0.97))
+            f"color={spec['name']})", fontsize=14, y=0.99)
+        if spec["equation"]:
+            fig.text(0.5, 0.965, spec["equation"], ha="center",
+                     fontsize=11, color="0.25")
+        fig.tight_layout(rect=(0, 0, 0.9 if has_cb else 1.0, 0.955))
         out_path = out_dir / (
             f"umap3d_{metric}_sweep_color_{spec['name']}.png")
         fig.savefig(out_path, dpi=150)
