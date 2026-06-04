@@ -168,7 +168,7 @@ def build_color_specs(colors: Sequence[str], min_set_path: Path,
             specs.append(dict(
                 name="patch", kind="discrete", values=None,
                 cmap="tab10", colorbar_label="patch index",
-                equation=None, hover_unit="patch",
+                equation=None, equation_text=None, hover_unit="patch",
                 vmin=-0.5, vmax=4.5,
             ))
         elif c == "fitness":
@@ -179,7 +179,12 @@ def build_color_specs(colors: Sequence[str], min_set_path: Path,
                 name="fitness", kind="continuous", values=vals,
                 cmap="viridis",
                 colorbar_label="Lagrangian fitness",
+                # 'equation' is matplotlib mathtext (PNG); 'equation_text' is
+                # plain unicode (HTML) -- plotly's default title renderer does
+                # not parse LaTeX, so feeding it raw $...$ would show as
+                # literal source.
                 equation=r"$\exp(-10\,\|K_R\|_F / \|K_U\|_F)$",
+                equation_text="exp(-10 * ||K_R||_F / ||K_U||_F)",
                 hover_unit="fitness",
                 vmin=0.0, vmax=1.0,
             ))
@@ -191,13 +196,17 @@ def build_color_specs(colors: Sequence[str], min_set_path: Path,
             vals = _load_phase_distances(path, n_points, target_phase)
             specs.append(dict(
                 name="phase", kind="continuous", values=vals,
-                # 'viridis_r' so distance ~ 0 (on-line) maps to bright yellow,
-                # matching the 'good = bright yellow' convention used by the
-                # fitness coloring (viridis with fitness in [0, 1]).
-                cmap="viridis_r",
+                # 'plasma_r' so distance ~ 0 (on-line) maps to bright yellow
+                # ('good = bright yellow', matching fitness). plasma's purple
+                # -> magenta -> orange -> yellow ramp is visually distinct
+                # from fitness's viridis (purple -> green -> yellow), so the
+                # two coloring schemes are easy to tell apart at a glance.
+                cmap="plasma_r",
                 colorbar_label="phase difference",
                 equation=(rf"$|((\theta - {target_phase:.4f}) + \pi/2)"
                           rf"\,\mathrm{{mod}}\,\pi - \pi/2|$"),
+                equation_text=(f"|((θ - {target_phase:.4f}) + π/2) "
+                               f"mod π - π/2|"),
                 hover_unit="phase difference",
                 vmin=0.0, vmax=float(np.pi / 2.0),
             ))
@@ -214,10 +223,11 @@ def _plotly_colorscale_from_mpl(cmap_name: str, n: int = 32) -> list:
     pixel-identical to matplotlib's. Sampling directly guarantees the HTML
     colorbar visually matches the PNG one.
     """
-    import matplotlib.cm as cm
-    cmap = cm.get_cmap(cmap_name)
+    cmap = plt.get_cmap(cmap_name)
     xs = np.linspace(0.0, 1.0, n)
-    return [[float(x), f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"]
+    return [[float(x),
+             f"rgb({int(round(r*255))},{int(round(g*255))},"
+             f"{int(round(b*255))})"]
             for x, (r, g, b, _) in zip(xs, cmap(xs))]
 
 
@@ -519,6 +529,8 @@ def _render_umap_html(emb: np.ndarray, color_values: np.ndarray, spec: dict,
             ))
     else:
         colorscale = _plotly_colorscale_from_mpl(spec["cmap"])
+        # customdata carries the raw numeric value to the hover -- more
+        # reliable across plotly versions than referencing %{marker.color}.
         traces = [go.Scatter3d(
             x=emb[:, 0], y=emb[:, 1], z=emb[:, 2],
             mode="markers",
@@ -528,18 +540,21 @@ def _render_umap_html(emb: np.ndarray, color_values: np.ndarray, spec: dict,
                 cmin=spec["vmin"], cmax=spec["vmax"],
                 colorbar=dict(title=spec["colorbar_label"]),
             ),
+            customdata=np.asarray(color_values),
             name=spec["name"],
             hovertemplate=(
                 "UMAP1: %{x:.3f}<br>"
                 "UMAP2: %{y:.3f}<br>"
                 "UMAP3: %{z:.3f}<br>"
                 f"{spec['hover_unit']}: "
-                "%{marker.color:.4f}"
+                "%{customdata:.4f}"
                 "<extra></extra>"
             ),
         )]
 
     # Subtitle (equation) appears as a smaller second line under the title.
+    # `subtitle` should already be plain text (not LaTeX) since plotly's
+    # default title renderer is not a math engine.
     full_title = title if not subtitle else (
         f"{title}<br><sub>{subtitle}</sub>")
 
@@ -584,9 +599,12 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
         return
 
     if color_specs is None:
-        color_specs = [dict(name="patch", kind="discrete", values=None,
-                            cmap="tab10", label="patch index",
-                            vmin=-0.5, vmax=4.5)]
+        color_specs = [dict(
+            name="patch", kind="discrete", values=None,
+            cmap="tab10", colorbar_label="patch index",
+            equation=None, equation_text=None, hover_unit="patch",
+            vmin=-0.5, vmax=4.5,
+        )]
 
     # Joint subsample over z + patches + every continuous color array.
     idx = subsample_indices(z.shape[0], max_points, seed=seed)
@@ -650,7 +668,7 @@ def plot_umap_3d(z: np.ndarray, patches: np.ndarray, out_dir: Path,
                 title=(f"UMAP 3D  (metric={metric}, nn={n_neighbors}, "
                        f"md={min_dist}, color={spec['name']}, "
                        f"N={emb.shape[0]})"),
-                subtitle=spec["equation"],
+                subtitle=spec["equation_text"],
             )
         return
 
