@@ -358,9 +358,12 @@ def parse_args():
                         "50 is the generous default the FS witness uses.")
     p.add_argument("--max_alpha", type=float, default=None,
                    help="Filtration cap in raw Euclidean distance on the "
-                        "UMAP output. Default (auto): 0.5 * max of the "
-                        "landmark-to-witness distance table (~50%% of the "
-                        "empirical UMAP-output diameter).")
+                        "UMAP output. Default (auto): 4 * covering_radius "
+                        "at the smallest L in the sweep, where "
+                        "covering_radius = max_p min_l dist(point_p, "
+                        "landmark_l). The 4x is a 2x safety buffer over "
+                        "the de Silva-Carlsson bound (meaningful PH up "
+                        "to ~2 * covering_radius).")
     p.add_argument("--witness_type", choices=["weak", "strong"],
                    default="weak",
                    help="gudhi witness variant (see FS witness script).")
@@ -380,8 +383,9 @@ def main():
     t_start = time.time()
 
     L_values = sorted({int(x) for x in args.landmarks.split(",") if x.strip()})
-    L_max = max(L_values)
-    print(f"Sweep: L values = {L_values}, L_max = {L_max}")
+    L_min = L_values[0]
+    L_max = L_values[-1]
+    print(f"Sweep: L values = {L_values}, L_min = {L_min}, L_max = {L_max}")
 
     # Out dir resolution (matches other diagnostics).
     min_set_parent = args.min_set.parent
@@ -430,13 +434,19 @@ def main():
     data_diameter = float(np.max(dist_table))
 
     # ---- max_alpha auto-compute
+    # Covering radius at the loosest L in the sweep: max over points of
+    # distance to nearest of the first L_min landmarks. de Silva-Carlsson
+    # bound: meaningful PH up to ~2 * covering_radius; 4x is a 2x buffer.
+    covering_radius = float(np.max(np.min(dist_table[:L_min], axis=0)))
     if args.max_alpha is None:
-        max_alpha = 0.5 * data_diameter
-        print(f"max_alpha (auto): 0.5 * diameter = {max_alpha:.4f}")
+        max_alpha = 4.0 * covering_radius
+        print(f"max_alpha (auto): 4 * covering_radius(L={L_min}) "
+              f"= {max_alpha:.4f}")
     else:
         max_alpha = float(args.max_alpha)
         print(f"max_alpha (user override): {max_alpha:.4f}")
     print(f"Data diameter (Euclidean on UMAP 3D): {data_diameter:.4f}")
+    print(f"Covering radius at L={L_min}: {covering_radius:.4f}")
     max_alpha_sq = max_alpha ** 2
     infinity_val = max_alpha
 

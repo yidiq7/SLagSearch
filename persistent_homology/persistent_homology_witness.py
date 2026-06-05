@@ -475,12 +475,17 @@ def parse_args():
     p.add_argument('--top_k_landmarks', type=int, default=50,
                    help='Keep top-K nearest landmarks per witness in the '
                         'gudhi table (>= limit_dimension+2; 50 is generous).')
-    p.add_argument('--max_alpha', type=float, default=0.8,
+    p.add_argument('--max_alpha', type=float, default=None,
                    help='Filtration cap in raw FS distance units. Simplices '
                         'with filtration value above this are not built. '
-                        'Default 0.8 covers H1/H2 features of interest while '
-                        'avoiding the cost of building up to the diameter '
-                        '(pi/2 ~= 1.5708). Diagrams display on [0, max_alpha].')
+                        'Default (auto): 4 * covering_radius at the smallest '
+                        'L in the sweep, where covering_radius = '
+                        'max_p min_l dist(point_p, landmark_l). The 4x is '
+                        'a 2x safety buffer over the de Silva-Carlsson bound '
+                        '(meaningful PH up to ~2 * covering_radius). For '
+                        'the Fermat quintic at L=300 this typically lands '
+                        'near the previous fixed default of 0.8. Diagrams '
+                        'display on [0, max_alpha].')
     p.add_argument('--witness_type', choices=['weak', 'strong'], default='weak',
                    help='gudhi witness variant. "strong" enforces that every '
                         'face of sigma is witnessed by the same w, which '
@@ -511,8 +516,9 @@ def main():
     st = time.time()
 
     L_values = sorted({int(x) for x in args.landmarks.split(',') if x.strip()})
-    L_max = max(L_values)
-    print(f"Sweep: L values = {L_values}, L_max = {L_max}")
+    L_min = L_values[0]
+    L_max = L_values[-1]
+    print(f"Sweep: L values = {L_values}, L_min = {L_min}, L_max = {L_max}")
 
     # Resolve output directory (defaults to the min_set's folder, e.g.
     # gd_runs/plots_slag_<job>/). All PNGs and caches land here.
@@ -657,11 +663,24 @@ def main():
                 print(f"  cached: {cache_landmarks_path}")
 
         data_diameter = float(np.max(dist_table))
-        infinity_val = float(args.max_alpha)
-        max_alpha_sq = args.max_alpha ** 2
-        print(f"\nData diameter (max FS distance): {data_diameter:.4f}")
-        print(f"Filtration cap (--max_alpha):    {infinity_val:.4f}")
-        print(f"max_alpha_square:                {max_alpha_sq:.4f}")
+        # Covering radius at the loosest landmark count in the sweep:
+        # max over points of distance to nearest of the first L_min
+        # landmarks. de Silva-Carlsson bound: meaningful PH up to
+        # ~2 * covering_radius; the 4x default below carries a 2x buffer.
+        covering_radius = float(np.max(np.min(dist_table[:L_min], axis=0)))
+        if args.max_alpha is None:
+            resolved_max_alpha = 4.0 * covering_radius
+            cap_source = f"auto: 4 * covering_radius(L={L_min})"
+        else:
+            resolved_max_alpha = float(args.max_alpha)
+            cap_source = "user override"
+        infinity_val = resolved_max_alpha
+        max_alpha_sq = resolved_max_alpha ** 2
+        print(f"\nData diameter (max FS distance):  {data_diameter:.4f}")
+        print(f"Covering radius at L={L_min}:         {covering_radius:.4f}")
+        print(f"Filtration cap (--max_alpha):     {infinity_val:.4f}  "
+              f"({cap_source})")
+        print(f"max_alpha_square:                 {max_alpha_sq:.4f}")
         print(f"(reference: FS diameter pi/2 = {np.pi / 2:.4f})")
 
         # ---- witness diagrams per L (H0, H1, H2 via limit_dimension=3)
