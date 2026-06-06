@@ -347,11 +347,8 @@ def plot_one_L(H0, H1, H2, infinity_val, n_sample, L, output_file):
         n_bars = min(50, len(sorted_pts))
         for i in range(n_bars):
             b, d = sorted_pts[i]
-            if np.isinf(d):
-                ax.barh(i, infinity_val - b, left=b, color=color, alpha=0.8,
-                        edgecolor='red', linewidth=2)
-            else:
-                ax.barh(i, d - b, left=b, color=color, alpha=0.7)
+            length = (infinity_val - b) if np.isinf(d) else (d - b)
+            ax.barh(i, length, left=b, color=color, alpha=0.7)
         ax.set_xlim([0, infinity_val])
         ax.set_ylim([-1, n_bars])
         ax.set_xlabel('Filtration Value')
