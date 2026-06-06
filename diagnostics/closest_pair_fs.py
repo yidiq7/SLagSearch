@@ -19,7 +19,6 @@ Usage:
 import argparse
 import pickle
 import sys
-from functools import partial
 from pathlib import Path
 
 import numpy as np
