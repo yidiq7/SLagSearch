@@ -11,16 +11,27 @@ cannot find one, that is suggestive (not proof) that the gap is real.
 
 Algorithm:
   1. Lift A, B to unit C^5 representatives, phase-align so <a, b> in R_+.
-  2. Slerp on the unit sphere (CP^4 FS-geodesic) at n_samples values
-     t in (0, 1):    gamma(t) = sin((1-t)theta)/sin(theta) * a
-                              + sin(t*theta)/sin(theta) * b
-     Every gamma(t) is in the FS lens by construction.
-  3. Newton-refine each gamma(t) onto the submanifold via
+  2. Slerp on the unit sphere (CP^4 FS-geodesic) at n_samples t-values in
+     [t_min, t_max]:
+         gamma(t) = sin((1-t)*theta)/sin(theta) * a
+                  + sin(t*theta)/sin(theta) * b
+     Every gamma(t) is on the FS geodesic from [a] to [b], at FS distance
+     t*theta from A and (1-t)*theta from B (both < theta).
+  3. (Optional) For each gamma(t), draw n_perturb random horizontal
+     tangent perturbations at FS distance sigma, via the exponential map:
+         gamma_perturbed(t, k) = cos(sigma)*gamma(t) + sin(sigma)*u_{t,k},
+     with u_{t,k} a unit vector Hermitian-orthogonal to gamma(t) in C^5
+     (so gamma_perturbed is unit-norm, at FS distance sigma from
+     gamma(t)). This pushes inits off the geodesic into a tube of FS
+     radius sigma, broadening Newton's basin coverage.
+  4. Newton-refine each init onto the submanifold via
      refine_point_iterative.
-  4. For each refined P, compute the Newton-step residual (a measure of
-     "did Newton converge?") and the FS distances d_FS(P, A), d_FS(P, B).
-  5. Report all P that converged AND landed in the lens, sorted by
-     max(d_FS(P, A), d_FS(P, B)).
+  5. For each refined P, compute the Newton-step residual (convergence
+     proxy) and the FS distances d_FS(P, A), d_FS(P, B).
+  6. Report all P that converged AND landed in the FS lens, sorted by
+     max(d_FS(P, A), d_FS(P, B)). Inits whose refined P drifted back to
+     A or B (within FS 1e-3) are flagged and excluded from the "bridge"
+     count.
 
 Usage:
     python -m diagnostics.search_bridge_point \\
@@ -28,10 +39,10 @@ Usage:
         --cluster_a .../cluster_split/cluster_0_points.pkl \\
         --cluster_b .../cluster_split/cluster_1_points.pkl \\
         --a_idx <i_A> --b_idx <i_B> \\
-        [--psi 0+0j] [--n_samples 1000] [--newton_steps 50]
-        [--t_min 0.01 --t_max 0.99]
-        [--converged_tol 1e-4]
-        [--save_pkl bridge_candidates.pkl]
+        [--psi 0+0j] [--n_samples 1000]
+        [--n_perturb 10 --sigma 0.05 --seed 0]
+        [--newton_steps 50] [--t_min 0.01 --t_max 0.99]
+        [--converged_tol 1e-4] [--save_pkl bridge_candidates.pkl]
 """
 import argparse
 import pickle
@@ -81,6 +92,16 @@ def fs_distance(z: np.ndarray, w: np.ndarray) -> float:
     return float(np.arccos(overlap))
 
 
+def fs_distance_batch(P: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """FS distance from each row of P (N, 5) to q (5,). Float64."""
+    P = np.asarray(P, dtype=np.complex128)
+    q = np.asarray(q, dtype=np.complex128)
+    inner = np.abs(P @ np.conjugate(q))                  # (N,)
+    inner /= (np.linalg.norm(P, axis=1) * np.linalg.norm(q))
+    inner = np.clip(inner, 0.0, 1.0)
+    return np.arccos(inner)
+
+
 def fs_geodesic_samples(a: np.ndarray, b: np.ndarray,
                         n_samples: int,
                         t_min: float, t_max: float):
@@ -93,15 +114,12 @@ def fs_geodesic_samples(a: np.ndarray, b: np.ndarray,
     """
     a_hat = a / np.linalg.norm(a)
     b_hat = b / np.linalg.norm(b)
-    # Phase-align so <a_hat, b_hat> is real and non-negative.
-    overlap = np.vdot(a_hat, b_hat)         # complex scalar
+    overlap = np.vdot(a_hat, b_hat)
     if np.abs(overlap) < 1e-15:
-        # Orthogonal in C^5 -> antipodal on CP^4 (theta = pi/2). Any phase
-        # of b_hat works.
         phase = 1.0
     else:
-        phase = overlap / np.abs(overlap)   # exp(i arg(overlap))
-    b_hat_aligned = b_hat * np.conjugate(phase)   # now <a_hat, b_hat_a> in R_+
+        phase = overlap / np.abs(overlap)
+    b_hat_aligned = b_hat * np.conjugate(phase)
 
     real_overlap = float(np.real(np.vdot(a_hat, b_hat_aligned)))
     real_overlap = min(max(real_overlap, -1.0), 1.0)
@@ -111,14 +129,50 @@ def fs_geodesic_samples(a: np.ndarray, b: np.ndarray,
 
     t_values = np.linspace(t_min, t_max, n_samples, dtype=np.float64)
     sin_th = np.sin(theta)
-    w_a = np.sin((1.0 - t_values) * theta) / sin_th  # (n_samples,)
+    w_a = np.sin((1.0 - t_values) * theta) / sin_th
     w_b = np.sin(t_values * theta) / sin_th
     gammas = (w_a[:, None] * a_hat[None, :]
-              + w_b[:, None] * b_hat_aligned[None, :])  # (n_samples, 5)
-    # Numerical safety: re-normalize each row (slerp gives unit vectors in
-    # exact arithmetic; float64 may drift by a few ULP).
+              + w_b[:, None] * b_hat_aligned[None, :])
     gammas /= np.linalg.norm(gammas, axis=1, keepdims=True)
     return gammas, theta, t_values
+
+
+def tangent_perturbations(gammas: jnp.ndarray, sigma: float,
+                          n_perturb: int, key: jax.Array) -> jnp.ndarray:
+    """Generate n_perturb random horizontal-tangent perturbations per gamma.
+
+    For each unit vector gamma_i in C^5, draws n_perturb random complex
+    normal vectors v, projects them Hermitian-orthogonal to gamma_i (so
+    they live in the horizontal tangent space of CP^4 at [gamma_i]),
+    normalizes, then exponential-maps:
+        gamma_perturbed = cos(sigma)*gamma + sin(sigma)*u_hat.
+    The result is unit-norm and at FS distance exactly sigma from gamma.
+
+    Args:
+        gammas:    (n_samples, 5) complex64, unit-norm.
+        sigma:     scalar in (0, pi/2]; FS perturbation magnitude.
+        n_perturb: number of perturbations per gamma.
+        key:       JAX PRNG key.
+
+    Returns:
+        (n_samples, n_perturb, 5) complex64 perturbed unit vectors.
+    """
+    n_samples = gammas.shape[0]
+    # Random complex normal: (n_samples, n_perturb, 5)
+    v_real = jax.random.normal(
+        key, (n_samples, n_perturb, 5, 2), dtype=jnp.float32)
+    v = (v_real[..., 0] + 1j * v_real[..., 1]).astype(jnp.complex64)
+    # Project to Hermitian-orthogonal complement of gamma:
+    #   inner_{s, p} = sum_k conj(gamma_{s, k}) * v_{s, p, k}
+    inner = jnp.einsum('sk,spk->sp', jnp.conjugate(gammas), v)
+    u = v - inner[..., None] * gammas[:, None, :]
+    u_norm = jnp.linalg.norm(u, axis=-1, keepdims=True)
+    # If a random v happens to be parallel to gamma (vanishing u_norm),
+    # the gamma itself substitutes -- harmless (just one wasted init).
+    u_hat = u / jnp.maximum(u_norm, 1e-12)
+    perturbed = (jnp.cos(sigma) * gammas[:, None, :]
+                 + jnp.sin(sigma) * u_hat)
+    return perturbed
 
 
 def main() -> None:
@@ -139,7 +193,17 @@ def main() -> None:
     parser.add_argument("--psi", type=complex, default=complex(0.0, 0.0),
                         help="Complex psi for the quintic (default 0).")
     parser.add_argument("--n_samples", type=int, default=1000,
-                        help="Number of geodesic init points (default 1000).")
+                        help="Number of geodesic t-values (default 1000).")
+    parser.add_argument("--n_perturb", type=int, default=0,
+                        help="Number of random tangent perturbations per "
+                             "geodesic t-value (default 0 = pure "
+                             "geodesic). Each t produces (1 + n_perturb) "
+                             "Newton inits.")
+    parser.add_argument("--sigma", type=float, default=0.05,
+                        help="FS magnitude of each tangent perturbation "
+                             "(default 0.05 rad). Ignored if n_perturb=0.")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="PRNG seed for tangent perturbations.")
     parser.add_argument("--newton_steps", type=int, default=50,
                         help="Newton iterations per refinement (default 50).")
     parser.add_argument("--t_min", type=float, default=0.01,
@@ -182,135 +246,153 @@ def main() -> None:
     print(f"Anchor A = cluster_a[{args.a_idx}]")
     print(f"Anchor B = cluster_b[{args.b_idx}]")
     print(f"d_FS(A, B) = {theta_ab:.6e}  (FS, CP^4)")
-    print(f"Slerping n_samples={args.n_samples} init points in "
-          f"t in [{args.t_min}, {args.t_max}].")
 
     gammas, theta_check, t_values = fs_geodesic_samples(
         A, B, args.n_samples, args.t_min, args.t_max)
     assert abs(theta_check - theta_ab) < 1e-9
-    # Each gamma(t) is at FS distance t*theta from A and (1-t)*theta from B.
-    # Verify on one sample for sanity.
+
+    # Build init set: unperturbed gamma at perturb_idx=0, plus optional
+    # tangent-noise perturbations at perturb_idx=1..n_perturb.
+    gammas_j = jnp.asarray(gammas, dtype=jnp.complex64)
+    if args.n_perturb > 0:
+        if not (0.0 < args.sigma <= np.pi / 2):
+            raise ValueError(
+                f"--sigma must be in (0, pi/2]; got {args.sigma}.")
+        key = jax.random.PRNGKey(args.seed)
+        perturbed = tangent_perturbations(
+            gammas_j, args.sigma, args.n_perturb, key)
+        # (n_samples, 1 + n_perturb, 5)
+        all_inits_5 = jnp.concatenate(
+            [gammas_j[:, None, :], perturbed], axis=1)
+    else:
+        all_inits_5 = gammas_j[:, None, :]  # (n_samples, 1, 5)
+
+    n_per_t = int(all_inits_5.shape[1])
+    total_inits = args.n_samples * n_per_t
+    all_inits_flat = all_inits_5.reshape(-1, 5)         # (total, 5)
+    t_idx_per_init = np.repeat(np.arange(args.n_samples), n_per_t)
+    perturb_idx_per_init = np.tile(np.arange(n_per_t), args.n_samples)
+
+    if args.n_perturb > 0:
+        print(f"Slerping n_samples={args.n_samples} t-values in "
+              f"[{args.t_min}, {args.t_max}], with {args.n_perturb} "
+              f"tangent-noise perturbations per t (sigma={args.sigma}, "
+              f"seed={args.seed}). Total inits = {total_inits}.")
+        # Verify the perturbation FS distance on one sample.
+        sample_orig = np.asarray(gammas_j[0]).astype(np.complex128)
+        sample_pert = np.asarray(all_inits_5[0, 1]).astype(np.complex128)
+        print(f"  sanity: d_FS(gamma(t={t_values[0]:.3f}), "
+              f"perturbation 1) = "
+              f"{fs_distance(sample_orig, sample_pert):.4e} "
+              f"(should be ~{args.sigma})")
+    else:
+        print(f"Slerping n_samples={args.n_samples} init points in "
+              f"[{args.t_min}, {args.t_max}]  (no tangent noise).")
+
     g_mid = gammas[args.n_samples // 2]
     print(f"  sanity: gamma(t={t_values[args.n_samples//2]:.3f}) -> "
-          f"d_FS(A) = {fs_distance(g_mid, A):.4e}, "
-          f"d_FS(B) = {fs_distance(g_mid, B):.4e}")
+          f"d_FS(A)={fs_distance(g_mid, A):.4e}, "
+          f"d_FS(B)={fs_distance(g_mid, B):.4e}")
 
     # ----- prepare inputs for Newton ---------------------------------
-    # Convert each gamma (5,) complex -> (10,) real, with patch
-    # determination (refine_point_iterative does its own patch detection
-    # inside the loop, but we pass in a canonical |z_max|=1 representative
-    # so the first iteration is well-conditioned).
     coeffs_j = jnp.asarray(coeffs_np)
     psi_j = jnp.asarray(args.psi, dtype=jnp.complex64)
 
-    print(f"\nRunning Newton ({args.newton_steps} steps/point) on "
-          f"{args.n_samples} initializations...")
+    print(f"\nRunning Newton ({args.newton_steps} steps/init) on "
+          f"{total_inits} initializations...")
 
     def to_real_with_rescale(gamma):
-        # Rescale to the natural patch: divide by the largest-|z_i| coord.
-        # This is what determine_patch_and_rescale_single also does; doing
-        # it here keeps the first Newton iteration well-scaled.
+        # Rescale to the natural patch: divide by largest-|z_i| coord, so
+        # the first Newton iteration is well-scaled.
         abs_g = jnp.abs(gamma)
         i_max = jnp.argmax(abs_g)
         scale = gamma[i_max]
         return convert_complex_to_real_single(gamma / scale)
 
-    gammas_j = jnp.asarray(gammas, dtype=jnp.complex64)
-    inits_real = jax.vmap(to_real_with_rescale)(gammas_j)  # (n_samples, 10)
+    inits_real = jax.vmap(to_real_with_rescale)(all_inits_flat)  # (T, 10)
 
     refine_fn = lambda p: refine_point_iterative(
         p, coeffs_j, psi_j, args.newton_steps)
-    refined_real = jax.vmap(refine_fn)(inits_real)        # (n_samples, 10)
+    refined_real = jax.vmap(refine_fn)(inits_real)               # (T, 10)
 
-    # Per-point Newton residual.  Same scalar that
-    # find_smooth_submanifold.filter_and_refine uses for convergence.
     residuals = jax.vmap(approx_distance_newton_step,
                          in_axes=(0, None, None))(
         refined_real, coeffs_j, psi_j)
     residuals_np = np.asarray(residuals)
 
-    # Back to (5,) complex for FS comparisons.
     refined_complex_j = jax.vmap(convert_real_to_complex_single)(
         refined_real)
-    refined_complex = np.asarray(refined_complex_j).astype(
-        np.complex128)
+    refined_complex = np.asarray(refined_complex_j).astype(np.complex128)
 
-    # Per-point FS distances to A and B.
-    d_to_A = np.array([fs_distance(p, A) for p in refined_complex])
-    d_to_B = np.array([fs_distance(p, B) for p in refined_complex])
+    d_to_A = fs_distance_batch(refined_complex, A)               # (T,)
+    d_to_B = fs_distance_batch(refined_complex, B)               # (T,)
 
     # ----- classification --------------------------------------------
     converged = residuals_np < args.converged_tol
     in_lens = (d_to_A < theta_ab) & (d_to_B < theta_ab)
-    is_bridge = converged & in_lens
+    near_a = d_to_A < 1e-3
+    near_b = d_to_B < 1e-3
+    is_bridge_raw = converged & in_lens
+    is_bridge = is_bridge_raw & (~near_a) & (~near_b)
 
     n_conv = int(converged.sum())
     n_lens = int(in_lens.sum())
-    n_bridge = int(is_bridge.sum())
-    # Also flag P that effectively returned to A or B (Newton drifted
-    # back along the geodesic). Threshold: within FS scale 1e-3 (way
-    # below any meaningful within-cluster spacing).
-    near_a = d_to_A < 1e-3
-    near_b = d_to_B < 1e-3
+    n_bridge_raw = int(is_bridge_raw.sum())
     n_back_to_a = int((converged & near_a).sum())
     n_back_to_b = int((converged & near_b).sum())
+    n_bridge = int(is_bridge.sum())
 
     print()
     print("=" * 72)
     print(f"Bridge search summary  (theta = d_FS(A, B) = {theta_ab:.6e})")
     print("=" * 72)
-    print(f"  total inits                       : {args.n_samples}")
-    print(f"  converged   (||delta_p|| < {args.converged_tol:.1e}): "
+    print(f"  total inits                            : {total_inits}")
+    print(f"  converged   (||delta_p|| < {args.converged_tol:.1e})    : "
           f"{n_conv}")
-    print(f"  in FS lens  (d_A, d_B both < theta): {n_lens}")
-    print(f"  BRIDGE      (converged AND in lens): {n_bridge}")
-    print(f"  ... of which P landed back on A "
-          f"(d_FS(P, A) < 1e-3)        : {n_back_to_a}")
-    print(f"  ... of which P landed back on B "
-          f"(d_FS(P, B) < 1e-3)        : {n_back_to_b}")
-    if n_bridge - n_back_to_a - n_back_to_b > 0:
-        print(f"  ==> {n_bridge - n_back_to_a - n_back_to_b} candidate "
-              f"bridge point(s) distinct from A and B.")
-    else:
-        print(f"  ==> no bridge point distinct from A or B was found.")
+    print(f"  in FS lens  (d_A, d_B both < theta)    : {n_lens}")
+    print(f"  bridge raw  (converged AND in lens)    : {n_bridge_raw}")
+    print(f"  ... drifted back on A  (d_FS(P,A)<1e-3): {n_back_to_a}")
+    print(f"  ... drifted back on B  (d_FS(P,B)<1e-3): {n_back_to_b}")
+    print(f"  ==> BRIDGE distinct from A and B       : {n_bridge}")
 
     # ----- top-K bridge candidates -----------------------------------
     if n_bridge > 0:
-        # Rank by max(d_to_A, d_to_B) (smaller = better "centered" in lens).
         score = np.maximum(d_to_A, d_to_B)
-        # Restrict to bridge AND not back-to-A-or-B.
-        eligible = is_bridge & (~near_a) & (~near_b)
-        if eligible.any():
-            order = np.argsort(np.where(eligible, score, np.inf))
-            order = order[:min(args.top_k_report, int(eligible.sum()))]
-            print()
-            print("-" * 72)
-            print(f"Top {len(order)} bridge candidates "
-                  f"(ranked by max(d_FS(P, A), d_FS(P, B))):")
-            print(f"  {'rank':>4}  {'t_init':>7}  {'residual':>11}  "
-                  f"{'d_FS(P,A)':>13}  {'d_FS(P,B)':>13}  "
-                  f"{'max/theta':>9}")
-            for rank, idx in enumerate(order, start=1):
-                ratio = float(score[idx] / theta_ab)
-                print(f"  {rank:>4d}  {t_values[idx]:>7.3f}  "
-                      f"{residuals_np[idx]:>11.3e}  "
-                      f"{d_to_A[idx]:>13.6e}  {d_to_B[idx]:>13.6e}  "
-                      f"{ratio:>9.3f}")
-            # Print coords of the best one.
-            best = int(order[0])
-            print()
-            print(f"Best bridge candidate (rank 1): "
-                  f"t_init={t_values[best]:.4f}")
-            print(f"  d_FS(P, A) = {d_to_A[best]:.6e}")
-            print(f"  d_FS(P, B) = {d_to_B[best]:.6e}")
-            print(f"  d_FS(A, B) = {theta_ab:.6e}")
-            print(f"  residual   = {residuals_np[best]:.3e}")
-            print(f"  P:")
-            for k, zk in enumerate(refined_complex[best]):
-                print(f"    z_{k} = {zk}")
-        else:
-            print("\n  All 'bridge' points coincide with A or B "
-                  "(Newton drifted back along the geodesic).")
+        eligible = is_bridge
+        order = np.argsort(np.where(eligible, score, np.inf))
+        order = order[:min(args.top_k_report, int(eligible.sum()))]
+        print()
+        print("-" * 72)
+        print(f"Top {len(order)} bridge candidates "
+              f"(ranked by max(d_FS(P, A), d_FS(P, B))):")
+        print(f"  {'rank':>4}  {'t_init':>7}  {'pert':>4}  "
+              f"{'residual':>11}  {'d_FS(P,A)':>13}  "
+              f"{'d_FS(P,B)':>13}  {'max/theta':>9}")
+        for rank, idx in enumerate(order, start=1):
+            t_idx = int(t_idx_per_init[idx])
+            p_idx = int(perturb_idx_per_init[idx])
+            ratio = float(score[idx] / theta_ab)
+            print(f"  {rank:>4d}  {t_values[t_idx]:>7.3f}  "
+                  f"{p_idx:>4d}  {residuals_np[idx]:>11.3e}  "
+                  f"{d_to_A[idx]:>13.6e}  {d_to_B[idx]:>13.6e}  "
+                  f"{ratio:>9.3f}")
+        best = int(order[0])
+        best_t_idx = int(t_idx_per_init[best])
+        best_p_idx = int(perturb_idx_per_init[best])
+        print()
+        print(f"Best bridge candidate (rank 1):  "
+              f"t_init={t_values[best_t_idx]:.4f}, "
+              f"perturb_idx={best_p_idx}")
+        print(f"  d_FS(P, A) = {d_to_A[best]:.6e}")
+        print(f"  d_FS(P, B) = {d_to_B[best]:.6e}")
+        print(f"  d_FS(A, B) = {theta_ab:.6e}")
+        print(f"  residual   = {residuals_np[best]:.3e}")
+        print(f"  P:")
+        for k, zk in enumerate(refined_complex[best]):
+            print(f"    z_{k} = {zk}")
+    elif n_bridge_raw > 0:
+        print("\n  All in-lens converged inits coincide with A or B "
+              "(Newton drifted back along the geodesic).")
 
     if args.save_pkl is not None:
         out = {
@@ -318,14 +400,17 @@ def main() -> None:
             "theta_ab": theta_ab,
             "A": A,
             "B": B,
-            "t_values": t_values,
-            "refined_complex": refined_complex,    # (n_samples, 5)
-            "residuals": residuals_np,             # (n_samples,)
-            "d_to_A": d_to_A,                      # (n_samples,)
-            "d_to_B": d_to_B,                      # (n_samples,)
-            "converged": converged,                # (n_samples,)
-            "in_lens": in_lens,                    # (n_samples,)
-            "is_bridge": is_bridge,                # (n_samples,)
+            "t_values": t_values,                  # (n_samples,)
+            "t_idx_per_init": t_idx_per_init,      # (total,)
+            "perturb_idx_per_init": perturb_idx_per_init,  # (total,)
+            "refined_complex": refined_complex,    # (total, 5)
+            "residuals": residuals_np,             # (total,)
+            "d_to_A": d_to_A,                      # (total,)
+            "d_to_B": d_to_B,                      # (total,)
+            "converged": converged,                # (total,)
+            "in_lens": in_lens,                    # (total,)
+            "is_bridge_raw": is_bridge_raw,        # (total,)
+            "is_bridge": is_bridge,                # (total,)
         }
         with open(args.save_pkl, "wb") as f:
             pickle.dump(out, f)
