@@ -23,6 +23,11 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+# Repo's drop-in for the deprecated jax.device_put_sharded; pmap-compatible.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from sharding import device_put_sharded
+
 
 def load_points(path: Path) -> np.ndarray:
     with open(path, "rb") as f:
@@ -85,8 +90,10 @@ def closest_pair_fs(A: np.ndarray, B: np.ndarray, chunk_size: int):
 
     # B is broadcast to every device (so the matmul on each device sees the
     # full B). For chunk_size = 4096 and |B| ~ 1e5 this is ~3 GB per device
-    # -- fine on A100 (40/80 GB).
-    B_repl = jax.device_put_replicated(B_norm, devices)
+    # -- fine on A100 (40/80 GB). Replication via D identical shards along
+    # the leading device axis (drop-in for the deprecated
+    # jax.device_put_replicated).
+    B_repl = device_put_sharded([B_norm] * D, devices)
 
     Na = A_norm.shape[0]
     step = D * chunk_size                            # rows per outer iter
@@ -102,7 +109,7 @@ def closest_pair_fs(A: np.ndarray, B: np.ndarray, chunk_size: int):
         if pad > 0:
             block = np.concatenate(
                 [block, np.zeros((pad, 5), dtype=block.dtype)], axis=0)
-        block_sharded = jax.device_put_sharded(
+        block_sharded = device_put_sharded(
             list(block.reshape(D, chunk_size, 5)), devices)
 
         mins, j = _per_chunk(block_sharded, B_repl)
