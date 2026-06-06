@@ -76,7 +76,12 @@ def closest_pair_fs(A: np.ndarray, B: np.ndarray, chunk_size: int):
             Per-device peak memory ~ chunk_size * Nb * 8B (complex64).
 
     Returns:
-        (fs_distance: float, i_argmin_in_A: int, j_argmin_in_B: int)
+        dict with keys
+          'min', 'i_min_in_A', 'j_min_in_B'   -- the closest pair
+          'mean', 'max'                       -- aggregated over the per-A-point
+                                                 distance-to-nearest-B
+          'all_min_per_A'                     -- (Na,) array of nearest-B
+                                                 FS distance for each A point
     """
     devices = jax.local_devices()
     D = len(devices)
@@ -98,6 +103,8 @@ def closest_pair_fs(A: np.ndarray, B: np.ndarray, chunk_size: int):
     Na = A_norm.shape[0]
     step = D * chunk_size                            # rows per outer iter
 
+    all_min = np.empty(Na, dtype=np.float32)         # nearest-B FS per a
+    all_j = np.empty(Na, dtype=np.int64)             # nearest-B index per a
     best_dist = float("inf")
     best_i = -1
     best_j = -1
@@ -116,11 +123,12 @@ def closest_pair_fs(A: np.ndarray, B: np.ndarray, chunk_size: int):
         mins_np = np.asarray(mins)                   # (D, chunk_size)
         j_np = np.asarray(j)                         # (D, chunk_size)
 
-        # Find the best entry across this device-block; mask padded rows.
-        # Reshape back to a flat (D*chunk_size,) view; only the first
-        # (e - s) entries are real data.
+        # Flatten back, drop padded rows, and store.
         flat_mins = mins_np.reshape(-1)[: e - s]
         flat_j = j_np.reshape(-1)[: e - s]
+        all_min[s:e] = flat_mins
+        all_j[s:e] = flat_j
+
         local_k = int(np.argmin(flat_mins))
         if flat_mins[local_k] < best_dist:
             best_dist = float(flat_mins[local_k])
@@ -131,7 +139,15 @@ def closest_pair_fs(A: np.ndarray, B: np.ndarray, chunk_size: int):
               f"(running min FS = {best_dist:.6e} "
               f"at A[{best_i}] vs B[{best_j}])")
 
-    return best_dist, best_i, best_j
+    return {
+        "min": best_dist,
+        "i_min_in_A": best_i,
+        "j_min_in_B": best_j,
+        "mean": float(all_min.mean()),
+        "max": float(all_min.max()),
+        "all_min_per_A": all_min,
+        "all_j_per_A": all_j,
+    }
 
 
 def main() -> None:
@@ -163,13 +179,19 @@ def main() -> None:
           f"N={big.shape[0]}) across devices; replicating the smaller "
           f"({'A' if swapped else 'B'}, N={small.shape[0]}).")
 
-    fs_search, i_big, j_small = closest_pair_fs(
-        big, small, args.chunk_size)
+    result = closest_pair_fs(big, small, args.chunk_size)
+    fs_search = result["min"]
+    i_big = result["i_min_in_A"]
+    j_small = result["j_min_in_B"]
+    fs_mean = result["mean"]
+    fs_max = result["max"]
 
     if swapped:
         i_a, j_b = j_small, i_big
+        big_label, small_label = "B", "A"
     else:
         i_a, j_b = i_big, j_small
+        big_label, small_label = "A", "B"
 
     z_a = A_orig[i_a]
     z_b = B_orig[j_b]
@@ -196,6 +218,15 @@ def main() -> None:
     print(f"  |<a,b>| / (||a|| ||b||) :  {overlap:.12f}")
     print(f"  FS distance (complex64 search)    : {fs_search:.12e}")
     print(f"  FS distance (complex128 recompute): {fs_exact:.12e}")
+    print()
+    print("-" * 64)
+    print(f"Cross-cluster nearest-neighbor statistics "
+          f"(for each point in {big_label}, FS distance to its nearest "
+          f"point in {small_label}, N={result['all_min_per_A'].shape[0]} "
+          f"values):")
+    print(f"  min  FS distance: {fs_search:.12e}    (= closest pair above)")
+    print(f"  mean FS distance: {fs_mean:.12e}")
+    print(f"  max  FS distance: {fs_max:.12e}")
 
 
 if __name__ == "__main__":
