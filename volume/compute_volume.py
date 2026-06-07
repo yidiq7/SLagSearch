@@ -222,6 +222,62 @@ vmap_compute_affine_jacobian = jax.vmap(
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
 
+def _compute_omega_orth_chunked(
+    min_set_real, min_set_complex, patch_indices, real_metrics,
+    coeffs, psi, chunk_size,
+):
+    """Per-chunk: jacobian -> restriction -> Omega(R) -> (Omega_orth, vol_R).
+
+    The full vmap'd pipeline blows up GPU memory at d=4: jax.jacobian's
+    backward pass for the d=4 basis materialises a 70x70 outer-product
+    workspace per point, and vmap across ~5e4 points holds them all
+    simultaneously (~20 GB). Chunking caps peak memory at O(chunk_size).
+    """
+    N = min_set_real.shape[0]
+
+    @jax.jit
+    def chunk_fn(real_c, complex_c, patch_c, metric_c):
+        jacs = vmap_compute_affine_jacobian(real_c, patch_c, coeffs, psi)
+        restrictions = vmap_compute_restriction(jacs)            # (n, 8, 3)
+        Omega_residue, _, Omega_coord = compute_holomorphic_form(
+            complex_c, patch_c, psi,
+        )
+
+        n = restrictions.shape[0]
+        row = jnp.arange(n)[:, None]
+        Omega_coord_y = Omega_coord + 4
+        jac_C = (
+            restrictions[row, Omega_coord]
+            + 1j * restrictions[row, Omega_coord_y]
+        )                                                         # (n, 3, 3)
+        Omega_R = Omega_residue * jnp.linalg.det(jac_C)           # (n,)
+
+        g_L = jnp.einsum(
+            "nij,nik,njl->nkl", metric_c, restrictions, restrictions,
+        )                                                         # (n, 3, 3)
+        vol_R_c = jnp.sqrt(jnp.maximum(jnp.linalg.det(g_L), 0.0)) # (n,)
+
+        eps = 1e-30
+        Omega_orth_c = Omega_R / (vol_R_c + eps)
+        return Omega_orth_c, vol_R_c
+
+    oo_chunks, vr_chunks = [], []
+    for c0 in range(0, N, chunk_size):
+        c1 = min(c0 + chunk_size, N)
+        oo, vr = chunk_fn(
+            min_set_real[c0:c1],
+            min_set_complex[c0:c1],
+            patch_indices[c0:c1],
+            real_metrics[c0:c1],
+        )
+        oo_chunks.append(np.asarray(oo))
+        vr_chunks.append(np.asarray(vr))
+    return (
+        jnp.asarray(np.concatenate(oo_chunks)),
+        jnp.asarray(np.concatenate(vr_chunks)),
+    )
+
+
 def volume_calibration_k4(
     min_set_real,
     coeffs,
@@ -249,34 +305,12 @@ def volume_calibration_k4(
     )
     rho_hat = _knn_density(R_k, N, k_neighbors)
 
-    # 8x3 restriction at each point + Poincare-residue Omega + residue basis
-    jacobians = vmap_compute_affine_jacobian(
-        min_set_real, patch_indices, coeffs, psi_jnp,
-    )                                                             # (N, 5, 8)
-    restrictions = vmap_compute_restriction(jacobians)            # (N, 8, 3)
-    Omega_residue, _, Omega_coord = compute_holomorphic_form(
-        min_set_complex, patch_indices, psi_jnp,
+    # Per-point Omega in the orthonormal g_k4-frame, chunked to keep peak
+    # memory bounded for high-degree coeffs.
+    Omega_orth, vol_R = _compute_omega_orth_chunked(
+        min_set_real, min_set_complex, patch_indices, real_metrics,
+        coeffs, psi_jnp, chunk_size,
     )
-
-    # Omega evaluated on the (non-orthonormal) R-frame, true magnitude.
-    row = jnp.arange(N)[:, None]
-    Omega_coord_y = Omega_coord + 4
-    jac_C = (
-        restrictions[row, Omega_coord]
-        + 1j * restrictions[row, Omega_coord_y]
-    )                                                              # (N, 3, 3)
-    Omega_R = Omega_residue * jnp.linalg.det(jac_C)                # (N,)
-
-    # Volume of the R-frame parallelepiped in g_k4: sqrt(det(R^T G R)).
-    g_L = jnp.einsum(
-        "nij,nik,njl->nkl", real_metrics, restrictions, restrictions,
-    )                                                              # (N, 3, 3)
-    vol_R = jnp.sqrt(jnp.maximum(jnp.linalg.det(g_L), 0.0))        # (N,)
-
-    # Omega on the g_k4-orthonormal frame (modulus correct; sign carries the
-    # gauge ambiguity of the L-orientation, handled below via the phase fit).
-    eps = 1e-30
-    Omega_orth = Omega_R / (vol_R + eps)
 
     # Global phase theta: Kuramoto-style on Omega_orth^2 (mod-pi identifies
     # theta and theta+pi, matching the L-orientation gauge).
