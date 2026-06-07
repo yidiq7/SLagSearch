@@ -221,11 +221,13 @@ def main() -> None:
                         help="If given, save a dict of all refined points "
                              "and their distances/residuals to this pkl.")
     parser.add_argument("--save_scatter", type=Path, default=None,
-                        help="If given, save a d_FS(P,A) vs d_FS(P,B) "
-                             "scatter PNG over all in-lens converged "
-                             "inits. Useful for telling 'two thin shells' "
-                             "(real gap) apart from a continuous smear "
-                             "(connected submanifold).")
+                        help="Path for the d_FS(P,A) vs d_FS(P,B) scatter "
+                             "PNG over all in-lens converged inits. "
+                             "Default: <coeffs_dir>/bridge_scatter_"
+                             "a<a_idx>_b<b_idx>.png. Pass --no_scatter "
+                             "to skip plotting entirely.")
+    parser.add_argument("--no_scatter", action="store_true",
+                        help="Skip the d_FS scatter PNG entirely.")
     parser.add_argument("--top_k_report", type=int, default=10,
                         help="Print the top-K bridge candidates "
                              "(default 10).")
@@ -421,45 +423,55 @@ def main() -> None:
               "(Newton drifted back along the geodesic).")
 
     # ----- d_A vs d_B scatter PNG ------------------------------------
-    if args.save_scatter is not None:
+    if not args.no_scatter:
+        scatter_path = args.save_scatter
+        if scatter_path is None:
+            scatter_path = (args.coeffs.parent /
+                            f"bridge_scatter_a{args.a_idx}_"
+                            f"b{args.b_idx}.png")
         mask = converged & in_lens
         n_plot = int(mask.sum())
         if n_plot == 0:
             print(f"\n  No converged in-lens points to plot; skipping "
-                  f"{args.save_scatter}.")
+                  f"{scatter_path}.")
         else:
             import matplotlib
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
-            fig, ax = plt.subplots(figsize=(6, 6))
+            fig, ax = plt.subplots(figsize=(7, 7))
             ax.scatter(d_to_A[mask], d_to_B[mask],
-                       s=4, alpha=0.4, edgecolors="none")
-            # Triangle-inequality lower-bound line: d_A + d_B >= theta_ab,
+                       s=4, alpha=0.4, edgecolors="none",
+                       label=f"in-lens converged P  (n = {n_plot})")
+            # FS triangle-inequality lower bound: d_A + d_B >= theta_ab,
             # with equality iff P lies on the FS geodesic from A to B.
             xs = np.linspace(0.0, theta_ab, 64)
             ax.plot(xs, theta_ab - xs, "k--", lw=1,
                     label=r"$d_A + d_B = \theta$  (geodesic)")
             ax.axhline(theta_ab, color="r", lw=1, ls=":",
-                       label=r"lens boundary  ($d_B = \theta$)")
+                       label=r"lens boundary  ($d = \theta$)")
             ax.axvline(theta_ab, color="r", lw=1, ls=":")
-            ax.scatter([0.0], [theta_ab], marker="*", s=120,
-                       color="C2", label=f"A (d_FS=0, {theta_ab:.3f})")
-            ax.scatter([theta_ab], [0.0], marker="*", s=120,
-                       color="C3", label=f"B ({theta_ab:.3f}, d_FS=0)")
-            ax.set_xlabel(r"$d_{FS}(P, A)$")
-            ax.set_ylabel(r"$d_{FS}(P, B)$")
+            ax.scatter([0.0], [theta_ab], marker="*", s=140,
+                       color="C2", edgecolors="black", linewidths=0.5,
+                       label="A")
+            ax.scatter([theta_ab], [0.0], marker="*", s=140,
+                       color="C3", edgecolors="black", linewidths=0.5,
+                       label="B")
+            ax.set_xlabel(r"$d_{FS}(P,\, A)$", fontsize=12)
+            ax.set_ylabel(r"$d_{FS}(P,\, B)$", fontsize=12)
             ax.set_xlim(-0.01, theta_ab * 1.05)
             ax.set_ylim(-0.01, theta_ab * 1.05)
-            ax.set_aspect("equal")
-            ax.set_title(f"Bridge candidates  "
-                         f"(n_plot={n_plot}, theta={theta_ab:.4f})")
-            ax.legend(fontsize=8, loc="lower left")
-            ax.grid(alpha=0.2)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(
+                rf"Bridge candidates: $d_{{FS}}(P,A)$ vs $d_{{FS}}(P,B)$"
+                f"  ($\\theta$ = {theta_ab:.4f})",
+                fontsize=13)
+            ax.legend(fontsize=9, loc="lower left")
+            ax.grid(True, linestyle="--", alpha=0.6)
             fig.tight_layout()
-            fig.savefig(args.save_scatter, dpi=150)
+            fig.savefig(scatter_path, dpi=150)
             plt.close(fig)
-            print(f"\nSaved scatter: {args.save_scatter}  "
+            print(f"\nSaved scatter: {scatter_path}  "
                   f"({n_plot} in-lens converged points)")
 
     if args.save_pkl is not None:
