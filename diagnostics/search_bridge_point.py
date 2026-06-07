@@ -220,6 +220,12 @@ def main() -> None:
     parser.add_argument("--save_pkl", type=Path, default=None,
                         help="If given, save a dict of all refined points "
                              "and their distances/residuals to this pkl.")
+    parser.add_argument("--save_scatter", type=Path, default=None,
+                        help="If given, save a d_FS(P,A) vs d_FS(P,B) "
+                             "scatter PNG over all in-lens converged "
+                             "inits. Useful for telling 'two thin shells' "
+                             "(real gap) apart from a continuous smear "
+                             "(connected submanifold).")
     parser.add_argument("--top_k_report", type=int, default=10,
                         help="Print the top-K bridge candidates "
                              "(default 10).")
@@ -355,33 +361,53 @@ def main() -> None:
     print(f"  ... drifted back on B  (d_FS(P,B)<1e-3): {n_back_to_b}")
     print(f"  ==> BRIDGE distinct from A and B       : {n_bridge}")
 
-    # ----- top-K bridge candidates -----------------------------------
-    if n_bridge > 0:
-        score = np.maximum(d_to_A, d_to_B)
-        eligible = is_bridge
-        order = np.argsort(np.where(eligible, score, np.inf))
-        order = order[:min(args.top_k_report, int(eligible.sum()))]
+    # ----- top-K bridge candidates, two rankings ---------------------
+    def _print_topk(order, label, score_fn, score_label):
         print()
         print("-" * 72)
-        print(f"Top {len(order)} bridge candidates "
-              f"(ranked by max(d_FS(P, A), d_FS(P, B))):")
+        print(f"Top {len(order)} bridge candidates ({label}):")
         print(f"  {'rank':>4}  {'t_init':>7}  {'pert':>4}  "
               f"{'residual':>11}  {'d_FS(P,A)':>13}  "
-              f"{'d_FS(P,B)':>13}  {'max/theta':>9}")
+              f"{'d_FS(P,B)':>13}  {score_label:>11}")
         for rank, idx in enumerate(order, start=1):
             t_idx = int(t_idx_per_init[idx])
             p_idx = int(perturb_idx_per_init[idx])
-            ratio = float(score[idx] / theta_ab)
             print(f"  {rank:>4d}  {t_values[t_idx]:>7.3f}  "
                   f"{p_idx:>4d}  {residuals_np[idx]:>11.3e}  "
                   f"{d_to_A[idx]:>13.6e}  {d_to_B[idx]:>13.6e}  "
-                  f"{ratio:>9.3f}")
-        best = int(order[0])
+                  f"{score_fn(idx):>11.4e}")
+
+    if n_bridge > 0:
+        eligible = is_bridge
+
+        # Ranking A: max(d_A, d_B), smallest first -> "most centered" in
+        # the L_inf sense (favors candidates where BOTH distances are
+        # small).
+        score_max = np.maximum(d_to_A, d_to_B)
+        order_max = np.argsort(np.where(eligible, score_max, np.inf))
+        order_max = order_max[
+            :min(args.top_k_report, int(eligible.sum()))]
+        _print_topk(order_max,
+                    "ranked by max(d_FS(P, A), d_FS(P, B))",
+                    lambda i: float(score_max[i]), "max")
+
+        # Ranking B: |d_A - d_B|, smallest first -> "most symmetric"
+        # (favors candidates with d_A ~ d_B, i.e., near the midpoint of
+        # the lens regardless of how close to A and B they are).
+        score_diff = np.abs(d_to_A - d_to_B)
+        order_diff = np.argsort(np.where(eligible, score_diff, np.inf))
+        order_diff = order_diff[
+            :min(args.top_k_report, int(eligible.sum()))]
+        _print_topk(order_diff,
+                    "ranked by |d_FS(P, A) - d_FS(P, B)| (symmetric)",
+                    lambda i: float(score_diff[i]), "|d_A-d_B|")
+
+        # Detail on rank-1 of the max ranking.
+        best = int(order_max[0])
         best_t_idx = int(t_idx_per_init[best])
         best_p_idx = int(perturb_idx_per_init[best])
         print()
-        print(f"Best bridge candidate (rank 1):  "
-              f"t_init={t_values[best_t_idx]:.4f}, "
+        print(f"Best by max(d_A, d_B): t_init={t_values[best_t_idx]:.4f}, "
               f"perturb_idx={best_p_idx}")
         print(f"  d_FS(P, A) = {d_to_A[best]:.6e}")
         print(f"  d_FS(P, B) = {d_to_B[best]:.6e}")
@@ -393,6 +419,48 @@ def main() -> None:
     elif n_bridge_raw > 0:
         print("\n  All in-lens converged inits coincide with A or B "
               "(Newton drifted back along the geodesic).")
+
+    # ----- d_A vs d_B scatter PNG ------------------------------------
+    if args.save_scatter is not None:
+        mask = converged & in_lens
+        n_plot = int(mask.sum())
+        if n_plot == 0:
+            print(f"\n  No converged in-lens points to plot; skipping "
+                  f"{args.save_scatter}.")
+        else:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(6, 6))
+            ax.scatter(d_to_A[mask], d_to_B[mask],
+                       s=4, alpha=0.4, edgecolors="none")
+            # Triangle-inequality lower-bound line: d_A + d_B >= theta_ab,
+            # with equality iff P lies on the FS geodesic from A to B.
+            xs = np.linspace(0.0, theta_ab, 64)
+            ax.plot(xs, theta_ab - xs, "k--", lw=1,
+                    label=r"$d_A + d_B = \theta$  (geodesic)")
+            ax.axhline(theta_ab, color="r", lw=1, ls=":",
+                       label=r"lens boundary  ($d_B = \theta$)")
+            ax.axvline(theta_ab, color="r", lw=1, ls=":")
+            ax.scatter([0.0], [theta_ab], marker="*", s=120,
+                       color="C2", label=f"A (d_FS=0, {theta_ab:.3f})")
+            ax.scatter([theta_ab], [0.0], marker="*", s=120,
+                       color="C3", label=f"B ({theta_ab:.3f}, d_FS=0)")
+            ax.set_xlabel(r"$d_{FS}(P, A)$")
+            ax.set_ylabel(r"$d_{FS}(P, B)$")
+            ax.set_xlim(-0.01, theta_ab * 1.05)
+            ax.set_ylim(-0.01, theta_ab * 1.05)
+            ax.set_aspect("equal")
+            ax.set_title(f"Bridge candidates  "
+                         f"(n_plot={n_plot}, theta={theta_ab:.4f})")
+            ax.legend(fontsize=8, loc="lower left")
+            ax.grid(alpha=0.2)
+            fig.tight_layout()
+            fig.savefig(args.save_scatter, dpi=150)
+            plt.close(fig)
+            print(f"\nSaved scatter: {args.save_scatter}  "
+                  f"({n_plot} in-lens converged points)")
 
     if args.save_pkl is not None:
         out = {
