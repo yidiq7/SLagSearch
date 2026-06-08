@@ -262,18 +262,31 @@ def main():
     det_k4_X = np.real(det_k4_X_c)
 
     # --- Step 1: CY fit and Omega rescaling ---
-    # c = <det(g_k4|_X) / |Omega|^2>  (single global constant fitted from data).
-    # Rescale Omega -> sqrt(c) Omega so |Omega'|^2 = c |Omega|^2.
-    # CY identity is then det(g_k4|_X) ~= |Omega'|^2 pointwise.
+    # c = det(g_k4|_X) / |Omega|^2 should be a single global constant if the
+    # k=4 metric is Ricci-flat. We use the MEDIAN as the global c (robust to
+    # the long-tail outliers that dominate the mean: a few points where the
+    # IFT basis is poorly conditioned or |q_max| is small give c_pointwise
+    # values orders of magnitude above the bulk).
     c_pointwise = det_k4_X / omega_sq
+    c_pcts = np.percentile(c_pointwise, [1, 5, 25, 50, 75, 95, 99])
     c_mean = float(np.mean(c_pointwise))
-    c_std  = float(np.std(c_pointwise))
-    omega_sq_rescaled = c_mean * omega_sq
-    cy_residual_std = float(np.std(det_k4_X / omega_sq_rescaled))
-    print(f"  c = <det(g_k4|_X) / |Omega|^2> = {c_mean:.4e}  (std/<c> = {c_std/c_mean:.4f})")
-    print(f"  After rescaling Omega -> sqrt(c) Omega:")
-    print(f"    pointwise CY residual std (det(g_k4|_X) / |Omega'|^2) = {cy_residual_std:.4f}")
-    print(f"    ^ should be small if the k=4 metric is approximately Ricci-flat on X.")
+    c_med  = float(c_pcts[3])
+    c_min  = float(np.min(c_pointwise))
+    c_max  = float(np.max(c_pointwise))
+    print(f"  c_pointwise = det(g_k4|_X) / |Omega|^2:")
+    print(f"    mean   = {c_mean:.4e}    median = {c_med:.4e}")
+    print(f"    min    = {c_min:.4e}    max    = {c_max:.4e}")
+    print(f"    percentiles  (1, 5, 25, 50, 75, 95, 99):")
+    print(f"      " + "  ".join(f"{p:.3e}" for p in c_pcts))
+    # Use median as the CY constant (robust to tail).
+    c_use = c_med
+    omega_sq_rescaled = c_use * omega_sq
+    cy_residual = det_k4_X / omega_sq_rescaled
+    cy_res_pcts = np.percentile(cy_residual, [5, 50, 95])
+    print(f"  After rescaling Omega -> sqrt(c_median) * Omega:")
+    print(f"    CY residual (det(g_k4|_X) / |Omega'|^2) percentiles (5, 50, 95):")
+    print(f"      " + "  ".join(f"{p:.4f}" for p in cy_res_pcts))
+    print(f"    ^ should be ~1 in the bulk if k=4 is approximately Ricci-flat.")
 
     # --- Step 2: two mass-function J's ---
     # J_omega = (rescaled |Omega|^2) / det(g_FS|_X)            (Omega-route)
