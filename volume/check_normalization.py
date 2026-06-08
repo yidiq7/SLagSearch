@@ -337,6 +337,26 @@ def main():
     print(f"      " + "  ".join(f"{p:.4f}" for p in cy_res_pcts))
     print(f"    ^ should be ~1 in the bulk if k=4 is approximately Ricci-flat.")
 
+    # Headrick-Nassar energy functional: EE = Var[eta], with
+    #     eta = v / Mean[v]   (here v = c_pointwise)
+    # normalised so Mean[eta] = 1 by construction; their sigma = MeanDev[eta].
+    # Lower = closer to Ricci-flat. The full-sample value is dominated by
+    # the IFT outliers visible in the c_pointwise percentiles above (an
+    # artefact of our chart, not of the metric); the "bulk" version (5th-95th
+    # percentile of c_pointwise) gives the H-N loss on well-conditioned points.
+    mask = (c_pointwise >= c_pcts[1]) & (c_pointwise <= c_pcts[5])  # 5th-95th
+    bulk = c_pointwise[mask]
+    eta_full = c_pointwise / c_mean
+    eta_bulk = bulk / np.mean(bulk)
+    EE_full    = float(np.var(eta_full))
+    sigma_full = float(np.mean(np.abs(eta_full - 1.0)))
+    EE_bulk    = float(np.var(eta_bulk))
+    sigma_bulk = float(np.mean(np.abs(eta_bulk - 1.0)))
+    print(f"  H-N energy functional EE = Var[eta]   (eta = c_pointwise / Mean[c]):")
+    print(f"    full sample:              EE = {EE_full:.4e}   sigma = {sigma_full:.4e}")
+    print(f"    bulk (5th-95th pct):      EE = {EE_bulk:.4e}   sigma = {sigma_bulk:.4e}")
+    print(f"    ^ small EE_bulk = k=4 close to Ricci-flat on the well-conditioned core.")
+
     # --- Step 2: two mass-function J's ---
     # J_omega = (rescaled |Omega|^2) / det(g_FS|_X)            (Omega-route)
     # J_k4    = det(g_k4|_X)         / det(g_FS|_X)            (direct pullback)
