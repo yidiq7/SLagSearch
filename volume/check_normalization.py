@@ -213,10 +213,12 @@ def _real_metric_batch_k4(z_complex, patch_indices):
 # --------------------------------------------------------------------------
 
 V_6 = float(np.pi ** 3 / 6.0)  # unit-ball volume in R^6
+V_8 = float(np.pi ** 4 / 24.0)  # unit-ball volume in R^8 (CP^4 ambient diagnostic)
 
 # Convert k-NN G-volume to the Kahler volume omega^n/n!. See the module
 # docstring (equation (*)). For the n=3 complex threefold X this is 2^3 = 8.
 KAHLER_FROM_G_VOL = 2 ** 3
+KAHLER_FROM_G_VOL_CP4 = 2 ** 4   # for the n=4 ambient CP^4 diagnostic
 
 
 def volume_knn_d6(points_real, real_metrics, k_neighbors, chunk_size):
@@ -236,6 +238,45 @@ def volume_knn_d6(points_real, real_metrics, k_neighbors, chunk_size):
     rho_hat = k_neighbors / (N * V_6 * R_k ** 6)
     vol_G = float(jnp.mean(1.0 / rho_hat))
     return vol_G, np.asarray(R_k)
+
+
+# --------------------------------------------------------------------------
+# CP^4 ambient diagnostic
+#
+# Bypasses the hypersurface X entirely. Generates a fresh FS-uniform sample
+# in CP^4 (Gaussian-iid in C^5, which by U(5)-invariance of the Gaussian
+# induces dvol_FS on CP^4) and runs the exact same metric assembly + k-NN
+# code on it. The expected result is the known cohomological volume
+#
+#     Vol(CP^4)  =  (2 pi)^4 / 4!  ≈  64.939     (Kahler convention).
+#
+# If this comes out close to 65, the metric + _assemble_metric_tensor +
+# _compute_R_k_chunked machinery is internally consistent and any 10x bias
+# observed on X is from the hypersurface restriction / sampling on X.
+# If this also comes out ~10x low, the bug is in the FS metric assembly or
+# the k-NN distance computation itself, not anything X-specific.
+# --------------------------------------------------------------------------
+
+def _diagnostic_cp4_volume(n_samples, k_neighbors, chunk_size, seed):
+    """Vol(CP^4) via k-NN on a fresh Gaussian-iid sample in C^5."""
+    rng = np.random.default_rng(seed + 1)   # offset to avoid collision with main sample
+    z_real = rng.normal(0.0, 1.0, (n_samples, 5))
+    z_imag = rng.normal(0.0, 1.0, (n_samples, 5))
+    z = jnp.asarray(z_real + 1j * z_imag)
+
+    patch_indices = determine_patches_batch(z)
+    real_metrics = _real_metric_batch_FS(z, patch_indices)
+
+    R_k = _compute_R_k_chunked(
+        z, patch_indices, real_metrics, k_neighbors, chunk_size,
+    )
+
+    N = int(z.shape[0])
+    # Real ambient dim of CP^4 is 8, so V_8 * R^8 (NOT V_6 * R^6 as for X).
+    rho_hat = k_neighbors / (N * V_8 * R_k ** 8)
+    Vol_G = float(jnp.mean(1.0 / rho_hat))
+    Vol_K = KAHLER_FROM_G_VOL_CP4 * Vol_G
+    return Vol_G, Vol_K, np.asarray(R_k)
 
 
 # --------------------------------------------------------------------------
@@ -456,6 +497,34 @@ def main():
     print("  Way 1 vs Way 2 (same mass) -> consistency of k-NN density estimator.")
     print("  Mass = Omega vs Mass = det g_k4 (same way) -> k=4 CY-residual error.")
     print("  Direct Vol_k4_kNN vs Way 2 -> k-NN with g_k4 vs k-NN with g_FS.")
+
+    # --- Diagnostic (C): Vol(CP^4) on a fresh FS-uniform sample in C^5 ---
+    print("\n" + "=" * 70)
+    print("Diagnostic: Vol(CP^4) via k-NN on a fresh Gaussian-iid sample in C^5")
+    print("=" * 70)
+    print("Bypasses the hypersurface X entirely. Same metric assembly +")
+    print("_compute_R_k_chunked, but d=8 ambient k-NN on FS-uniform samples in CP^4.")
+    print(f"Expected: Vol(CP^4) = (2 pi)^4 / 4! = {(2*np.pi)**4/24:.4f}  (Kahler).")
+    print()
+    vG_cp4, vK_cp4, R_cp4 = _diagnostic_cp4_volume(
+        args.n_subsample, args.k_neighbors, args.chunk_size, args.seed,
+    )
+    target_cp4_K = (2 * np.pi) ** 4 / 24.0
+    target_cp4_G = target_cp4_K / KAHLER_FROM_G_VOL_CP4
+    expected_R_cp4 = (args.k_neighbors * target_cp4_G
+                      / (args.n_subsample * V_8)) ** (1.0 / 8.0)
+    print(f"  Vol(CP^4)_kNN     = {vK_cp4:.4f}    "
+          f"(G-vol {vG_cp4:.4f} x {KAHLER_FROM_G_VOL_CP4})")
+    print(f"  expected Vol(K)   = {target_cp4_K:.4f}")
+    print(f"  ratio (got/exp)   = {vK_cp4 / target_cp4_K:.4f}")
+    print(f"  median R_k_CP4    = {float(np.median(R_cp4)):.4f}    "
+          f"(expected R_k ≈ {expected_R_cp4:.4f} for uniform)")
+    print()
+    print("  Interpretation:")
+    print("    ratio ≈ 1.0   -> metric + k-NN are correct; the 10x bias on X")
+    print("                     is in the hypersurface restriction / sampling.")
+    print("    ratio ≈ 0.1   -> bug is in the metric assembly or k-NN distance")
+    print("                     itself, independent of the hypersurface.")
 
 
 if __name__ == "__main__":
