@@ -82,11 +82,32 @@ from volume.compute_volume import _compute_R_k_chunked
 # --------------------------------------------------------------------------
 
 def _load_points_real(path):
+    """Load homogeneous points and normalise to z[argmax|z|] = 1.
+
+    The metric code (calculate_complex_metric_FS / _k4) silently assumes
+    this patch normalisation: it does delete_index(z, p) to extract
+    inhomogeneous coords WITHOUT dividing by z[p]. Raw MLGeometry pickles
+    are *not* normalised (they store c*a + b directly from solve_poly,
+    pre-autopatch), so every downstream metric / k-NN / J / c_pointwise
+    eval is wrong unless we normalise here.
+    """
     with open(path, "rb") as f:
         arr = np.asarray(pickle.load(f))
+
+    # Accept either (N, 5) complex or (N, 10) real-form [Re|Im].
     if np.iscomplexobj(arr):
-        arr = np.concatenate([np.real(arr), np.imag(arr)], axis=1)
-    return jnp.asarray(arr)
+        z = arr
+    else:
+        z = arr[:, :5] + 1j * arr[:, 5:]
+
+    # Normalise: divide each point by z[argmax|z|] so z[patch_idx] = 1.
+    max_idx = np.argmax(np.abs(z), axis=1)
+    denoms = z[np.arange(z.shape[0]), max_idx]
+    z = z / denoms[:, None]
+
+    # Convert back to real form (N, 10) = [Re | Im].
+    arr_real = np.concatenate([np.real(z), np.imag(z)], axis=1)
+    return jnp.asarray(arr_real)
 
 
 # --------------------------------------------------------------------------
@@ -258,13 +279,26 @@ def volume_knn_d6(points_real, real_metrics, k_neighbors, chunk_size):
 # --------------------------------------------------------------------------
 
 def _diagnostic_cp4_volume(n_samples, k_neighbors, chunk_size, seed):
-    """Vol(CP^4) via k-NN on a fresh Gaussian-iid sample in C^5."""
+    """Vol(CP^4) via k-NN on a fresh Gaussian-iid sample in C^5.
+
+    IMPORTANT: calculate_complex_metric_FS(z, p) silently assumes z[p] = 1
+    (it does delete_index(z, p) to extract inhomogeneous coords without ever
+    dividing by z[p]). For raw Gaussian samples z[p] is some complex number
+    of magnitude ~2, not 1, so we MUST normalise before computing the metric.
+    """
     rng = np.random.default_rng(seed + 1)   # offset to avoid collision with main sample
     z_real = rng.normal(0.0, 1.0, (n_samples, 5))
     z_imag = rng.normal(0.0, 1.0, (n_samples, 5))
     z = jnp.asarray(z_real + 1j * z_imag)
 
     patch_indices = determine_patches_batch(z)
+
+    # Normalise: divide each sample by z[patch_idx] so that z[patch_idx] = 1.
+    # Without this, calculate_complex_metric_FS gets the wrong inhomogeneous
+    # coordinates and silently produces a wrong metric.
+    denoms = z[jnp.arange(n_samples), patch_indices]
+    z = z / denoms[:, None]
+
     real_metrics = _real_metric_batch_FS(z, patch_indices)
 
     R_k = _compute_R_k_chunked(
@@ -323,6 +357,25 @@ def main():
 
     z_complex = convert_real_to_complex_batch(points_sub)
     patch_indices = determine_patches_batch(z_complex)
+
+    # Sanity check: calculate_complex_metric_FS(z, p) silently assumes
+    # z[p] = 1 (it does delete_index without dividing by z[p]). If the
+    # loaded point cloud has unnormalised homogeneous coordinates (|z[p]|
+    # spread across a range), every metric evaluation here is wrong and
+    # every k-NN volume will be biased. If |z[p]| ≈ 1 for all points, the
+    # cloud is normalised and the metric is correct.
+    z_at_patch = z_complex[jnp.arange(z_complex.shape[0]), patch_indices]
+    mag_at_patch = np.asarray(jnp.abs(z_at_patch))
+    print(f"\nSanity check: |z[patch_idx]| over loaded points "
+          f"(expect all = 1.0 if normalised):")
+    print(f"  min    = {float(np.min(mag_at_patch)):.4e}    "
+          f"max    = {float(np.max(mag_at_patch)):.4e}")
+    print(f"  median = {float(np.median(mag_at_patch)):.4e}    "
+          f"std    = {float(np.std(mag_at_patch)):.4e}")
+    if np.max(np.abs(mag_at_patch - 1.0)) > 1e-6:
+        print(f"  WARNING: points are NOT normalised; metric is computed at the")
+        print(f"  wrong zeta. Every k-NN volume below is biased. Re-pickle the")
+        print(f"  cloud as z / z[argmax|z|] before using.")
 
     # Per-point diagnostics in the IFT basis: det(g_FS|_X), det(g_k4|_X),
     # |Omega|^2. These don't use k-NN at all; just per-point metric + |Omega|^2.
