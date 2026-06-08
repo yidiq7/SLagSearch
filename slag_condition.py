@@ -371,7 +371,14 @@ def compute_holomorphic_form(
         Omega|_L has an intrinsic +-1 gauge ambiguity (orientation of L)
         anyway; mod-pi fitness (compute_special_condition_fitness) treats
         theta and theta+pi as equivalent, making the per-patch sign moot.
+
+        Defensive normalisation: scale to z[patch_idx] = 1. The closed-form
+        cy_hypersurface(z, psi) = sum(z^5) + 1 + psi*prod(z) below implicitly
+        assumes z[patch] = 1; without normalisation dfdz is off by lambda^4
+        on raw homogeneous coords. Idempotent on already-normalised input.
         """
+        # Defensive patch normalisation.
+        point = point / point[patch_idx]
         # Get the 4 affine coordinates (excluding the patch coordinate)
         affine_coords = delete_index(point, patch_idx)
 
