@@ -25,8 +25,8 @@ def calculate_complex_metric_old(z: jnp.ndarray, patch_index: int) -> jnp.ndarra
     Returns:
         A (4, 4) complex array for the Hermitian metric g_ab_bar.
     """
-    # Inhomogeneous coordinates (zeta) are the other 4 coordinates
-    zeta = delete_index(z, patch_index)
+    # Inhomogeneous coordinates (zeta) after patch normalisation.
+    zeta = delete_index(z / z[patch_index], patch_index)
 
     # Denominator for the metric formula: 1 + |zeta|^2
     norm_sq_zeta = 1.0 + jnp.sum(jnp.abs(zeta)**2)
@@ -59,8 +59,14 @@ def calculate_complex_metric_FS(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     Returns:
         A (4, 4) complex array for the Hermitian metric g_ab_bar.
     """
-    # Inhomogeneous coordinates (zeta) are the other 4 coordinates
-    zeta = delete_index(z, patch_index)
+    # Inhomogeneous coordinates (zeta) are the other 4 coordinates after
+    # patch normalisation z -> z / z[patch_index]. The division is
+    # idempotent on already-normalised input (the Newton-refined min_set
+    # always satisfies z[patch] = 1 via determine_patch_and_rescale_single),
+    # but makes the function safe on raw homogeneous coordinates too --
+    # without it K = log(1 + |z[other]|^2) would silently use the wrong
+    # zeta and produce a metric off by a point-dependent factor.
+    zeta = delete_index(z / z[patch_index], patch_index)
 
     def kahler_potential(zeta_coords: jnp.ndarray, zeta_bar_coords: jnp.ndarray) -> float:
         """
@@ -168,8 +174,10 @@ def calculate_complex_metric_k4(z: jnp.ndarray, patch_index: int) -> jnp.ndarray
     #   [5]: (4,1,0,0,0)  ->  20 monomials
     #   [6]: (5,0,0,0,0)  ->   5 monomials
 
-    # Inhomogeneous coordinates (zeta) are the other 4 coordinates
-    zeta = delete_index(z, patch_index)
+    # Inhomogeneous coordinates (zeta) after patch normalisation
+    # (idempotent on already-normalised input; see calculate_complex_metric_FS
+    # above for why this is needed).
+    zeta = delete_index(z / z[patch_index], patch_index)
 
     # Headrick-Nassar metric coefficients for the Fermat quintic.
     # degree=5 (commented out):
