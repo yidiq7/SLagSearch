@@ -66,16 +66,19 @@ def _load_points_real(path):
 # --------------------------------------------------------------------------
 # Pointwise J(x) = dvol_{k=4} / dvol_FS on X
 #
-# For two Kahler metrics g, g' on P^4 and the complex hypersurface
-# X = {Q = 0}, the volume-form ratio on X is
+# For two Kahler metrics g, g' on P^N and the complex hypersurface X = {Q=0},
+# the induced (N-1)-dim Hermitian metrics satisfy
 #
-#   dvol_X_g / dvol_X_g'  =  (det g / det g') * (|dQ|^2_g' / |dQ|^2_g),
+#     dvol_X_g / dvol_X_g'  =  det(g|_X) / det(g'|_X)             (intrinsic)
+#                           =  (det g / det g') * (|dQ|^2_g / |dQ|^2_g')
 #
-# where |dQ|^2_g = (d_a Q)^* g^{a bbar} d_b Q is computed with the inverse
-# Kahler metric. The factor (det g / det g') is the volume-form ratio on the
-# ambient P^4; the |dQ|^2 ratio accounts for the relative normal-direction
-# length, since the volume form on X is dvol_P / |dQ|^2_g (with appropriate
-# constants that cancel in the ratio).
+# where |dQ|^2_g = (d_a Q)^* g^{a bbar} (d_b Q). For uniform scaling g = lambda g',
+# det ratio = lambda^N and |dQ|^2 ratio = 1/lambda, giving lambda^{N-1}, which
+# matches the Kahler scaling (omega|_X)^{N-1} ~ lambda^{N-1}.
+#
+# (The first version of this script had |dQ|^2_g' / |dQ|^2_g, which gives
+# lambda^{N+1} instead of lambda^{N-1} -- that was wrong and produced
+# <J> ~ 1177 instead of ~64. Fixed.)
 #
 # At psi = 0 the gradient is dQ/d zeta_i = 5 zeta_i^4 in inhomogeneous coords.
 # --------------------------------------------------------------------------
@@ -85,38 +88,78 @@ def _dQ_psi0(zeta):
     return 5.0 * zeta ** 4
 
 
-def _per_point_J(z_complex, patch_idx):
-    """J(x) = (det g_k4 / det g_FS) * (|dQ|^2_FS / |dQ|^2_k4) at one point."""
+# --------------------------------------------------------------------------
+# Per-point diagnostics in the IFT (implicit-function-theorem) basis of T_x X.
+#
+# At each point on X = {Q = 0}, pick max_idx = argmax |dQ/dzeta_i|. The
+# implicit-function theorem says X is locally parametrised by the 3 other
+# inhomogeneous coords {zeta_i : i != max_idx}, with tangent basis
+#
+#     e_i = d/dzeta_i  -  (dQ/dzeta_i / dQ/dzeta_max) * d/dzeta_max
+#
+# for each kept index i. In this chart:
+#
+#     Omega = (sign / dQ/dzeta_max) * dzeta_a ^ dzeta_b ^ dzeta_c
+#     |Omega|^2 = 1 / |dQ/dzeta_max|^2.
+#
+# Computing det(g|_X) in this same IFT basis (3x3 Hermitian Gram det) lets
+# us compare det(g_k4|_X) directly against |Omega|^2 with no chart factors
+# to track. The Calabi-Yau Monge-Ampere identity says
+#
+#     det(g_CY|_X)  =  c * |Omega|^2     pointwise, c constant
+#
+# for any Ricci-flat Kahler metric in a fixed Kahler class. The k=4
+# balanced metric satisfies this approximately. So fitting c globally and
+# then checking the pointwise residual det(g_k4|_X) / (c * |Omega|^2)
+# directly measures the k=4 metric's deviation from Ricci-flat.
+# --------------------------------------------------------------------------
+
+def _per_point_diagnostics(z_complex, patch_idx):
+    """Returns (det_g_FS_X, det_g_k4_X, omega_sq) at one point, all in the
+    IFT basis of T_x X."""
     g_FS = calculate_complex_metric_FS(z_complex, patch_idx)
     g_k4 = calculate_complex_metric_k4(z_complex, patch_idx)
 
-    det_FS = jnp.real(jnp.linalg.det(g_FS))
-    det_k4 = jnp.real(jnp.linalg.det(g_k4))
+    zeta = delete_index(z_complex, patch_idx)                # (4,) complex
+    dQ = _dQ_psi0(zeta)                                       # (4,) complex
 
-    zeta = delete_index(z_complex, patch_idx)
-    dQ = _dQ_psi0(zeta)
+    max_idx = jnp.argmax(jnp.abs(dQ))
+    keep_mask = jnp.arange(4) != max_idx
+    keep_idx = jnp.sort(jnp.where(keep_mask, jnp.arange(4), 4))[:3]   # (3,)
 
-    # |dQ|^2_g = dQ^H g^{-1} dQ.
-    sol_FS = jnp.linalg.solve(g_FS, dQ)
-    sol_k4 = jnp.linalg.solve(g_k4, dQ)
-    normsq_FS = jnp.real(jnp.vdot(dQ, sol_FS))
-    normsq_k4 = jnp.real(jnp.vdot(dQ, sol_k4))
+    # Build the (4, 3) IFT-basis matrix E: column k = e_{keep_idx[k]}.
+    # E[keep_idx[k], k] = 1; E[max_idx, k] = -dQ[keep_idx[k]] / dQ[max_idx].
+    E = jnp.zeros((4, 3), dtype=z_complex.dtype)
+    E = E.at[keep_idx, jnp.arange(3)].set(1.0 + 0j)
+    E = E.at[max_idx, :].set(-dQ[keep_idx] / dQ[max_idx])
 
-    return (det_k4 / det_FS) * (normsq_FS / normsq_k4)
+    # Hermitian Gram on T_x X: G = E^H g E.
+    G_FS_X = jnp.conj(E).T @ g_FS @ E
+    G_k4_X = jnp.conj(E).T @ g_k4 @ E
+    det_FS_X = jnp.real(jnp.linalg.det(G_FS_X))
+    det_k4_X = jnp.real(jnp.linalg.det(G_k4_X))
+
+    # |Omega|^2 in the IFT chart: simply 1 / |dQ/dzeta_max|^2.
+    q_max = dQ[max_idx]
+    omega_sq = 1.0 / jnp.real(q_max * jnp.conj(q_max))
+
+    return det_FS_X, det_k4_X, omega_sq
 
 
 @jax.jit
-def _J_chunk(z_chunk, patch_chunk):
-    return jax.vmap(_per_point_J)(z_chunk, patch_chunk)
+def _diag_chunk(z_chunk, patch_chunk):
+    return jax.vmap(_per_point_diagnostics)(z_chunk, patch_chunk)
 
 
-def _compute_J_array(z_complex, patch_indices, chunk_size):
+def _compute_diagnostic_arrays(z_complex, patch_indices, chunk_size):
+    """Returns (det_FS_X, det_k4_X, omega_sq) as numpy arrays."""
     N = z_complex.shape[0]
-    out = []
+    dFS, dk4, oo = [], [], []
     for c0 in range(0, N, chunk_size):
         c1 = min(c0 + chunk_size, N)
-        out.append(np.asarray(_J_chunk(z_complex[c0:c1], patch_indices[c0:c1])))
-    return np.concatenate(out)
+        d1, d2, d3 = _diag_chunk(z_complex[c0:c1], patch_indices[c0:c1])
+        dFS.append(np.asarray(d1)); dk4.append(np.asarray(d2)); oo.append(np.asarray(d3))
+    return np.concatenate(dFS), np.concatenate(dk4), np.concatenate(oo)
 
 
 # --------------------------------------------------------------------------
@@ -201,52 +244,110 @@ def main():
     z_complex = convert_real_to_complex_batch(points_sub)
     patch_indices = determine_patches_batch(z_complex)
 
-    # (2) Pointwise J(x)
-    print("\nComputing J(x) pointwise...")
-    J_arr = _compute_J_array(z_complex, patch_indices, args.j_chunk_size)
-    J_mean = float(np.mean(J_arr))
-    J_std = float(np.std(J_arr))
-    J_med = float(np.median(J_arr))
-    print(f"  <J> = {J_mean:.4f}    median(J) = {J_med:.4f}    std(J)/<J> = {J_std / J_mean:.4f}")
+    # Per-point diagnostics in the IFT basis: det(g_FS|_X), det(g_k4|_X),
+    # |Omega|^2. These don't use k-NN at all; just per-point metric + |Omega|^2.
+    print("\nComputing per-point diagnostics (det g_FS|_X, det g_k4|_X, |Omega|^2)...")
+    det_FS_X, det_k4_X, omega_sq = _compute_diagnostic_arrays(
+        z_complex, patch_indices, args.j_chunk_size,
+    )
 
-    # (1) Vol_FS via k-NN
-    print("\nComputing Vol_FS(X) via k-NN, d=6...")
+    # --- Step 1: CY fit and Omega rescaling ---
+    # c = <det(g_k4|_X) / |Omega|^2>  (single global constant fitted from data).
+    # Rescale Omega -> sqrt(c) Omega so |Omega'|^2 = c |Omega|^2.
+    # CY identity is then det(g_k4|_X) ~= |Omega'|^2 pointwise.
+    c_pointwise = det_k4_X / omega_sq
+    c_mean = float(np.mean(c_pointwise))
+    c_std  = float(np.std(c_pointwise))
+    omega_sq_rescaled = c_mean * omega_sq           # = |Omega'|^2 at each point
+    cy_residual_std = float(np.std(det_k4_X / omega_sq_rescaled))
+    print(f"  c = <det(g_k4|_X) / |Omega|^2> = {c_mean:.6e}  (std/<c> = {c_std/c_mean:.4f})")
+    print(f"  After rescaling Omega -> sqrt(c) Omega:")
+    print(f"    pointwise CY residual std (det g_k4|_X / |Omega'|^2)  = {cy_residual_std:.4f}")
+    print(f"    ^ should be small if the k=4 metric is approximately Ricci-flat on X.")
+
+    # --- Step 2: two mass-function J's ---
+    # J_omega = (rescaled |Omega|^2) / det(g_FS|_X)            (Omega-route)
+    # J_k4    = det(g_k4|_X)         / det(g_FS|_X)            (direct pullback)
+    # Both are chart-invariant ratios of top-form densities on X. They agree
+    # pointwise to the CY-residual error.
+    J_omega = omega_sq_rescaled / det_FS_X
+    J_k4    = det_k4_X          / det_FS_X
+    Jw_mean = float(np.mean(J_omega))
+    Jk_mean = float(np.mean(J_k4))
+
+    # --- k-NN passes (FS distances and k=4 distances) ---
+    print("\nComputing k-NN passes (FS and k=4 distances, d=6)...")
     rm_FS = _real_metric_batch_FS(z_complex, patch_indices)
     Vol_FS_knn, R_k_FS = volume_knn_d6(points_sub, rm_FS, args.k_neighbors, args.chunk_size)
-    print(f"  Vol_FS(X)_knn   = {Vol_FS_knn:.4f}    median R_k_FS = {float(np.median(R_k_FS)):.4f}")
-
-    # (3) Vol_{k=4} via k-NN
-    print("\nComputing Vol_{k=4}(X) via k-NN, d=6...")
     rm_k4 = _real_metric_batch_k4(z_complex, patch_indices)
     Vol_k4_knn, R_k_k4 = volume_knn_d6(points_sub, rm_k4, args.k_neighbors, args.chunk_size)
-    print(f"  Vol_{{k=4}}(X)_knn = {Vol_k4_knn:.4f}    median R_k_k4 = {float(np.median(R_k_k4)):.4f}")
+    print(f"  Vol_FS(X)_kNN  = {Vol_FS_knn:.4f}   median R_k_FS = {float(np.median(R_k_FS)):.4f}")
+    print(f"  Vol_k4(X)_kNN  = {Vol_k4_knn:.4f}   median R_k_k4 = {float(np.median(R_k_k4)):.4f}")
 
-    # Topological predictions in the codebase's convention
-    pi3 = np.pi ** 3
-    Vol_FS_top = (2 * np.pi) ** 3 * 5.0 / 6.0     # = 8 pi^3 * 5/6
-    Vol_k4_donaldson = (8 * np.pi) ** 3 * 5.0 / 6.0  # = 512 pi^3 * 5/6
-    Vol_k4_via_J = Vol_FS_knn * J_mean
+    # --- Step 3: four estimators of Vol_k4 ---
+    # Way 1: point-cloud average. Sample is FS-uniform, so
+    #   Vol_k4 = integral over X of (rescaled Omega ∧ Omega-bar)
+    #          = integral of J * dVol_FS
+    # and the FS density in the integrand cancels with the implicit
+    # FS-sample weight, leaving
+    #   Vol_k4 ~= (Vol_FS_topological) * <J>_sample.
+    # We use Vol_FS_top = (2pi)^3 * 5/6 as the analytic anchor (codebase
+    # convention: omega = i d-dbar K, no 1/(2pi)).
+    #
+    # Way 2: same integral, but estimate Vol_FS pointwise via k-NN with FS
+    # distances. Per-point sample mass = 1/rho_hat_FS(x_i). Result:
+    #   Vol_k4 ~= sum_i (mass function)(x_i) / rho_hat_FS(x_i)
+    #          = (V_6 / k) * sum_i (mass function)(x_i) * R_k_FS(x_i)^6.
+    # This treats k-NN as the estimator of FS sampling density and runs
+    # the same Monte-Carlo integral against that density.
+    Vol_FS_top = (2 * np.pi) ** 3 * 5.0 / 6.0   # ≈ 206.71 (codebase convention)
 
-    print("\n=== Cross-checks ===")
-    print(f"Vol_FS(X) topological  (2pi)^3 * 5/6     = {Vol_FS_top:.4f}")
-    print(f"Vol_FS(X) k-NN                            = {Vol_FS_knn:.4f}")
-    print(f"  ratio (kNN / topological)              = {Vol_FS_knn / Vol_FS_top:.4f}")
+    R_k_FS6_sum_factor = V_6 / args.k_neighbors  # multiplier on Σ ... R_k_FS^6
+
+    # Way 1 (mass function integrated on the point cloud):
+    Vol_way1_Omega = Vol_FS_top * Jw_mean
+    Vol_way1_k4    = Vol_FS_top * Jk_mean
+
+    # Way 2 (mass function integrated via k-NN FS-density):
+    # The "mass function" here is the chart-invariant scalar that, multiplied
+    # by dVol_FS, gives dVol_k4. That's J_omega and J_k4 respectively.
+    R_k_FS6 = np.asarray(R_k_FS) ** 6
+    Vol_way2_Omega = R_k_FS6_sum_factor * float(np.sum(J_omega * R_k_FS6))
+    Vol_way2_k4    = R_k_FS6_sum_factor * float(np.sum(J_k4    * R_k_FS6))
+
+    # All four should approximate Vol_k4(X) (= (8pi)^3 * 5/6 if Donaldson).
+    # Divide each by (8pi)^3 to compare directly against the canonical 5/6.
+    eight_pi_cubed = (8 * np.pi) ** 3
+    five_sixths = 5.0 / 6.0
+
+    print("\n" + "=" * 70)
+    print("Four Vol_k4(X) estimators, compared to 5/6 (canonical)")
+    print("=" * 70)
+    print("Each is Vol_k4 in codebase units; the third column divides by (8pi)^3")
+    print("to recover the canonical-class number 5/6 (assuming Donaldson")
+    print("standard Kahler class for the codebase k=4 metric).")
     print()
-    print(f"Vol_{{k=4}}(X) k-NN                          = {Vol_k4_knn:.4f}")
-    print(f"Vol_{{k=4}}(X) via <J> . Vol_FS_knn          = {Vol_k4_via_J:.4f}")
-    print(f"  ratio (kNN / via_J)                    = {Vol_k4_knn / Vol_k4_via_J:.4f}")
+    fmt = "  {label:<48s}  {val:>12.4f}   {canon:>10.6f}"
+    print(f"  {'estimator':<48s}  {'Vol_k4':>12s}   {'/(8pi)^3':>10s}")
+    print(fmt.format(label="Way 1, mass = rescaled Omega ∧ Omega-bar",
+                     val=Vol_way1_Omega, canon=Vol_way1_Omega / eight_pi_cubed))
+    print(fmt.format(label="Way 1, mass = det(g_k4|_X)",
+                     val=Vol_way1_k4,    canon=Vol_way1_k4    / eight_pi_cubed))
+    print(fmt.format(label="Way 2, mass = rescaled Omega ∧ Omega-bar",
+                     val=Vol_way2_Omega, canon=Vol_way2_Omega / eight_pi_cubed))
+    print(fmt.format(label="Way 2, mass = det(g_k4|_X)",
+                     val=Vol_way2_k4,    canon=Vol_way2_k4    / eight_pi_cubed))
+    print(fmt.format(label="(reference) Vol_k4_kNN, direct k-NN with g_k4",
+                     val=Vol_k4_knn,     canon=Vol_k4_knn     / eight_pi_cubed))
+    print(fmt.format(label="(reference) Vol_FS_kNN, direct k-NN with g_FS",
+                     val=Vol_FS_knn,     canon=Vol_FS_knn     / (2 * np.pi) ** 3))
+    print(f"  {'target: 5/6':<48s}  {'':>12s}   {five_sixths:>10.6f}")
     print()
-    print(f"Vol_{{k=4}}(X) Donaldson prediction (8pi)^3*5/6 = {Vol_k4_donaldson:.4f}")
-    print(f"  ratio (kNN / Donaldson)                = {Vol_k4_knn / Vol_k4_donaldson:.4f}")
-    print()
-    print(f"<J> measured                              = {J_mean:.4f}")
-    print(f"<J> Donaldson-standard prediction (4^3)  = 64.0000")
-    print(f"  ratio (measured / 64)                  = {J_mean / 64.0:.4f}")
-    print()
-    print("If all ratios are close to 1, k-NN works and the codebase is in")
-    print("Donaldson-standard normalization. Deviations point to either k-NN")
-    print("bias (try larger --n_subsample / --k_neighbors) or a non-standard")
-    print("overall constant in `unique_coeffs` of calculate_complex_metric_k4.")
+    print("If all four estimators give ~5/6 (canonical), the codebase IS in")
+    print("Donaldson-standard normalization AND k-NN is reliable. Disagreements:")
+    print("  Way 1 vs Way 2 (same mass) -> consistency of k-NN density estimator.")
+    print("  Mass = Omega vs Mass = det g_k4 (same way) -> k=4 CY-residual error.")
+    print("  Direct Vol_k4_kNN vs Way 2 -> k-NN with g_k4 vs k-NN with g_FS.")
 
 
 if __name__ == "__main__":
