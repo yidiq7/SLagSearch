@@ -522,16 +522,11 @@ def volumes_kscan(
     c_med = float(np.median(c_pointwise))
     c_mean = float(np.mean(c_pointwise))
 
-<<<<<<< Updated upstream
-    # Rescale Omega so |Omega|_orth = 1 on T_x X for the calibration to give
-    # Vol(L) directly. Equivalent to Omega -> Omega * sqrt(c_med).
-=======
     # Rescale Omega so |Omega_orth| = 1 on the orthonormal X-frame, then
     # for a true sLag at optimal phase |Re(e^{-i theta} Omega_orth)| = 1
     # pointwise and Vol_B = mean(1/rho_hat) = Vol_A. Bare Omega has
     # |Omega|^2 = 1/c (intrinsic), so we MULTIPLY by sqrt(c) to get
     # |Omega_new|^2 = c * (1/c) = 1.
->>>>>>> Stashed changes
     Omega_orth_normalized = Omega_orth * jnp.sqrt(c_med)
     sum_sq = jnp.sum(Omega_orth_normalized ** 2)
     theta = jnp.angle(sum_sq) / 2.0
@@ -638,13 +633,8 @@ def main():
     print(f"  Monge-Ampere constant on the min_set:")
     print(f"    c_median = {summary['c_med']:.4e}    c_mean = {summary['c_mean']:.4e}")
     print(f"    Omega rescaled by sqrt(c_med) = {np.sqrt(summary['c_med']):.4e}")
-<<<<<<< Updated upstream
-    print(f"    (calibration: |Omega|_orth = 1 on T_x X, so Vol_B has same")
-    print(f"     geometric scale as Vol_A.)")
-=======
     print(f"    (calibration: |Omega_orth| = 1 on the orthonormal X-frame,")
     print(f"     so Vol_B has the same geometric scale as Vol_A.)")
->>>>>>> Stashed changes
     print()
     print("=" * 70)
     print("k-scan: Vol_A (k-NN density) and Vol_B (calibration form) on L")
@@ -657,10 +647,6 @@ def main():
     print()
     print(f"  fitted global phase theta = {summary['theta']:.6f}")
     print()
-<<<<<<< Updated upstream
-    print("The CY metric needs to be rescaled by (8pi)^3 to match the value 5/6 of the Fermat quintic")
-    print("Therefore, the volume A and B of the slag should be normalized by (8pi)^3/2")
-=======
     print("Interpretation:")
     print("  Vol_A and Vol_B both scale with k through rho_hat; the RATIO B/A")
     print("  is k-independent (the calibration density factors out).")
@@ -735,4 +721,3 @@ def main():
 
 if __name__ == "__main__":
     main()
->>>>>>> Stashed changes
