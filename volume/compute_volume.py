@@ -478,7 +478,7 @@ def volumes_kscan(
     yields all k's), and the Omega-orthonormal-frame pass across the scan.
     Only rho_hat and the two sums get re-evaluated per k.
 
-    Vol_B uses Omega rescaled by 1/sqrt(c_median), where
+    Vol_B uses Omega rescaled by sqrt(c_median), where
         c = det(g_k4|_X) / |Omega|^2
     is the Monge-Ampere constant on X (constant on a Ricci-flat metric).
     With this rescaling, Vol_B has the same geometric scale as Vol_A: for
@@ -518,8 +518,8 @@ def volumes_kscan(
     c_mean = float(np.mean(c_pointwise))
 
     # Rescale Omega so |Omega|_orth = 1 on T_x X for the calibration to give
-    # Vol(L) directly. Equivalent to Omega -> Omega/sqrt(c_med).
-    Omega_orth_normalized = Omega_orth / jnp.sqrt(c_med)
+    # Vol(L) directly. Equivalent to Omega -> Omega * sqrt(c_med).
+    Omega_orth_normalized = Omega_orth * jnp.sqrt(c_med)
     sum_sq = jnp.sum(Omega_orth_normalized ** 2)
     theta = jnp.angle(sum_sq) / 2.0
     cal_density = jnp.abs(
@@ -624,7 +624,7 @@ def main():
     print()
     print(f"  Monge-Ampere constant on the min_set:")
     print(f"    c_median = {summary['c_med']:.4e}    c_mean = {summary['c_mean']:.4e}")
-    print(f"    Omega rescaled by 1/sqrt(c_med) = {1.0/np.sqrt(summary['c_med']):.4e}")
+    print(f"    Omega rescaled by sqrt(c_med) = {np.sqrt(summary['c_med']):.4e}")
     print(f"    (calibration: |Omega|_orth = 1 on T_x X, so Vol_B has same")
     print(f"     geometric scale as Vol_A.)")
     print()
@@ -639,37 +639,5 @@ def main():
     print()
     print(f"  fitted global phase theta = {summary['theta']:.6f}")
     print()
-    print("Interpretation:")
-    print("  Vol_A and Vol_B both scale with k through rho_hat; the RATIO B/A")
-    print("  is k-independent (the calibration density factors out).")
-    print()
-    print("  Vol_A stable across k -> k-NN estimator converged on this sample.")
-    print("  Vol_A drifts with k   -> sample-density non-uniformity dominates;")
-    print("                           prefer larger-k value as more reliable.")
-    print("  B/A close to 1        -> calibration holds, L is approximately sLag.")
-    print("  B/A < 1               -> deficit = <|cos(d_theta)|>; Vol_B is a")
-    print("                           lower bound on the true sLag volume.")
-    print()
-    print("  For a smooth sLag in this codebase's k=4 metric, both Vol_A and")
-    print(f"  Vol_B should approach (8 pi)^3 * 5/6 = {(8*np.pi)**3 * 5/6:.4f}.")
-
-    if args.save:
-        if args.run is None:
-            print("\n[warn] --save requires --run; skipping JSON write.")
-        else:
-            out_path = Path(args.run) / "volume_results.json"
-            with open(out_path, "w") as f:
-                json.dump({
-                    "kscan": results,
-                    "theta": summary["theta"],
-                    "c_med": summary["c_med"],
-                    "c_mean": summary["c_mean"],
-                    "N": N,
-                    "metric": "k4_fermat",
-                    "psi": str(args.psi),
-                }, f, indent=2)
-            print(f"\nSaved {out_path}")
-
-
-if __name__ == "__main__":
-    main()
+    print("The CY metric needs to be rescaled by (8pi)^3 to match the value 5/6 of the Fermat quintic")
+    print("Therefore, the volume A and B of the slag should be normalized by (8pi)^3/2")
