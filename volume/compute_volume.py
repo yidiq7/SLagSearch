@@ -480,12 +480,17 @@ def volumes_kscan(
 
     Vol_B uses Omega rescaled by sqrt(c_median), where
         c = det(g_k4|_X) / |Omega|^2
-    is the Monge-Ampere constant on X (constant on a Ricci-flat metric).
-    With this rescaling, Vol_B has the same geometric scale as Vol_A: for
-    a true sLag, Vol_B -> Vol_A in the k-NN limit, and both are
-    approximately (8 pi)^3 * 5/6 for a smooth sLag in the codebase's k=4
-    metric. Without the rescaling Vol_B is sqrt(c) ~ 5.9x larger than the
-    true volume (the bare Poincare-residue Omega isn't calibrated).
+    is the Monge-Ampere "constant" (constant on a Ricci-flat metric). The
+    bare Poincare-residue Omega in compute_holomorphic_form has intrinsic
+    norm |Omega|^2 = 1/c (in any chart, |Omega|^2 = |f|^2/det(g_X|_chart)
+    = omega_sq/det(g_X) = 1/c). After rescaling by sqrt(c) the calibrated
+    Omega satisfies |Omega|_orth = 1, so for a true sLag at the optimal
+    phase, |Re(e^{-i theta} Omega_orth)| = 1 pointwise and Vol_B -> Vol(L)
+    = Vol_A in the k-NN limit.
+
+    Without this rescaling Vol_B comes out a factor of 1/sqrt(c) ~ 0.17x
+    smaller than the geometric volume (so B/A = 0.029 = 1/c for a true
+    sLag, instead of B/A = 1).
     """
     psi_jnp = jnp.asarray(complex(psi))
     coeffs = jnp.asarray(coeffs)
@@ -517,8 +522,16 @@ def volumes_kscan(
     c_med = float(np.median(c_pointwise))
     c_mean = float(np.mean(c_pointwise))
 
+<<<<<<< Updated upstream
     # Rescale Omega so |Omega|_orth = 1 on T_x X for the calibration to give
     # Vol(L) directly. Equivalent to Omega -> Omega * sqrt(c_med).
+=======
+    # Rescale Omega so |Omega_orth| = 1 on the orthonormal X-frame, then
+    # for a true sLag at optimal phase |Re(e^{-i theta} Omega_orth)| = 1
+    # pointwise and Vol_B = mean(1/rho_hat) = Vol_A. Bare Omega has
+    # |Omega|^2 = 1/c (intrinsic), so we MULTIPLY by sqrt(c) to get
+    # |Omega_new|^2 = c * (1/c) = 1.
+>>>>>>> Stashed changes
     Omega_orth_normalized = Omega_orth * jnp.sqrt(c_med)
     sum_sq = jnp.sum(Omega_orth_normalized ** 2)
     theta = jnp.angle(sum_sq) / 2.0
@@ -625,8 +638,13 @@ def main():
     print(f"  Monge-Ampere constant on the min_set:")
     print(f"    c_median = {summary['c_med']:.4e}    c_mean = {summary['c_mean']:.4e}")
     print(f"    Omega rescaled by sqrt(c_med) = {np.sqrt(summary['c_med']):.4e}")
+<<<<<<< Updated upstream
     print(f"    (calibration: |Omega|_orth = 1 on T_x X, so Vol_B has same")
     print(f"     geometric scale as Vol_A.)")
+=======
+    print(f"    (calibration: |Omega_orth| = 1 on the orthonormal X-frame,")
+    print(f"     so Vol_B has the same geometric scale as Vol_A.)")
+>>>>>>> Stashed changes
     print()
     print("=" * 70)
     print("k-scan: Vol_A (k-NN density) and Vol_B (calibration form) on L")
@@ -639,5 +657,82 @@ def main():
     print()
     print(f"  fitted global phase theta = {summary['theta']:.6f}")
     print()
+<<<<<<< Updated upstream
     print("The CY metric needs to be rescaled by (8pi)^3 to match the value 5/6 of the Fermat quintic")
     print("Therefore, the volume A and B of the slag should be normalized by (8pi)^3/2")
+=======
+    print("Interpretation:")
+    print("  Vol_A and Vol_B both scale with k through rho_hat; the RATIO B/A")
+    print("  is k-independent (the calibration density factors out).")
+    print()
+    print("  Vol_A stable across k -> k-NN estimator converged on this sample.")
+    print("  Vol_A drifts with k   -> sample-density non-uniformity dominates;")
+    print("                           prefer larger-k value as more reliable.")
+    print("  B/A close to 1        -> calibration holds, L is approximately sLag.")
+    print("  B/A < 1               -> calibration deficit = <|Omega_orth|*|cos d_theta|>;")
+    print("                           Vol_B is a lower bound on Vol(L).")
+    print()
+    print("  Note: Vol(L) is set by the homology class [L] in H_3(X), NOT by")
+    print("  the ambient cohomological volume 5/6 (that's Vol_X^canonical for")
+    print("  the 6-real-dim ambient X). They're different dimensional volumes")
+    print("  ([length]^3 vs [length]^6) and Vol(L) does NOT have to be smaller.")
+    print("  The right reliability test is Vol_B/Vol_A -> 1 for a true sLag.")
+
+    # --- Canonical units conversion ---
+    # Two conversions take script G-convention codebase-k=4 volume to
+    # convention A (factor-of-2 in g_R) with canonical FS normalisation
+    # (omega satisfying integral_{CP^1} omega = 1):
+    #   (1) g_R^A = 2 g_R^B -> Vol scales by 2^{d/2} on a real d-manifold.
+    #   (2) omega_codebase_k4 = 8 pi * omega_FS_canonical
+    #       -> g scales by 8 pi -> Vol by (8 pi)^{d/2}.
+    # Combined: Vol_canonical = Vol_script * (2 / (8 pi))^{d/2}
+    #                         = Vol_script * (1 / (4 pi))^{d/2}.
+    # For d = 3 (L is 3-real-dim): factor (1/(4 pi))^{3/2} ~= 1/44.55.
+    # Sanity check: same conversion with d = 6 takes Vol_X^script ~= 1645
+    # back to Vol_X^canonical = 5/6.
+    canonical_factor_L = (1.0 / (4.0 * np.pi)) ** 1.5
+    print()
+    print("=" * 70)
+    print("Canonical-FS units  (Vol_X^canonical = 5/6 in this convention)")
+    print("=" * 70)
+    print(f"  Conversion factor for 3-real-dim L: "
+          f"(1/(4 pi))^(3/2) = {canonical_factor_L:.4e}")
+    print()
+    print(f"  {'k':>4}  {'Vol_A^can':>14}  {'Vol_B^can':>14}")
+    for r in results:
+        vA_can = r['vol_A'] * canonical_factor_L
+        vB_can = r['vol_B'] * canonical_factor_L
+        print(f"  {r['k']:>4}  {vA_can:>14.6f}  {vB_can:>14.6f}")
+    print()
+    print(f"  For reference: Vol_X^canonical = 5/6 = {5/6:.6f} (6-real-dim).")
+    print(f"  Vol(L) and Vol(X) have different dimensions; Vol(L) > 5/6 is fine.")
+
+    if args.save:
+        if args.run is None:
+            print("\n[warn] --save requires --run; skipping JSON write.")
+        else:
+            # Augment each row with canonical-FS-units volumes.
+            results_with_canonical = [
+                {**r,
+                 "vol_A_canonical": r["vol_A"] * canonical_factor_L,
+                 "vol_B_canonical": r["vol_B"] * canonical_factor_L}
+                for r in results
+            ]
+            out_path = Path(args.run) / "volume_results.json"
+            with open(out_path, "w") as f:
+                json.dump({
+                    "kscan": results_with_canonical,
+                    "theta": summary["theta"],
+                    "c_med": summary["c_med"],
+                    "c_mean": summary["c_mean"],
+                    "canonical_factor_L": canonical_factor_L,
+                    "N": N,
+                    "metric": "k4_fermat",
+                    "psi": str(args.psi),
+                }, f, indent=2)
+            print(f"\nSaved {out_path}")
+
+
+if __name__ == "__main__":
+    main()
+>>>>>>> Stashed changes
