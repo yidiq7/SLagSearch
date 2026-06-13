@@ -146,6 +146,9 @@ def plot_pairs(z: np.ndarray, color_values: np.ndarray, out_path: Path,
                             shrink=0.6, pad=0.02,
                             label=r"Lagrangian fitness  "
                                   r"$\exp(-10\,\|K_R\|_F / \|K_U\|_F)$")
+        # The colorbar otherwise inherits the scatter's low per-point alpha,
+        # rendering washed-out vs the overplotted (stacked, deep) points.
+        cbar.solids.set(alpha=1.0)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
