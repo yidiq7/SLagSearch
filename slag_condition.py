@@ -360,17 +360,29 @@ def compute_holomorphic_form(
     def compute_omega_single(point: jnp.ndarray, patch_idx: int, psi: jnp.ndarray):
         """Compute Omega for a single point in a specific patch.
 
-        Sign convention: an overall (-1)^max_idx factor.
-          - (-1)^max_idx: Poincare residue. Moving dw_max_idx to the front of
-            the ambient affine 4-form before taking the residue introduces
-            (-1)^max_idx, which is needed for different max_idx choices within
-            a patch to give the same Omega value.
+        Sign convention: the deterministic factor (-1)^(patch_idx + max_idx),
+        from the Griffiths/Poincare residue of the global holomorphic 3-form.
 
-        Note: the (-1)^patch_idx factor (Levi-Civita Euler form restriction)
-        was previously included here. It was dropped because the phase of
-        Omega|_L has an intrinsic +-1 gauge ambiguity (orientation of L)
-        anyway; mod-pi fitness (compute_special_condition_fitness) treats
-        theta and theta+pi as equivalent, making the per-patch sign moot.
+          - (-1)^patch_idx (patch sign): the global form is the residue of
+            Omega_0 = sum_i (-1)^i z_i dz_0^..^dz_i-hat^..^dz_4. In the patch
+            z[patch_idx]=1 only the i=patch_idx term survives (every other term
+            still wedges dz[patch_idx]=0), leaving
+            (-1)^patch_idx dw_0^dw_1^dw_2^dw_3 over the 4 affine coords in
+            increasing original-index order. Including it makes Omega the same
+            global form in every patch, so phases are comparable across patches
+            (matters for the mod-2*pi diagnostic histograms; the mod-pi GA/GD
+            fitness is invariant to this +-1).
+          - (-1)^max_idx (residue sign): moving dw_max_idx to the front of that
+            4-form before taking the residue gives (-1)^max_idx. With
+            get_Omega_coord returning the remaining 3 coords in increasing
+            order, this makes different max_idx choices agree on {f=0}.
+
+        Deliberately NOT corrected: the +-1 orientation gauge of L (the sign of
+        det(dw_c/dt) in compute_Omega_restriction, set by which 3 ambient coords
+        parametrise T_pL). It is a genuine geometric gauge -- mod-pi fitness is
+        invariant to it, and a signed (mod-2*pi) histogram may legitimately show
+        two phases for two disconnected components. No fixed coordinate reference
+        can pin it (every reference degenerates on a codim-1 locus of generic L).
 
         Defensive normalisation: scale to z[patch_idx] = 1. The closed-form
         cy_hypersurface(z, psi) = sum(z^5) + 1 + psi*prod(z) below implicitly
@@ -386,8 +398,10 @@ def compute_holomorphic_form(
 
         # Choose the one with the largest magnitude
         max_idx = jnp.argmax(jnp.abs(dfdz))
-        sign = jnp.where(max_idx % 2 == 0, 1.0, -1.0)
-        Omega = sign / dfdz[max_idx]
+        # Deterministic residue sign (-1)^(patch_idx + max_idx); see docstring.
+        patch_sign = jnp.where(patch_idx % 2 == 0, 1.0, -1.0)
+        residue_sign = jnp.where(max_idx % 2 == 0, 1.0, -1.0)
+        Omega = (patch_sign * residue_sign) / dfdz[max_idx]
 
         # Get the coordinate indices in the affine system
         Omega_coord = get_Omega_coord(max_idx)

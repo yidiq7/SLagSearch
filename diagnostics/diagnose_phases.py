@@ -1,10 +1,13 @@
 """Diagnose Omega phase concentration per patch.
 
 Computes phases of Omega restricted to L (chosen ansatz) using the production
-code path (with the (-1)^max_idx Poincaré-residue sign in
-compute_holomorphic_form -- the (-1)^patch_idx factor is intentionally dropped,
-see the comment there -- plus the canonical-basis sign correction in
-compute_Omega_restriction) and prints per-patch histograms.
+code path. compute_holomorphic_form carries the deterministic
+(-1)^(patch_idx + max_idx) sign (patch sign + Poincare-residue sign);
+compute_restriction conormally co-orients the tangent basis, pinning the +-1
+orientation gauge of L wherever L is transverse. The mod-2*pi phases below are
+therefore geometrically well defined except on the near-degenerate tail, which
+the printed transversality-margin summary quantifies. Prints per-patch
+histograms (all points + high-margin subset).
 
 Usage:
     python -m diagnostics.diagnose_phases --ansatz {d1,rp3} --n_bins 30
@@ -31,21 +34,23 @@ jax.config.update("jax_enable_x64", True)
 
 
 def compute_diagnostic_phases(min_set_real, coeffs, psi):
-    """Return (phases, patch_indices, max_idx) using the production code path."""
+    """Return (phases, patch_indices, max_idx, margin) via the production path."""
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set)
 
     jacobians = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, None, None))(
         min_set_real, patch_indices, coeffs, psi
     )
-    restrictions = jax.vmap(compute_restriction)(jacobians)
+    restrictions, margins = jax.vmap(
+        lambda j: compute_restriction(j, return_margin=True)
+    )(jacobians)
 
     Omega, max_idx, Omega_coord = compute_holomorphic_form(
         min_set, patch_indices, psi
     )
     Omega_restriction = compute_Omega_restriction(restrictions, Omega_coord)
     phases = jnp.angle(Omega * Omega_restriction) % (2 * jnp.pi)
-    return phases, patch_indices, max_idx
+    return phases, patch_indices, max_idx, margins
 
 
 def print_per_patch_histogram(phases, patch_indices, label, n_bins=12):
@@ -83,6 +88,32 @@ def print_per_patch_histogram(phases, patch_indices, label, n_bins=12):
             print(f"  {bin_centers[peak_bin]:>6.2f}", end="")
         else:
             print(f"  {'--':>6}", end="")
+    print()
+
+
+def print_margin_summary(margins, patch_indices, thresholds=(1e-1, 1e-2, 1e-3, 1e-4)):
+    """Print the conormal co-orientation (transversality) margin distribution.
+
+    margin = |det of column-normalised [J^T | restriction]| in [0, 1], from
+    compute_restriction. Small values flag near-degenerate points where the
+    conormal sign is unstable -- i.e. where L is not cleanly transverse
+    (rank J < 5). These are the diagnostic tail that can still show
+    {theta, theta+pi}.
+    """
+    print("\n--- conormal co-orientation / transversality margin ---")
+    pct = [1, 5, 25, 50]
+    qs = np.percentile(margins, pct)
+    print("  percentiles  " + "  ".join(f"p{p}={q:.2e}" for p, q in zip(pct, qs)))
+    print(f"  min={margins.min():.2e}  median={np.median(margins):.2e}  max={margins.max():.2e}")
+    N = margins.shape[0]
+    for t in thresholds:
+        frac = float(np.mean(margins < t))
+        print(f"  fraction with margin < {t:.0e}: {frac*100:6.2f}%  ({int(round(frac*N))} pts)")
+    print("  per-patch min margin: ", end="")
+    for p in range(5):
+        m = margins[patch_indices == p]
+        if m.size:
+            print(f"P{p}={m.min():.1e}", end="  ")
     print()
 
 
@@ -126,31 +157,51 @@ def main():
     print(f"  mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
 
     print("Computing phases (production code path)...")
-    phases, patch_indices, max_idx = compute_diagnostic_phases(
+    phases, patch_indices, max_idx, margins = compute_diagnostic_phases(
         min_set_real, coeffs, psi
     )
 
     phases_np = np.asarray(phases)
     patch_np = np.asarray(patch_indices)
     max_idx_np = np.asarray(max_idx)
+    margins_np = np.asarray(margins)
 
     unique, counts = np.unique(patch_np, return_counts=True)
     patch_dist = dict(zip(unique.tolist(), counts.tolist()))
     print(f"\nPatch distribution (patch_idx -> count): {patch_dist}")
 
-    print_per_patch_histogram(phases_np, patch_np, "production (current code)", n_bins=args.n_bins)
+    print_per_patch_histogram(phases_np, patch_np, "production (all points)", n_bins=args.n_bins)
+
+    # Co-orientation / transversality margin: how reliable the conormal sign is.
+    print_margin_summary(margins_np, patch_np)
+
+    # High-margin subset, where the conormal sign is reliable. If the spurious
+    # {theta, theta+pi} scatter was coming from the near-degenerate tail, the
+    # peaks here are sharper than in the all-points histogram above -- that is
+    # "what the fix leaves us": clean phases on the transverse part of L.
+    cut = float(np.median(margins_np))
+    hi = margins_np >= cut
+    print_per_patch_histogram(
+        phases_np[hi], patch_np[hi],
+        f"high-margin subset (margin >= median = {cut:.2e}, {int(hi.sum())} pts)",
+        n_bins=args.n_bins,
+    )
 
     if args.ansatz == "rp3":
-        print("\nFor RP^3 (with current production sign convention Omega = (-1)^(I+d)/dfdz_d * ...):")
-        print("  Expected 5 peaks at theta = (2k+1)*pi/5 for k=0..4")
-        print(f"  i.e. odd multiples of pi/5: {np.pi/5:.3f}, {3*np.pi/5:.3f}, {np.pi:.3f}, {7*np.pi/5:.3f}, {9*np.pi/5:.3f} rad")
-        print("  If the histogram collapses to these 5 (not 10), the basis-orientation correction works.")
+        print("\nFor RP^3 (production sign convention Omega = (-1)^(patch_idx+max_idx)/dfdz * ...):")
+        print("  The 5 special-Lagrangian phases sit at odd multiples of pi/5:")
+        print(f"    {np.pi/5:.3f}, {3*np.pi/5:.3f}, {np.pi:.3f}, {7*np.pi/5:.3f}, {9*np.pi/5:.3f} rad")
+        print("  With the patch sign + conormal co-orientation, the high-margin subset is")
+        print("  expected to show these 5 peaks (mod 2*pi) consistently across patches. Any")
+        print("  residual {theta, theta+pi} splitting should concentrate in the low-margin")
+        print("  (near-degenerate) tail; reducing mod pi collapses it to the 5-peak structure.")
 
     with open(args.out_pkl, "wb") as f:
         pickle.dump({
             "phases": phases_np,
             "patch_indices": patch_np,
             "max_idx": max_idx_np,
+            "margin": margins_np,
         }, f)
     print(f"\nSaved raw arrays to {args.out_pkl}")
 

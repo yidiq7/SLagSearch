@@ -73,7 +73,9 @@ all_column_indices_range = jnp.arange(8)
 combinations_list = list(itertools.combinations(all_column_indices_range.tolist(), 5))
 ALL_COMBINATIONS = jnp.array(combinations_list, dtype=jnp.int32) # Shape (56, 5)
 
-def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
+def compute_restriction(
+    eqlist_jacobian: jnp.ndarray, return_margin: bool = False
+) -> jnp.ndarray:
     """
     Processes a 5x8 JAX array according to the specified steps:
     1. Finds the combination of 5 columns that forms a 5x5 submatrix
@@ -82,16 +84,27 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
        to the chosen column indices with the rows of the input matrix.
     3. Computes the inverse of this new 8x8 matrix.
     4. Deletes the columns from the inverted matrix that correspond
-       to the chosen column indices, resulting in an 8x3 array.
+       to the chosen column indices, resulting in an 8x3 array (a basis of
+       T_pL spanning ker(J)).
+    5. Conormally co-orients that basis: negates one column when needed so the
+       equation-adapted frame det[J^T | basis] is positive (see the inline
+       comment). This pins the +-1 orientation gauge of T_pL geometrically, so
+       the downstream Omega|_L phase is well defined on the transverse part of L.
 
     This function is designed to be JAX-transformable and efficient,
     especially when used with `jax.vmap`.
 
     Args:
         eqlist_jacobian: A 5x8 JAX array of floating-point numbers.
+        return_margin: if True, also return the scale-free co-orientation
+            margin |det of column-normalised [J^T | basis]| in [0, 1] (small
+            => near-degenerate => unstable sign => L not cleanly transverse
+            there).
 
     Returns:
-        An 8x3 JAX array, which is the result of the described operations.
+        An 8x3 JAX array (the conormally co-oriented restriction). If
+        return_margin is True, returns (restriction, margin) with margin a
+        scalar in [0, 1].
     """
 
     # --- Step 1: Compute determinants for all 56 combinations ---
@@ -148,19 +161,59 @@ def compute_restriction(eqlist_jacobian: jnp.ndarray) -> jnp.ndarray:
     # This results in an 8x3 JAX array.
     restriction = inverted_matrix[:, kept_cols]
 
+    # --- Step 7: Conormal co-orientation (pin the +-1 orientation gauge) ---
+    # restriction's columns span ker(J) = T_pL, but the argmax-|det| column
+    # pick above leaves their *orientation* arbitrary -- it flips as the pick
+    # changes from point to point along L, scattering the Omega|_L phase between
+    # theta and theta+pi. Fix it geometrically with the equation-adapted normal
+    # frame: orient T_pL so that
+    #     det[ J^T | restriction ] > 0,
+    # i.e. (eq-gradients, tangent-basis) is positively oriented in R^8 = C^4
+    # (the canonical complex orientation). This is the conormal co-orientation
+    # of L as the zero set of the 5 real equations. Unlike a fixed coordinate
+    # 3-form, J^T spans (ker J)^perp, so the stacked 8x8 is nonsingular *exactly*
+    # where rank(J) = 5 -- wherever L is transverse; it can only flip on the
+    # non-transverse locus (rank J < 5), where L degenerates as a submanifold
+    # (and where this routine's 8x8 inverse is already ill-posed).
+    #
+    # Negating one column is a diag(-1,1,1) congruence on the tangent basis, so
+    # it is bit-identical for magnitude consumers (||R^T Omega R||_F and
+    # sqrt(det(R^T G R))); the *only* observable effect is the now-consistent
+    # sign of det(d w_c / d t) downstream, i.e. the Omega|_L phase mod 2pi.
+    # Columns are unit-normalised before the det so only the sign and a
+    # scale-free [0,1] margin are read off (Hadamard: |det| <= 1, ->0 at
+    # degeneracy).
+    conormal = jnp.concatenate([eqlist_jacobian.T, restriction], axis=1)  # (8, 8)
+    col_norms = jnp.linalg.norm(conormal, axis=0, keepdims=True)
+    conormal_unit = conormal / jnp.where(col_norms == 0.0, 1.0, col_norms)
+    coorient_det = jnp.linalg.det(conormal_unit)
+    flip = jnp.where(coorient_det < 0.0, -1.0, 1.0)
+    restriction = restriction.at[:, 0].multiply(flip)
+
+    if return_margin:
+        return restriction, jnp.abs(coorient_det)
     return restriction
 
 def compute_Omega_restriction(restriction: jnp.ndarray, Omega_coord: jnp.ndarray):
     """
     Computes the restriction applied to the holomorphic 3-form from the full restriction.
 
-    No basis-orientation correction is applied. The phase of Omega|_L has an
-    intrinsic +-1 gauge ambiguity from the choice of orientation on L; pinning
-    it down with a fixed reference (e.g. C=(0,1,2)) or a per-patch argmax-min
-    heuristic only works on "nice" ansaetze and re-introduces {theta, theta+pi}
-    bimodality on generic Lagrangians via codim-1 degeneracy of the reference.
-    The intended consumer (compute_special_condition_fitness) takes mod pi,
-    which is the gauge-invariant quantity.
+    Division of labour for the Omega|_L phase sign:
+      - the deterministic (-1)^(patch_idx + max_idx) factor lives in
+        compute_holomorphic_form;
+      - the +-1 orientation gauge of T_pL is pinned in compute_restriction,
+        which returns a *conormally co-oriented* tangent basis (oriented by the
+        equation normals against the complex orientation of C^4);
+      - this function then contributes det(dw_c/dt) on that basis, whose phase
+        is therefore geometrically well defined wherever L is transverse.
+
+    The conormal co-orientation supersedes the earlier coordinate-reference
+    attempts (a fixed C=(0,1,2), or a per-patch argmax-min 3-tuple), which
+    oriented against fixed coordinate 3-planes and so flipped on a codim-1
+    coordinate-artifact locus of generic L. The conormal sign can only flip
+    where rank(J) < 5 (L non-transverse) -- the genuine degeneracy locus,
+    diagnostic rather than artifact. The mod-pi consumer
+    (compute_special_condition_fitness) is invariant to this +-1 either way.
 
     Args:
         restriction: (N, 8, 3) array of restriction matrices.
