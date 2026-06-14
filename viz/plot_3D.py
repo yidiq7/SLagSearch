@@ -830,8 +830,7 @@ def plot_mapper(z: np.ndarray, patches: np.ndarray, out_dir: Path,
               f"overlap={perc_overlap}, eps={eps:.4f} "
               f"@p{eps_percentile})")
         print(f"    topology readout:  b_0 candidate = {C},  "
-              f"b_1 candidate = {beta_1}  "
-              f"(persistent homology said b_1 = 5)")
+              f"b_1 candidate = {beta_1}")
 
         html_path = out_dir / f"mapper_{metric}_{filter_spec}.html"
         mapper.visualize(graph, path_html=str(html_path),

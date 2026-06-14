@@ -25,11 +25,15 @@ points-gen = [
 ]
 
 # Persistent homology / TDA pipeline (persistent_homology/ folder).
-# Witness-complex variant via gudhi; JAX (core dep) handles FS distance +
-# max-min landmark selection.
+# - Witness-complex Betti numbers via gudhi (persistent_homology_witness.py);
+#   JAX (core dep) handles FS distance + max-min landmark selection.
+# - Cup-product / cup-length ring structure via ripser cocycles
+#   (persistent_homology_cup_length.py): the T^3 vs #(S^1xS^2) discriminant
+#   that Betti numbers alone cannot see. cup_product.py is the pure-Python core.
 # Install with:   uv sync --extra persistent-homology
 persistent-homology = [
     "gudhi>=3.9",
+    "ripser>=0.6",
 ]
 
 # 3D / topology-aware visualization (plot_3D.py). UMAP for 3D embedding,
