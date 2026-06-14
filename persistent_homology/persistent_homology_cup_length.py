@@ -3,11 +3,11 @@
 Persistent homology recovers Betti numbers but NOT the cohomology ring, and
 T^3 and #^3(S^1 x S^2) share b = (1,3,3,1). They are separated by the cup map
 
-        mu : /\^2 H^1 --> H^2,   (alpha, beta) |-> alpha cup beta
+        mu : Lambda^2 H^1 --> H^2,   (alpha, beta) |-> alpha cup beta
 
 whose rank over F_2 is the discriminant (per connected component):
 
-        rank mu == C(b_1, 2)  (mu injective on /\^2 H^1)  -> torus T^3
+        rank mu == C(b_1, 2)  (mu injective on Lambda^2 H^1)  -> torus T^3
         rank mu == 0          (all degree-1 products vanish) -> #^k(S^1 x S^2)
 
 For a closed orientable 3-manifold with b_1 >= 1, Poincare duality already
@@ -193,7 +193,7 @@ def _cocycle_to_edges(coc, D, eps):
 
 def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
                             verbose=True):
-    """Run ripser on a distance matrix and return the rank of mu : /\^2 H^1 -> H^2.
+    """Run ripser on a distance matrix and return the rank of mu : Lambda^2 H^1 -> H^2.
 
     Metric-agnostic: ``D`` is any (L, L) distance matrix (FS for the sLag data,
     Euclidean for the synthetic self-test). Returns a dict with the rank and the
@@ -214,7 +214,7 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
     n_h1 = min(n_h1, len(H1))
 
     if n_h1 < 2:
-        # Fewer than two H^1 generators: /\^2 H^1 = 0, rank mu = 0 trivially.
+        # Fewer than two H^1 generators: Lambda^2 H^1 = 0, rank mu = 0 trivially.
         if verbose:
             print(f"    b_1 used = {n_h1} (< 2): no degree-1 pairs to multiply.")
         return {"rank": 0, "b1": n_h1, "epsilon": epsilon,
@@ -284,7 +284,7 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
 
 
 def _verdict(info):
-    """One-line per-component interpretation of the cup map mu : /\^2 H^1 -> H^2.
+    """One-line per-component interpretation of the cup map mu : Lambda^2 H^1 -> H^2.
 
     For a closed orientable 3-manifold component the discriminant is sharp:
         b_1 = 3 and rank mu = 3 (= C(3,2))  -> T^3 (three 1-classes multiply up)

@@ -1,12 +1,12 @@
 """Alexander-Whitney cup products + F_2 linear algebra on a simplicial complex.
 
 Pure-Python / numpy-free core, in the spirit of ``hermitian_coeffs.py``: no JAX,
-no ripser. Consumed by ``persistent_homology/cup_length.py`` (the CLI that feeds
-it a ripser-derived complex + H^1 cocycles) and unit-tested in isolation against
-hand-built triangulations in ``tests/test_cup_product.py``.
+no ripser. Consumed by ``persistent_homology_cup_length.py`` (the CLI that feeds
+it a ripser-derived complex + H^1 cocycles) and validated in isolation against
+hand-built triangulations in ``cup_product_selfcheck.py``.
 
 The decisive quantity for distinguishing T^3 from #^k(S^1 x S^2): the rank over
-F_2 of the cup-product map mu : /\^2 H^1 -> H^2.  For a 3-torus mu is injective
+F_2 of the cup-product map mu : Lambda^2 H^1 -> H^2.  For a 3-torus mu is injective
 (rank = C(b_1, 2)); for a connected sum of S^1 x S^2 every product of degree-1
 classes vanishes, so rank mu = 0.
 
@@ -103,7 +103,7 @@ def f2_independent_count(base: Iterable[Iterable[int]],
 
 def cup_map_rank(triangles: Iterable[tuple[int, int, int]],
                  h1_cocycles: list[set[tuple[int, int]]]) -> int:
-    """Rank over F_2 of the cup map mu : /\^2 H^1 -> H^2.
+    """Rank over F_2 of the cup map mu : Lambda^2 H^1 -> H^2.
 
     ``triangles`` is the 2-skeleton (sorted-vertex tuples) of the complex at a
     chosen scale; ``h1_cocycles`` is a list of 1-cocycle representatives of the
@@ -113,7 +113,7 @@ def cup_map_rank(triangles: Iterable[tuple[int, int, int]],
     H^2 = ker(delta^2) / im(delta^1) -- i.e. independent modulo im(delta^1).
 
     Interpretation for a closed orientable 3-manifold component:
-        rank == C(b_1, 2)  (mu injective on /\^2 H^1)  -> torus T^3
+        rank == C(b_1, 2)  (mu injective on Lambda^2 H^1)  -> torus T^3
         rank == 0          (all degree-1 products vanish) -> #^k (S^1 x S^2)
     """
     triangles = list(triangles)  # fix one ordering shared by base + products
