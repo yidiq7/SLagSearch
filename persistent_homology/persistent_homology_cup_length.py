@@ -192,17 +192,36 @@ def _cocycle_to_edges(coc, D, eps):
 
 
 def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
-                            verbose=True):
+                            thresh_factor=3.0, maxdim=2, verbose=True):
     """Run ripser on a distance matrix and return the rank of mu : Lambda^2 H^1 -> H^2.
 
     Metric-agnostic: ``D`` is any (L, L) distance matrix (FS for the sLag data,
     Euclidean for the synthetic self-test). Returns a dict with the rank and the
     diagnostics needed to interpret / reproduce it.
+
+    CRITICAL -- ``thresh`` caps the Rips filtration. With thresh = inf, ripser
+    materializes the COMPLETE complex: C(L,3) triangles and (at maxdim=2) C(L,4)
+    tetrahedra -- billions of simplices for L ~ 1000, which OOMs. The default
+    caps it at ``thresh_factor`` x the covering radius (max nearest-landmark
+    distance), keeping the complex sparse while still resolving H^1 at the
+    plateau: loops are born ~covering radius and we only need them alive at
+    eps < thresh, not their large-scale deaths. ``maxdim=1`` (no tetrahedra)
+    is a further memory escape hatch -- the cup rank is built from this tool's
+    own 2-skeleton (``_two_skeleton``), not ripser's complex, so dropping
+    ripser's H^2 only costs the b_2(eps) diagnostic, not the rank.
     """
     from ripser import ripser
 
-    res = ripser(D, distance_matrix=True, maxdim=2, do_cocycles=True, coeff=2,
-                 thresh=(np.inf if thresh is None else float(thresh)))
+    if thresh is None:
+        Dd = D.copy()
+        np.fill_diagonal(Dd, np.inf)
+        cov = float(Dd.min(axis=1).max())  # covering radius among landmarks
+        thresh = thresh_factor * cov
+        if verbose:
+            print(f"    covering radius = {cov:.4f}  ->  thresh = "
+                  f"{thresh_factor:g} x cov = {thresh:.4f}  (caps Rips complex)")
+    res = ripser(D, distance_matrix=True, maxdim=maxdim, do_cocycles=True,
+                 coeff=2, thresh=float(thresh))
     dgms = res["dgms"]
     H1 = dgms[1]
     H2 = dgms[2] if len(dgms) > 2 else np.empty((0, 2))
@@ -252,7 +271,8 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
         components.append({"b1": len(ccs), "rank": r})
 
     info = {"rank": total_rank, "b1": len(cocycles), "epsilon": eps,
-            "b1_at_eps": _betti_at(H1, eps), "b2_at_eps": _betti_at(H2, eps),
+            "b1_at_eps": _betti_at(H1, eps),
+            "b2_at_eps": (_betti_at(H2, eps) if maxdim >= 2 else None),
             "b0_at_eps": b0_ripser, "n_components_total": b0_uf,
             "n_vertices": n_vert, "n_edges": len(edges),
             "n_triangles": len(triangles), "n_components": len(components),
@@ -276,7 +296,7 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
                    else f"other(b1={c['b1']},rank={c['rank']})")
             print(f"      component {i}: b_1 = {c['b1']}, rank mu = {c['rank']}"
                   f"  ->  {tag}")
-        if info["b2_at_eps"] == 0:
+        if maxdim >= 2 and info["b2_at_eps"] == 0:
             print("    WARNING: b_2(eps) = 0 -- no H^2 at this scale, so every "
                   "cup product is forced to 0. Pick eps inside the (b_1, b_2) "
                   "plateau via --epsilon.")
@@ -405,8 +425,17 @@ def parse_args():
                    help="Scale at which to build the 2-skeleton / read cocycles. "
                         "Default: midpoint of the common H^1 plateau.")
     p.add_argument("--thresh", type=float, default=None,
-                   help="ripser filtration cap (FS-distance units). Default: "
-                        "ripser's enclosing radius.")
+                   help="ripser filtration cap (FS-distance units). MUST be "
+                        "finite -- inf builds the complete complex and OOMs. "
+                        "Default: thresh_factor x covering radius (auto).")
+    p.add_argument("--thresh_factor", type=float, default=3.0,
+                   help="Auto thresh = this x covering radius (max nearest-"
+                        "landmark distance). Lower it if you still OOM; raise "
+                        "it if H^1 isn't resolved at the plateau.")
+    p.add_argument("--maxdim", type=int, default=2, choices=[1, 2],
+                   help="ripser max homology dim. 2 computes H^2 (for the "
+                        "b_2 diagnostic); 1 skips tetrahedra to save memory "
+                        "(cup rank is unaffected -- it uses its own 2-skeleton).")
     p.add_argument("--cache_landmarks", default=None,
                    help="Optional pkl to cache/reuse the L_max landmark indices.")
     p.add_argument("--selftest", action="store_true",
@@ -452,7 +481,9 @@ def main():
         t0 = time.time()
         D = fs_distance_matrix(Zn[lm[:L]])
         info = cup_rank_from_distances(D, n_h1=args.n_h1, epsilon=args.epsilon,
-                                       thresh=args.thresh, verbose=True)
+                                       thresh=args.thresh,
+                                       thresh_factor=args.thresh_factor,
+                                       maxdim=args.maxdim, verbose=True)
         results[L] = info
         print(f"    {_verdict(info)}")
         print(f"    [{time.time() - t0:.1f}s]")
