@@ -123,6 +123,58 @@ def check_cup_map_rank_no_two_cells_is_zero():
     assert cup_map_rank([], [{(0, 1)}, {(1, 2)}]) == 0
 
 
+# --------------------------------------- nonzero cup products: the torus case
+# A grid-triangulated flat torus T^2 has explicit F_2 cocycle reps for its two
+# H^1 generators (the i- and j-cuts), whose product is the fundamental class.
+# This pins the *nonzero* behaviour of cup_map_rank deterministically -- the
+# property the ripser self-test exercises, but here with no ripser / no numpy.
+
+def _grid_torus(m, n, off=0):
+    """Staircase-triangulated T^2 on an m x n periodic grid (m, n >= 3).
+
+    Returns (triangles, alpha, beta): triangles as sorted vertex tuples and
+    alpha/beta as sets of sorted edge tuples -- F_2 cocycle reps of the two
+    H^1 generators. alpha = 1 on edges crossing the i = m-1 -> 0 seam (vertical
+    + diagonal), beta = 1 on edges crossing the j = n-1 -> 0 seam (horizontal +
+    diagonal); each satisfies delta = 0 (every triangle meets the seam in an
+    even number of marked edges). ``off`` shifts vertex indices for unions.
+    """
+    def v(i, j):
+        return off + (i % m) * n + (j % n)
+
+    def e(a, b):
+        return (a, b) if a < b else (b, a)
+
+    tris, alpha, beta = [], set(), set()
+    for i in range(m):
+        for j in range(n):
+            a, b, c, d = v(i, j), v(i + 1, j), v(i, j + 1), v(i + 1, j + 1)
+            tris.append(tuple(sorted((a, b, d))))   # lower triangle
+            tris.append(tuple(sorted((a, c, d))))   # upper triangle (diag a-d)
+            if i == m - 1:                            # i-seam crossings
+                alpha.add(e(v(m - 1, j), v(0, j)))        # vertical
+                alpha.add(e(v(m - 1, j), v(0, j + 1)))    # diagonal
+            if j == n - 1:                            # j-seam crossings
+                beta.add(e(v(i, n - 1), v(i, 0)))         # horizontal
+                beta.add(e(v(i, n - 1), v(i + 1, 0)))     # diagonal
+    return tris, alpha, beta
+
+
+def check_cup_map_rank_torus_is_one():
+    # T^2: /\^2 H^1 is 1-dimensional and alpha cup beta = fundamental class != 0.
+    tris, alpha, beta = _grid_torus(5, 5)
+    assert cup_map_rank(tris, [alpha, beta]) == 1
+
+
+def check_cup_map_rank_two_disjoint_tori_is_two():
+    # Two disjoint T^2 (offset vertex sets): cross products vanish, each torus
+    # contributes 1 -> total rank 2. (Validates the additive/block structure
+    # the cup map has across components, at the core level.)
+    t1, a1, b1 = _grid_torus(5, 5, off=0)
+    t2, a2, b2 = _grid_torus(5, 5, off=100)
+    assert cup_map_rank(t1 + t2, [a1, b1, a2, b2]) == 2
+
+
 # ----------------------------------------------------------------- runner
 
 def _run_all():

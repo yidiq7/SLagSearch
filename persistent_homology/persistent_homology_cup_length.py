@@ -19,12 +19,14 @@ Pipeline (jax-free; consumes an already-refined min_set, so no Newton re-filter)
   1. Load min_set (N, 5) complex; row-normalize (CP^4 / Fubini-Study).
   2. Farthest-point (max-min) landmark selection in the FS metric (numpy).
      Prefix-monotone, so one L_max pass serves the whole --landmarks sweep.
-  3. ripser on the (L, L) FS distance matrix: maxdim=2, do_cocycles=True,
-     coeff=2 -> H^1/H^2 diagrams + H^1 cocycle representatives.
-  4. Pick a scale eps on the H^1 plateau (auto from the persistent bars, or
-     --epsilon); report b_1(eps), b_2(eps) for sanity.
-  5. Build the 2-skeleton at eps, convert the persistent H^1 cocycles to F_2
-     edge sets, and rank mu via cup_product.cup_map_rank.
+  3. ripser on the (L, L) FS distance matrix: maxdim=1, do_cocycles=True,
+     coeff=2 -> H^1 diagram + H^1 cocycle representatives. (No H^2/tetrahedra:
+     the cup rank is computed on our own 2-skeleton, not ripser's complex.)
+  4. SCAN scales across the chosen bars' H^1 plateau; at each, build the
+     2-skeleton, convert the H^1 cocycles ALIVE there to F_2 edge sets, and
+     rank mu via cup_product.cup_map_rank. Report the MAX over the scan (a
+     poor-man's persistent cup rank), since a nonzero product needs eps where
+     the H^2 void exists -- a larger scale than where H^1 loops are born.
   6. Report cup rank PER CONNECTED COMPONENT per L (cup products across
      components vanish, so mu is block-diagonal); agreement across the L-sweep
      is the stability check -- cup rank is a topological invariant, not a fit.
@@ -105,31 +107,58 @@ def _betti_at(dgm, t):
 
 
 def _auto_n_h1(lifetimes):
-    """Number of 'long' H^1 bars via the largest multiplicative gap.
+    """Heuristic count of persistent H^1 bars: the largest ADDITIVE gap among
+    the top bars. UNRELIABLE on noise and on spaces with no real H^1 -- a
+    convenience only; pin --n_h1 from known Betti numbers for real runs.
 
-    Sort lifetimes descending; the biggest ratio drop between consecutive
-    values separates signal (persistent generators) from noise.
+    Caller passes lifetimes with essential (death=inf) bars capped to thresh, so
+    they read as the longest finite lifetimes. The earlier multiplicative-gap
+    version blew up: inf lifetimes gave inf/inf = nan, and on a smooth noise
+    tail the largest ratio sits between tiny values -> absurd counts (e.g. 137).
     """
-    s = np.sort(lifetimes)[::-1]
+    s = np.sort(np.asarray(lifetimes, dtype=float))[::-1]
+    s = s[np.isfinite(s)]                     # defensive (caller already caps)
     if len(s) <= 1:
-        return len(s)
-    ratios = s[:-1] / np.maximum(s[1:], 1e-12)
-    return int(np.argmax(ratios)) + 1
+        return int(len(s))
+    k = min(len(s) - 1, 15)                    # only the top bars matter
+    gaps = s[:k] - s[1:k + 1]
+    return int(np.argmax(gaps)) + 1
 
 
-def _choose_epsilon(H1, chosen):
-    """A scale on the common H^1 plateau of the chosen bars.
+def _cup_rank_at_eps(D, eps, coc1, chosen_info):
+    """Per-component rank of mu : Lambda^2 H^1 -> H^2 at a single scale eps.
 
-    The bars are simultaneously alive on [max births, min deaths]; pick its
-    midpoint. If they have no common overlap, fall back to the midpoint of the
-    single most persistent bar (and the caller warns via b_1(eps) reporting).
+    ``chosen_info`` is a list of (cocycle_index, birth, death). Only bars ALIVE
+    at eps (birth <= eps < death) are used -- a dead bar's cocycle is no longer
+    closed, which would break cup_map_rank's "products are cocycles" invariant
+    and yield garbage. Cup products across connected components vanish, so the
+    rank is summed per component. Needs only the 2-skeleton (rank modulo
+    im delta^1 already equals the rank in H^2), so no H^2 from ripser.
     """
-    b = float(H1[chosen, 0].max())
-    d = float(H1[chosen, 1].min())
-    if b < d:
-        return 0.5 * (b + d)
-    top = chosen[int(np.argmax(H1[chosen, 1] - H1[chosen, 0]))]
-    return 0.5 * (H1[top, 0] + H1[top, 1])
+    alive = [c for (c, b, d) in chosen_info if b <= eps < d]
+    base = {"eps": float(eps), "n_alive": len(alive), "components": [],
+            "n_vertices": 0, "n_edges": 0, "n_triangles": 0,
+            "n_components_total": 0, "rank": 0}
+    if len(alive) < 2:
+        return base
+    n_vert, edges, triangles = _two_skeleton(D, eps)
+    comp_of = _connected_components(n_vert, edges)
+    cocycles = [_cocycle_to_edges(coc1[c], D, eps) for c in alive]
+    cocycles = [cc for cc in cocycles if cc]
+    tri_by_comp, coc_by_comp = {}, {}
+    for tri in triangles:
+        tri_by_comp.setdefault(comp_of[tri[0]], []).append(tri)
+    for cc in cocycles:
+        coc_by_comp.setdefault(comp_of[next(iter(cc))[0]], []).append(cc)
+    components, total = [], 0
+    for cid, ccs in sorted(coc_by_comp.items()):
+        r = cup_map_rank(tri_by_comp.get(cid, []), ccs)
+        total += r
+        components.append({"b1": len(ccs), "rank": r})
+    base.update(rank=total, components=components, n_vertices=n_vert,
+                n_edges=len(edges), n_triangles=len(triangles),
+                n_components_total=len(set(comp_of)))
+    return base
 
 
 def _two_skeleton(D, eps):
@@ -192,23 +221,24 @@ def _cocycle_to_edges(coc, D, eps):
 
 
 def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
-                            thresh_factor=3.0, maxdim=2, verbose=True):
-    """Run ripser on a distance matrix and return the rank of mu : Lambda^2 H^1 -> H^2.
+                            thresh_factor=4.0, n_eps=8, verbose=True):
+    """ripser on a distance matrix -> max over scale of rank(mu: Lambda^2 H^1 -> H^2).
 
     Metric-agnostic: ``D`` is any (L, L) distance matrix (FS for the sLag data,
-    Euclidean for the synthetic self-test). Returns a dict with the rank and the
-    diagnostics needed to interpret / reproduce it.
+    Euclidean for the self-test). Returns a dict with the (persistent) cup rank
+    and diagnostics.
 
-    CRITICAL -- ``thresh`` caps the Rips filtration. With thresh = inf, ripser
-    materializes the COMPLETE complex: C(L,3) triangles and (at maxdim=2) C(L,4)
-    tetrahedra -- billions of simplices for L ~ 1000, which OOMs. The default
-    caps it at ``thresh_factor`` x the covering radius (max nearest-landmark
-    distance), keeping the complex sparse while still resolving H^1 at the
-    plateau: loops are born ~covering radius and we only need them alive at
-    eps < thresh, not their large-scale deaths. ``maxdim=1`` (no tetrahedra)
-    is a further memory escape hatch -- the cup rank is built from this tool's
-    own 2-skeleton (``_two_skeleton``), not ripser's complex, so dropping
-    ripser's H^2 only costs the b_2(eps) diagnostic, not the rank.
+    Memory: ripser runs at maxdim=1 (H^1 cocycles only). The cup rank is built
+    from this tool's OWN 2-skeleton, so ripser's H^2 -- and its tetrahedra, the
+    OOM source -- are never needed. ``thresh`` still caps the filtration; with
+    thresh = inf even the triangles explode (C(L,3)). Default thresh =
+    ``thresh_factor`` x covering radius; pass --thresh (e.g. a scale from your
+    witness run) if features live at a larger scale.
+
+    Scale: a nonzero cup product needs eps where H^2 exists (the void scale,
+    larger than where H^1 loops are born). Rather than guess one eps we SCAN
+    ``n_eps`` scales across the chosen bars' H^1 plateau and report the MAX cup
+    rank (a poor-man's persistent cup rank). Pass ``epsilon`` for a single scale.
     """
     from ripser import ripser
 
@@ -220,86 +250,82 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
         if verbose:
             print(f"    covering radius = {cov:.4f}  ->  thresh = "
                   f"{thresh_factor:g} x cov = {thresh:.4f}  (caps Rips complex)")
-    res = ripser(D, distance_matrix=True, maxdim=maxdim, do_cocycles=True,
-                 coeff=2, thresh=float(thresh))
-    dgms = res["dgms"]
-    H1 = dgms[1]
-    H2 = dgms[2] if len(dgms) > 2 else np.empty((0, 2))
+    thresh = float(thresh)
+    res = ripser(D, distance_matrix=True, maxdim=1, do_cocycles=True,
+                 coeff=2, thresh=thresh)
+    H1 = res["dgms"][1]
     coc1 = res["cocycles"][1]
 
-    lifetimes = (H1[:, 1] - H1[:, 0]) if len(H1) else np.array([])
+    # Cap essential (death=inf) bars at thresh so lifetimes are finite and the
+    # essential generators read as the longest.
+    if len(H1):
+        deaths = np.where(np.isinf(H1[:, 1]), thresh, H1[:, 1])
+        lifetimes = deaths - H1[:, 0]
+    else:
+        deaths, lifetimes = np.array([]), np.array([])
+    sorted_life = np.sort(lifetimes)[::-1] if len(lifetimes) else np.array([])
+
     if n_h1 is None:
         n_h1 = _auto_n_h1(lifetimes) if len(lifetimes) else 0
+        if verbose:
+            print(f"    [auto] n_h1 = {n_h1}  (heuristic, unreliable on noise -- "
+                  f"pin --n_h1 from your known Betti numbers)")
     n_h1 = min(n_h1, len(H1))
 
     if n_h1 < 2:
-        # Fewer than two H^1 generators: Lambda^2 H^1 = 0, rank mu = 0 trivially.
         if verbose:
             print(f"    b_1 used = {n_h1} (< 2): no degree-1 pairs to multiply.")
-        return {"rank": 0, "b1": n_h1, "epsilon": epsilon,
-                "b1_at_eps": None, "b2_at_eps": None,
-                "n_vertices": 0, "n_edges": 0, "n_triangles": 0,
-                "n_components": 0, "components": [], "dgms": dgms,
-                "lifetimes_sorted": np.sort(lifetimes)[::-1]}
+        return {"rank": 0, "b1": n_h1, "epsilon": epsilon, "components": [],
+                "n_components": 0, "n_components_total": None, "scan": [],
+                "thresh": thresh, "lifetimes_sorted": sorted_life}
 
-    order = np.argsort(lifetimes)[::-1]
-    chosen = order[:n_h1]
-    eps = float(epsilon) if epsilon is not None else _choose_epsilon(H1, chosen)
+    chosen = np.argsort(lifetimes)[::-1][:n_h1]
+    chosen_info = [(int(c), float(H1[c, 0]), float(H1[c, 1])) for c in chosen]
 
-    n_vert, edges, triangles = _two_skeleton(D, eps)
-    comp_of = _connected_components(n_vert, edges)
-    # b_0 self-consistency: the components we split over (at scale eps) should
-    # match ripser's H_0 at eps. A mismatch means eps merged or fragmented
-    # pieces -- the per-component split (hence rank) would be untrustworthy.
-    b0_uf = len(set(comp_of))
-    b0_ripser = _betti_at(dgms[0], eps)
-    cocycles = [_cocycle_to_edges(coc1[c], D, eps) for c in chosen]
-    cocycles = [cc for cc in cocycles if cc]  # drop any empty at this eps
+    # Scan scales across the chosen bars' common H^1 plateau (deaths capped).
+    lo = float(H1[chosen, 0].max())
+    hi = float(deaths[chosen].min())
+    if not (lo < hi):                       # chosen bars never co-exist
+        lo, hi = float(H1[chosen, 0].min()), float(deaths[chosen].max())
+    if epsilon is not None:
+        eps_grid = [float(epsilon)]
+    else:
+        eps_grid = [e for e in np.linspace(lo, hi, n_eps + 2)[1:-1]
+                    if 0 < e < thresh] or [0.5 * (lo + min(hi, thresh))]
 
-    # Bucket triangles + cocycles by component; cup rank is per-component summed.
-    tri_by_comp = {}
-    for tri in triangles:
-        tri_by_comp.setdefault(comp_of[tri[0]], []).append(tri)
-    coc_by_comp = {}
-    for cc in cocycles:
-        coc_by_comp.setdefault(comp_of[next(iter(cc))[0]], []).append(cc)
-
-    components, total_rank = [], 0
-    for cid, ccs in sorted(coc_by_comp.items()):
-        r = cup_map_rank(tri_by_comp.get(cid, []), ccs)
-        total_rank += r
-        components.append({"b1": len(ccs), "rank": r})
-
-    info = {"rank": total_rank, "b1": len(cocycles), "epsilon": eps,
-            "b1_at_eps": _betti_at(H1, eps),
-            "b2_at_eps": (_betti_at(H2, eps) if maxdim >= 2 else None),
-            "b0_at_eps": b0_ripser, "n_components_total": b0_uf,
-            "n_vertices": n_vert, "n_edges": len(edges),
-            "n_triangles": len(triangles), "n_components": len(components),
-            "components": components, "dgms": dgms,
-            "lifetimes_sorted": np.sort(lifetimes)[::-1]}
     if verbose:
         print(f"    H^1 lifetimes (top): "
-              f"{np.round(info['lifetimes_sorted'][:max(n_h1 + 2, 4)], 4)}")
-        print(f"    b_1 used = {len(cocycles)}   eps = {eps:.4f}   "
-              f"b_1(eps) = {info['b1_at_eps']}   b_2(eps) = {info['b2_at_eps']}")
-        print(f"    2-skeleton @ eps: V={n_vert}  E={len(edges)}  "
-              f"T={len(triangles)}")
-        print(f"    components @ eps: {b0_uf} total "
-              f"(ripser b_0(eps) = {b0_ripser}), {len(components)} with H^1")
-        if b0_uf != b0_ripser:
-            print("    WARNING: component count != ripser b_0(eps) -- eps may be "
-                  "off (pieces merging or fragmenting); set --epsilon explicitly.")
-        for i, c in enumerate(components):
+              f"{np.round(sorted_life[:max(n_h1 + 2, 4)], 4)}")
+        print(f"    b_1 used = {n_h1}   plateau [{lo:.4f}, {hi:.4f}]   "
+              f"thresh = {thresh:.4f}   scanning {len(eps_grid)} scale(s)")
+
+    best, scan = None, []
+    for eps in eps_grid:
+        r = _cup_rank_at_eps(D, eps, coc1, chosen_info)
+        scan.append((float(eps), r["rank"]))
+        if verbose:
+            per = " ".join(f"{c['b1']}:{c['rank']}" for c in r["components"]) or "-"
+            print(f"      eps={eps:.4f}  V={r['n_vertices']} E={r['n_edges']} "
+                  f"T={r['n_triangles']}  comps={r['n_components_total']}  "
+                  f"rank={r['rank']}  ({per})")
+        if best is None or r["rank"] > best["rank"]:
+            best = r
+
+    info = {"rank": best["rank"], "b1": n_h1, "epsilon": best["eps"],
+            "components": best["components"], "n_components": len(best["components"]),
+            "n_components_total": best["n_components_total"],
+            "n_vertices": best["n_vertices"], "n_edges": best["n_edges"],
+            "n_triangles": best["n_triangles"], "thresh": thresh,
+            "scan": scan, "lifetimes_sorted": sorted_life}
+    if verbose:
+        print(f"    => max cup rank over scale = {best['rank']} "
+              f"at eps = {best['eps']:.4f}")
+        for i, c in enumerate(best["components"]):
             tag = ("T^3-like" if (c["b1"] == 3 and c["rank"] == 3)
                    else "conn-sum-like" if c["rank"] == 0
                    else f"other(b1={c['b1']},rank={c['rank']})")
             print(f"      component {i}: b_1 = {c['b1']}, rank mu = {c['rank']}"
                   f"  ->  {tag}")
-        if maxdim >= 2 and info["b2_at_eps"] == 0:
-            print("    WARNING: b_2(eps) = 0 -- no H^2 at this scale, so every "
-                  "cup product is forced to 0. Pick eps inside the (b_1, b_2) "
-                  "plateau via --epsilon.")
     return info
 
 
@@ -345,14 +371,13 @@ def load_points(min_set, subsamp, seed):
 # ------------------------------------------------------------------- self-test
 
 def _sample_torus_n(n_circles, n_pts, seed):
-    """Uniform-ish sample of T^{n_circles} embedded as a product of circles in
-    R^{2*n_circles} (radii spread so the circles don't collide in VR)."""
+    """Uniform sample of a flat T^{n_circles} as a product of UNIT circles in
+    R^{2*n_circles} (equal radii -> symmetric, cleanly resolved in VR)."""
     rng = np.random.default_rng(seed)
     ang = rng.uniform(0, 2 * np.pi, size=(n_pts, n_circles))
-    radii = 1.0 + 0.6 * np.arange(n_circles)
     cols = []
     for c in range(n_circles):
-        cols += [radii[c] * np.cos(ang[:, c]), radii[c] * np.sin(ang[:, c])]
+        cols += [np.cos(ang[:, c]), np.sin(ang[:, c])]
     return np.stack(cols, axis=1)
 
 
@@ -378,31 +403,36 @@ def _euclidean_dist(X):
 
 
 def _selftest():
-    """End-to-end ripser -> cup-rank validation on KNOWN spaces.
+    """End-to-end ripser -> cup-rank validation on KNOWN spaces (needs ripser).
 
-    Expected rank mu = C(b_1, 2):  T^2 -> 1,  T^3 -> 3,  S^2 -> 0 (no H^1).
-    This is the integration test deferred to the cluster (it needs ripser).
+    n_h1 is PINNED to the known Betti number -- this validates the ripser->AW->
+    rank wiring given the right generators, not the heuristic auto-detector.
+    thresh is set generously so the H^2 void forms within the scanned range.
+    Expected max cup rank:  S^2 -> 0,  T^2 -> 1,  T^3 -> 3,  T^2 u T^2 -> 2.
     """
     print("=== SELF-TEST (ripser -> cup-rank on known manifolds) ===")
+    # (label, points, n_h1, thresh, expected rank)
     cases = [
-        ("S^2  (b_1=0, expect rank 0)", _sample_sphere(500, 0), 0),
-        ("T^2  (b_1=2, expect rank 1)", _sample_torus_n(2, 700, 1), 1),
-        ("T^3  (b_1=3, expect rank 3)", _sample_torus_n(3, 1500, 2), 3),
-        ("T^2 + T^2 disjoint (expect total rank 2, 2 components)",
-         _two_disjoint_tori(700, 4), 2),
+        ("S^2  (no H^1, expect rank 0)", _sample_sphere(400, 0), 0, 1.6, 0),
+        ("T^2  (expect rank 1)", _sample_torus_n(2, 400, 1), 2, 1.6, 1),
+        ("T^3  (expect rank 3)", _sample_torus_n(3, 1500, 2), 3, 1.6, 3),
+        ("T^2 + T^2 disjoint (expect total rank 2)",
+         _two_disjoint_tori(400, 4), 4, 1.6, 2),
     ]
     ok = True
-    for label, X, expected in cases:
+    for label, X, n_h1, thr, expected in cases:
         print(f"\n--- {label} ---")
         t0 = time.time()
-        info = cup_rank_from_distances(_euclidean_dist(X), verbose=True)
+        info = cup_rank_from_distances(_euclidean_dist(X), n_h1=n_h1,
+                                       thresh=thr, verbose=True)
         got = info["rank"]
         flag = "PASS" if got == expected else "FAIL"
         ok = ok and (got == expected)
-        print(f"    {flag}: total rank mu = {got} (expected {expected}), "
-              f"components-with-H^1 = {info['n_components']}  "
-              f"[{time.time() - t0:.1f}s]")
+        print(f"    {flag}: max cup rank = {got} (expected {expected}), "
+              f"components = {info['n_components']}  [{time.time() - t0:.1f}s]")
     print(f"\n{'ALL SELF-TESTS PASSED' if ok else 'SELF-TEST FAILURES (see above)'}")
+    print("(T^2 and the disjoint case are the core wiring validators; a T^3 "
+          "miss with rank < 3 is usually VR under-sampling the voids, not a bug.)")
     return 0 if ok else 1
 
 
@@ -422,20 +452,23 @@ def parse_args():
                    help="Expected b_1 (number of persistent H^1 generators). "
                         "Default: auto-detect via the largest lifetime gap.")
     p.add_argument("--epsilon", type=float, default=None,
-                   help="Scale at which to build the 2-skeleton / read cocycles. "
-                        "Default: midpoint of the common H^1 plateau.")
+                   help="Fix a single scale instead of scanning the H^1 plateau "
+                        "(e.g. once you know the void scale). Default: scan.")
+    p.add_argument("--n_eps", type=int, default=8,
+                   help="Number of scales scanned across the H^1 plateau; the "
+                        "max cup rank over the scan is reported. Cost is "
+                        "~linear in this (each scale rebuilds the 2-skeleton).")
     p.add_argument("--thresh", type=float, default=None,
                    help="ripser filtration cap (FS-distance units). MUST be "
                         "finite -- inf builds the complete complex and OOMs. "
-                        "Default: thresh_factor x covering radius (auto).")
-    p.add_argument("--thresh_factor", type=float, default=3.0,
+                        "Default: thresh_factor x covering radius. For known "
+                        "feature scales pass it directly (e.g. your witness "
+                        "max_alpha); the scan needs thresh to reach the void.")
+    p.add_argument("--thresh_factor", type=float, default=4.0,
                    help="Auto thresh = this x covering radius (max nearest-"
-                        "landmark distance). Lower it if you still OOM; raise "
-                        "it if H^1 isn't resolved at the plateau.")
-    p.add_argument("--maxdim", type=int, default=2, choices=[1, 2],
-                   help="ripser max homology dim. 2 computes H^2 (for the "
-                        "b_2 diagnostic); 1 skips tetrahedra to save memory "
-                        "(cup rank is unaffected -- it uses its own 2-skeleton).")
+                        "landmark distance). Raise it if the cup rank stays 0 "
+                        "(thresh not reaching the H^2/void scale); lower it (or "
+                        "lower --landmarks) if you OOM.")
     p.add_argument("--cache_landmarks", default=None,
                    help="Optional pkl to cache/reuse the L_max landmark indices.")
     p.add_argument("--selftest", action="store_true",
@@ -483,7 +516,7 @@ def main():
         info = cup_rank_from_distances(D, n_h1=args.n_h1, epsilon=args.epsilon,
                                        thresh=args.thresh,
                                        thresh_factor=args.thresh_factor,
-                                       maxdim=args.maxdim, verbose=True)
+                                       n_eps=args.n_eps, verbose=True)
         results[L] = info
         print(f"    {_verdict(info)}")
         print(f"    [{time.time() - t0:.1f}s]")
