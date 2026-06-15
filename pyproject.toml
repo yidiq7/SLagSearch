@@ -27,8 +27,8 @@ points-gen = [
 # Persistent homology / TDA pipeline (persistent_homology/ folder).
 # - Witness-complex Betti numbers via gudhi (persistent_homology_witness.py);
 #   JAX (core dep) handles FS distance + max-min landmark selection.
-# - Cup-product / cup-length ring structure via ripser cocycles
-#   (persistent_homology_cup_length.py): the T^3 vs #(S^1xS^2) discriminant
+# - Cup-product rank via ripser cocycles
+#   (persistent_homology_cup_products.py): the T^3 vs #(S^1xS^2) discriminant
 #   that Betti numbers alone cannot see. cup_product.py is the pure-Python core.
 # Install with:   uv sync --extra persistent-homology
 persistent-homology = [

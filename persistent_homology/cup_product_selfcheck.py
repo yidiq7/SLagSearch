@@ -6,7 +6,7 @@ core, against hand-built complexes with known cohomology rings. Run directly:
     python persistent_homology/cup_product_selfcheck.py
 
 The end-to-end check on *sampled* manifolds (ripser cocycles -> cup rank on a
-T^2 / T^3 / S^2 point cloud) lives in persistent_homology_cup_length.py under
+T^2 / T^3 / S^2 point cloud) lives in persistent_homology_cup_products.py under
 ``--selftest`` (it needs ripser, so it runs on the cluster, not here).
 
 A binary matrix is a list of *columns*, each a set of row indices where the

@@ -37,15 +37,15 @@ own, so a disjoint union of c tori reports c x (b1=3, rank=3) rather than a
 single misleading total. (diagnostics/split_clusters.py can still split upstream.)
 
 Usage:
-    python persistent_homology/persistent_homology_cup_length.py \
+    python persistent_homology/persistent_homology_cup_products.py \
         --min_set min_set.pkl --landmarks 1000,2000,3000
 
     # If you know the expected b_1 (e.g. 6 for two T^3 components), pin it:
-    python persistent_homology/persistent_homology_cup_length.py \
+    python persistent_homology/persistent_homology_cup_products.py \
         --min_set min_set.pkl --landmarks 1000,2000,3000 --n_h1 6
 
     # Validate the ripser -> cup-rank wiring on synthetic manifolds (cluster):
-    python persistent_homology/persistent_homology_cup_length.py --selftest
+    python persistent_homology/persistent_homology_cup_products.py --selftest
 """
 import argparse
 import os

@@ -1,7 +1,7 @@
 """Alexander-Whitney cup products + F_2 linear algebra on a simplicial complex.
 
 Pure-Python / numpy-free core, in the spirit of ``hermitian_coeffs.py``: no JAX,
-no ripser. Consumed by ``persistent_homology_cup_length.py`` (the CLI that feeds
+no ripser. Consumed by ``persistent_homology_cup_products.py`` (the CLI that feeds
 it a ripser-derived complex + H^1 cocycles) and validated in isolation against
 hand-built triangulations in ``cup_product_selfcheck.py``.
 
