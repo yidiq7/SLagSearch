@@ -299,6 +299,11 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
         print(f"    b_1 used = {n_h1}   plateau [{lo:.4f}, {hi:.4f}]   "
               f"thresh = {thresh:.4f}   scanning {len(eps_grid)} scale(s)")
 
+    # rank mu can never exceed C(n_h1, 2) (that many products exist), so once we
+    # hit it the scan can stop -- a big saving since later (larger-eps) steps are
+    # by far the most expensive. (Disjoint clouds whose true max < C(n_h1,2),
+    # from cross-component vanishing, simply scan the full grid.)
+    max_possible = n_h1 * (n_h1 - 1) // 2
     best, scan = None, []
     for eps in eps_grid:
         r = _cup_rank_at_eps(D, eps, coc1, chosen_info)
@@ -310,6 +315,11 @@ def cup_rank_from_distances(D, n_h1=None, epsilon=None, thresh=None,
                   f"rank={r['rank']}  ({per})")
         if best is None or r["rank"] > best["rank"]:
             best = r
+        if best["rank"] >= max_possible:
+            if verbose:
+                print(f"      (reached max possible rank C({n_h1},2) = "
+                      f"{max_possible}; stopping scan early)")
+            break
 
     info = {"rank": best["rank"], "b1": n_h1, "epsilon": best["eps"],
             "components": best["components"], "n_components": len(best["components"]),
