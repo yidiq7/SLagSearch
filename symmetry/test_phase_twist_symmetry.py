@@ -26,7 +26,7 @@ we sweep a in (Z_5)^4 (fixing a_4 = 0) and report:
     symmetry, if one exists).
 
 Usage:
-    python -m diagnostics.test_phase_twist_symmetry \
+    python -m symmetry.test_phase_twist_symmetry \
         --coeffs gd_runs/plots_slag_d4_run/coeffs.pkl \
         [--group z2xs3] [--mode both] [--print_O]
 """
@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-from diagnostics.test_permutation_symmetry import (
+from symmetry.test_permutation_symmetry import (
     _GROUPS,
     _load_hermitians,
     build_tilde,

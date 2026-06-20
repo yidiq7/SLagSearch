@@ -14,7 +14,7 @@ Output goes to --out_dir (full path) or <min_set_dir>/<out_subdir>/ (subdir
 name); these flags are mutually exclusive. Default: <min_set_dir>.
 
 Usage:
-    python -m diagnostics.test_swap_invariance \
+    python -m symmetry.test_swap_invariance \
         --min_set <plots_slag_<job>/min_set.pkl> \
         --coeffs gd_runs/gd_<job>_step<N>.pkl \
         [--swap 2 3] [--psi 0] [--out_dir <dir> | --out_subdir <name>]

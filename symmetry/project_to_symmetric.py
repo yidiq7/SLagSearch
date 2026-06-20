@@ -14,7 +14,7 @@ Characters per equation are determined from the input by reading diag(O_g)
 (snapped to +/- 1) for each group element after the joint-O(3) Procrustes
 fit at a = 0. If diag(O_g) deviates from +/- 1 by more than --tol, the
 input is not in canonical form and the script aborts (run
-diagnostics.canonicalize_coeffs first).
+symmetry.canonicalize_coeffs first).
 
 Side effects:
   * The non-G-symmetric residual is discarded. For a relative symmetry
@@ -26,7 +26,7 @@ Side effects:
     if they drop, the candidate has real non-symmetric structure.
 
 Usage:
-    python -m diagnostics.project_to_symmetric \
+    python -m symmetry.project_to_symmetric \
         --coeffs gd_runs/plots_slag_d4_run/canonical/coeffs_canonical.pkl \
         [--group z2xs3] [--mode holo] [--tol 0.15]
         [--out_dir <dir> | --out_subdir <name>]
@@ -40,11 +40,11 @@ import numpy as np
 from hermitian_coeffs import (
     _BLOCK, _SYM_DIM, _load_coeffs, extract_hermitians,
 )
-from diagnostics.permute_coeffs import hermitian_to_coeffs_row
-from diagnostics.test_permutation_symmetry import (
+from symmetry.permute_coeffs import hermitian_to_coeffs_row
+from symmetry.test_permutation_symmetry import (
     _GROUPS, monomial_permutation,
 )
-from diagnostics.canonicalize_coeffs import compute_O_at_a
+from symmetry.canonicalize_coeffs import compute_O_at_a
 
 
 def determine_characters(
@@ -76,7 +76,7 @@ def determine_characters(
         for nm, dv, dg in bad[:5]:
             dg_str = " ".join(f"{x:+.3f}" for x in dg)
             msg += f"  {nm}: dev={dv:.4f}  diag=[{dg_str}]\n"
-        msg += ("Run `python -m diagnostics.canonicalize_coeffs` first to "
+        msg += ("Run `python -m symmetry.canonicalize_coeffs` first to "
                 "produce canonical coeffs (twist + equation rotation).")
         raise ValueError(msg)
     return chars, max_dev
@@ -214,7 +214,7 @@ def main() -> None:
     print(f"  # Fitness check -- did projection destroy the sLag?")
     print(f"  python -m viz.fitness_pipeline --coeffs {proj_path}")
     print(f"  # Sanity: symmetry test should now show ~ 0 residual on Z_2 x S_3:")
-    print(f"  python -m diagnostics.test_permutation_symmetry "
+    print(f"  python -m symmetry.test_permutation_symmetry "
           f"--coeffs {proj_path} --group z2xs3 --mode holo")
 
 

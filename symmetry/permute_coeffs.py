@@ -14,7 +14,7 @@ row, saved as {"coeffs": <array>} so it works directly with both
 plot_hermitian_coeffs.py and gradient_descent.py --plots_only.
 
 Usage:
-    python -m diagnostics.permute_coeffs --coeffs gd_runs/<job>.pkl \
+    python -m symmetry.permute_coeffs --coeffs gd_runs/<job>.pkl \
         [--out_dir <dir> | --out_subdir <name>]
 
 Output goes to --out_dir (full path) or <coeffs_dir>/<out_subdir>/ (subdir
@@ -32,7 +32,7 @@ import numpy as np
 from hermitian_coeffs import (
     _BLOCK, _SYM_DIM, coeffs_row_to_hermitian, _load_coeffs,
 )
-from diagnostics.test_permutation_symmetry import monomial_permutation
+from symmetry.test_permutation_symmetry import monomial_permutation
 
 
 def hermitian_to_coeffs_row(H: np.ndarray, N: int) -> np.ndarray:
@@ -150,7 +150,7 @@ def main() -> None:
     print(f"  # (3) Symmetry test -- the holomorphic symmetry transposition")
     print(f"  #     should shift to match each filename suffix.")
     print(f"  for f in {out_dir}/*.pkl; do")
-    print(f"      python -m diagnostics.test_permutation_symmetry --coeffs $f \\")
+    print(f"      python -m symmetry.test_permutation_symmetry --coeffs $f \\")
     print(f"          --group transpositions --mode holo")
     print(f"  done")
 

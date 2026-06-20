@@ -22,7 +22,7 @@ Pipeline:
      approximately diagonal with +/- 1 entries.
 
 Usage:
-    python -m diagnostics.canonicalize_coeffs \
+    python -m symmetry.canonicalize_coeffs \
         --coeffs gd_runs/plots_slag_d4_run/coeffs.pkl \
         [--a 2,2,4,4,0]                         # default: sweep
         [--group z2xs3] [--mode holo]
@@ -31,7 +31,7 @@ Usage:
 
 Downstream usage of coeffs_canonical.pkl:
     python -m viz.plot_hermitian_coeffs --coeffs <out>/coeffs_canonical.pkl
-    python -m diagnostics.test_phase_twist_symmetry \
+    python -m symmetry.test_phase_twist_symmetry \
         --coeffs <out>/coeffs_canonical.pkl    # should hit a=(0,0,0,0,0)
 """
 import argparse
@@ -43,11 +43,11 @@ import numpy as np
 from hermitian_coeffs import (
     _BLOCK, _SYM_DIM, _load_coeffs, extract_hermitians,
 )
-from diagnostics.permute_coeffs import hermitian_to_coeffs_row
-from diagnostics.test_permutation_symmetry import (
+from symmetry.permute_coeffs import hermitian_to_coeffs_row
+from symmetry.test_permutation_symmetry import (
     _GROUPS, build_tilde, joint_O3_across_degrees, monomial_permutation,
 )
-from diagnostics.test_phase_twist_symmetry import (
+from symmetry.test_phase_twist_symmetry import (
     apply_phase_twist, sweep_phase_twists,
 )
 
@@ -240,7 +240,7 @@ def main() -> None:
     print(f"Saved metadata to {meta_path}")
     print(f"\nInspect with:")
     print(f"  python -m viz.plot_hermitian_coeffs --coeffs {coeffs_path}")
-    print(f"  python -m diagnostics.test_phase_twist_symmetry "
+    print(f"  python -m symmetry.test_phase_twist_symmetry "
           f"--coeffs {coeffs_path}    # should land at a=(0,0,0,0,0)")
 
 

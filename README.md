@@ -259,9 +259,13 @@ SLagSearch/
 | `viz.plot_gd_history` | `--filepath` (log or ckpt) | loss/fitness curves | GD training curves |
 | `diagnostics.split_clusters` | `--min_set` | per-cluster `(N,5)` pkls + split PNG | UMAP+KMeans split |
 | `diagnostics.diagnose_phases` | `--ansatz {d1,rp3}` | stdout per-patch Ω-phase histograms | Sign-convention sanity check |
-| `diagnostics.permute_coeffs` | `--coeffs` | 10 permuted coeffs pkls | S₅ symmetry sweep |
-| `diagnostics.test_permutation_symmetry` | `--coeffs` | stdout residuals per permutation | Algebraic symmetry test |
-| `diagnostics.test_swap_invariance` | `--min_set`, `--coeffs` | residual histogram PNG | Geometric symmetry test |
+| `symmetry.canonicalize_coeffs` | `--coeffs` | canonical coeffs pkl | Untwist to the G-canonical frame |
+| `symmetry.project_to_symmetric` | `--coeffs` | projected coeffs pkl + metadata | Exact Z₂×S₃ character projection |
+| `symmetry.coeffs_to_latex` | `--coeffs` | `<stem>_equations.tex`/`.pdf` | Equations in zᵢz̄ⱼ + c.c. form |
+| `symmetry.permute_coeffs` | `--coeffs` | 10 permuted coeffs pkls | S₅ symmetry sweep |
+| `symmetry.test_permutation_symmetry` | `--coeffs` | stdout residuals per permutation | Algebraic symmetry test |
+| `symmetry.test_phase_twist_symmetry` | `--coeffs` | stdout residuals per twisted permutation | Twisted-symmetry sweep |
+| `symmetry.test_swap_invariance` | `--min_set`, `--coeffs` | residual histogram PNG | Geometric symmetry test |
 | `persistent_homology_witness.py` | `--min_set` (`--coeffs` auto-discovered from min_set's parent) | PH diagrams/barcodes/Betti curves | H₀/H₁/H₂ via witness complex |
 
 All CLIs follow the same convention: `--out_dir <full>` (full path) or

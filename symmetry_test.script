@@ -8,13 +8,13 @@
 
 
 ## Test (2 3) on the original (not-permuted) d=3 candidate:
-#uv run python -m diagnostics.test_swap_invariance \
+#uv run python -m symmetry.test_swap_invariance \
 #    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
 #    --coeffs gd_runs/gd_d3_from_d1_step3000.pkl \
 #    --swap 2 3
 #
 ## Or any other transposition to compare baselines:
-#uv run python -m diagnostics.test_swap_invariance \
+#uv run python -m symmetry.test_swap_invariance \
 #    --min_set gd_runs/plots_slag_d3_from_d1/min_set.pkl \
 #    --coeffs gd_runs/gd_d3_from_d1_step3000.pkl \
 #    --swap 0 1
