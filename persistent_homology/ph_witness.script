@@ -1,15 +1,17 @@
 #!/bin/bash
 #SBATCH --account=iaifi_lab
 #SBATCH -p iaifi_gpu
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:nvidia_a100-sxm4-80gb:1  # Request 4 GPUs
 #SBATCH --cpus-per-task=8  # Grant exclusive access to the node
 #SBATCH --mem=64G                             # '0' tells Slurm to allocate all available memory on the node
 
+DIR=gd_runs/plots_slag_d4_run/canonical/projected
+
 START_TIME=$SECONDS
 uv run --extra persistent-homology python persistent_homology/persistent_homology_witness.py \
-    --min_set gd_runs/plots_slag_d4_run/min_set.pkl \
-    --coeffs gd_runs/gd_d4_run_step3000.pkl \
+    --min_set $DIR/min_set.pkl \
+    --coeffs $DIR/coeffs.pkl \
     --psi 0 --landmarks 1000,2000,3000 \
     --subsamp 200000 --max_alpha 0.55 \
     --no_newton_filter \
