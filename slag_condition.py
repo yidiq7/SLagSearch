@@ -341,15 +341,6 @@ def top_lag_frac_indices(norms_normalized: jnp.ndarray, top_lag_frac: float) -> 
     return jnp.argsort(norms_normalized)[:keep]
 
 
-def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray, k: int=10, top_lag_frac: float=0.99):
-    norms_normalized = lagrangian_per_point_norms(kahler_form_unrestricted, restriction)
-    sel = top_lag_frac_indices(norms_normalized, top_lag_frac)
-    kahler_form_loss = jnp.mean(norms_normalized[sel])
-    #kahler_form_loss = jnp.mean(norms_normalized)
-    fitness = jnp.exp(-k*kahler_form_loss)
-    return fitness
-
-
 def get_Omega_coord(min_idx):
     # Choose the rest three coordinates to form the basis
     coord_lookup_table = jnp.array([
@@ -606,7 +597,7 @@ def compute_combined_fitness(
     if debug_mode:
         kahler_form_restricted = compute_kahler_form_restricted(min_set, restrictions, patch_indices, metric=metric)
         normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-        # Match the convention in compute_lagrangian_condition_fitness: the
+        # Match the convention in lagrangian_per_point_norms: the
         # per-point ratio ||K_R||_F / ||K_U||_F. Dividing the *matrix* by
         # normalization_factor (a scalar per point) gives a matrix whose
         # Frobenius norm is exactly that ratio.

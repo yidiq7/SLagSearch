@@ -295,20 +295,17 @@ def make_parallel_loss_and_grad(total_loss_fn, num_devices: int):
     return fn
 
 
-def make_parallel_ga_fitness(num_devices: int, top_lag_frac: float):
+def make_parallel_ga_fitness(num_devices: int):
     """Same shape as compute_ga_fitness but sharded over min_set_real.
 
-    `top_lag_frac` is closed over (static), so callers keep the
-    (min_set_real, coeffs, psi, metric) signature.
+    metric and top_lag_frac are static call-time args (passed by the caller),
+    mirroring how the single-device path already threads metric.
     """
-    def ga_fitness(min_set_real, coeffs, psi, metric):
-        return compute_ga_fitness(min_set_real, coeffs, psi, metric, top_lag_frac)
-
     if num_devices <= 1:
-        return jax.jit(ga_fitness, static_argnames=("metric",))
+        return jax.jit(compute_ga_fitness, static_argnames=("metric", "top_lag_frac"))
 
-    def per_device(min_set_shard, coeffs, psi, metric):
-        lag_fit, spec_fit = ga_fitness(min_set_shard, coeffs, psi, metric)
+    def per_device(min_set_shard, coeffs, psi, metric, top_lag_frac):
+        lag_fit, spec_fit = compute_ga_fitness(min_set_shard, coeffs, psi, metric, top_lag_frac)
         return (
             jax.lax.pmean(lag_fit, axis_name="x"),
             jax.lax.pmean(spec_fit, axis_name="x"),
@@ -317,12 +314,12 @@ def make_parallel_ga_fitness(num_devices: int, top_lag_frac: float):
     pmapped = jax.pmap(
         per_device,
         axis_name="x",
-        in_axes=(0, None, None, None),
-        static_broadcasted_argnums=(3,),
+        in_axes=(0, None, None, None, None),
+        static_broadcasted_argnums=(3, 4),
     )
 
-    def fn(min_set_sharded, coeffs, psi, metric):
-        lag_fit, spec_fit = pmapped(min_set_sharded, coeffs, psi, metric)
+    def fn(min_set_sharded, coeffs, psi, metric, top_lag_frac):
+        lag_fit, spec_fit = pmapped(min_set_sharded, coeffs, psi, metric, top_lag_frac)
         return take_replicated(lag_fit), take_replicated(spec_fit)
 
     return fn
@@ -546,7 +543,7 @@ def run_lbfgs_finisher(coeffs, points_in, psi, args, total_loss_fn,
         )
         gnorm = float(jnp.linalg.norm(grads))
 
-        lag_fit, spec_fit = ga_fitness_fn(min_set_data, coeffs, psi, args.metric)
+        lag_fit, spec_fit = ga_fitness_fn(min_set_data, coeffs, psi, args.metric, args.top_lag_frac)
         lag_fit = float(lag_fit)
         spec_fit = float(spec_fit)
 
@@ -736,7 +733,7 @@ def main():
 
     total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight, args.top_lag_frac)
     loss_value_and_grad = make_parallel_loss_and_grad(total_loss, num_devices)
-    ga_fitness_jit = make_parallel_ga_fitness(num_devices, args.top_lag_frac)
+    ga_fitness_jit = make_parallel_ga_fitness(num_devices)
     mining_fn = make_parallel_mining(num_devices)
 
     # In multi-GPU mode, min_set_real is a (D, k/D, 10) sharded array that we
@@ -755,7 +752,7 @@ def main():
     (init_loss, (init_lag, init_spec)), _ = loss_value_and_grad(
         coeffs, min_set_real, psi, args.inner_newton_steps, args.metric
     )
-    init_lag_fit, init_spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
+    init_lag_fit, init_spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric, args.top_lag_frac)
     init_lag_fit = float(init_lag_fit)
     init_spec_fit = float(init_spec_fit)
     label = "resumed   " if args.resume is not None else "initial   "
@@ -797,7 +794,7 @@ def main():
         coeffs = normalize_coeffs(coeffs)
 
         # GA-comparable fitness on the post-update coeffs and (un-inner-Newton'd) min_set.
-        lag_fit, spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric)
+        lag_fit, spec_fit = ga_fitness_jit(min_set_real, coeffs, psi, args.metric, args.top_lag_frac)
         lag_fit = float(lag_fit)
         spec_fit = float(spec_fit)
 

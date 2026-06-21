@@ -122,12 +122,12 @@ def _per_chunk_diagnostics(
     Phases are returned on [0, 2*pi) for plotting (so the user can see the
     raw distribution, not the mod-pi reduction used by training).
     Both per-point arrays use the same normalization convention as
-    compute_lagrangian_condition_fitness -- rescale the Frobenius norm of
+    lagrangian_per_point_norms -- rescale the Frobenius norm of
     the pulled-back Kahler form by the Frobenius norm before pull-back:
       ||K_restricted||_F / ||K_unrestricted||_F
     They are identical here; kept as separate names for call-site clarity
     (frobenius_norms is what gets saved to the sidecar / histogrammed;
-    norms_for_fitness is what the bottom-99% mean is taken over).
+    norms_for_fitness is what the top_lag_frac mean is taken over).
     """
     min_set = convert_real_to_complex_batch(min_set_real_chunk)
     patch_indices = determine_patches_batch(min_set)
