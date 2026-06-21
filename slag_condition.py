@@ -303,15 +303,48 @@ def compute_kahler_form_unrestricted(
     return compute_kahler_form(points, patch_indices, metric)
 
 
-def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray, k: int=10):
+def lagrangian_per_point_norms(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray) -> jnp.ndarray:
+    """Per-point Lagrangian condition ||K_restricted||_F / ||K_unrestricted||_F.
+
+    Smaller == closer to Lagrangian (the Kähler form pulled back to the
+    candidate submanifold vanishes on a true Lagrangian). This is the ranking
+    key for the top_lag_frac point selection.
+    """
     kahler_form_restricted = jnp.einsum('nij,nik,njl->nkl', kahler_form_unrestricted, restriction, restriction)
     frobenius_norms = jnp.linalg.norm(kahler_form_restricted, axis=(1, 2))
     normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
-    norms_normalized = frobenius_norms / (normalization_factor + 1e-9)
-    # Remove the potential blow-up
-    sorted_norms = jnp.sort(norms_normalized)
-    norms_cut = sorted_norms[:int(sorted_norms.shape[0]*0.99)]
-    kahler_form_loss = jnp.mean(norms_cut)
+    return frobenius_norms / (normalization_factor + 1e-9)
+
+
+def top_lag_frac_indices(norms_normalized: jnp.ndarray, top_lag_frac: float) -> jnp.ndarray:
+    """Indices of the best (smallest-norm) fraction `top_lag_frac` of the points.
+
+    The selection key is the per-point Lagrangian condition. Both the
+    Lagrangian and the special/phase conditions are then evaluated ONLY on this
+    subset -- in particular the special/phase condition no longer sees the
+    dropped points -- so a non-sLag disjoint component (large restricted-Kähler norm,
+    typically also spread in phase) is dropped from both. This is the knob for
+    "maybe only one of two disjoint pieces of the zero set is a sLag".
+
+    `top_lag_frac` is a static Python float, so `keep` is a compile-time constant and
+    the gathered subset has a static shape -- jit/grad friendly: argsort
+    returns constant integer indices, gradients flow through the subsequent
+    gather of norms/phases, and the selection is treated as locally constant in
+    coeffs (exactly like the previous sorted-slice trim).
+
+    top_lag_frac = 1.0 keeps every point. The default 0.99 reproduces the historical
+    "drop the worst 1% blow-up" Lagrangian trim while now also defining the
+    subset on which the special condition is evaluated.
+    """
+    n = norms_normalized.shape[0]
+    keep = max(1, int(n * top_lag_frac))
+    return jnp.argsort(norms_normalized)[:keep]
+
+
+def compute_lagrangian_condition_fitness(kahler_form_unrestricted: jnp.ndarray, restriction: jnp.ndarray, k: int=10, top_lag_frac: float=0.99):
+    norms_normalized = lagrangian_per_point_norms(kahler_form_unrestricted, restriction)
+    sel = top_lag_frac_indices(norms_normalized, top_lag_frac)
+    kahler_form_loss = jnp.mean(norms_normalized[sel])
     #kahler_form_loss = jnp.mean(norms_normalized)
     fitness = jnp.exp(-k*kahler_form_loss)
     return fitness
@@ -516,21 +549,26 @@ vmap_compute_affine_jacobian = jax.vmap(compute_affine_jacobian, in_axes=(0, 0, 
 vmap_compute_restriction = jax.vmap(compute_restriction, in_axes=0)
 
 def compute_combined_fitness(
-    min_set_real: jnp.ndarray, 
-    coeffs: jnp.ndarray, 
-    psi: jnp.ndarray, 
-    metric: str='FS', 
-    debug_mode: bool=False
+    min_set_real: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    psi: jnp.ndarray,
+    metric: str='FS',
+    debug_mode: bool=False,
+    top_lag_frac: float=0.99,
 ) -> jnp.float32:
     """
     Computes combined fitness with automatic patch detection and handling.
-    
+
     Args:
         min_set_real: An (N, 10) array of points in real coordinates
         coeffs: A (3, 25) array of equation coefficients
         psi: Complex parameter for the quintic
         metric: 'FS' or 'k4_fermat'
         debug_mode: If True, return additional diagnostic information
+        top_lag_frac: Fraction of points (ranked by the Lagrangian condition)
+            kept. The special/phase condition is evaluated ONLY on these
+            top-Lagrangian points (as is the Lagrangian condition). 1.0 = all
+            points; 0.99 (default) reproduces the historical worst-1% Lagrangian trim.
         
     Returns:
         If debug_mode=False: fitness scalar
@@ -546,16 +584,20 @@ def compute_combined_fitness(
 
     kahler_form_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)
 
-    lagrangian_fitness = compute_lagrangian_condition_fitness(
-        kahler_form_unrestricted, restrictions, k=10
-    )
+    # Rank points by the Lagrangian condition and keep the best top_lag_frac fraction;
+    # BOTH conditions are evaluated on that same subset (so a non-sLag disjoint
+    # component is excluded from the special condition too).
+    norms_normalized = lagrangian_per_point_norms(kahler_form_unrestricted, restrictions)
+    sel = top_lag_frac_indices(norms_normalized, top_lag_frac)
+
+    lagrangian_fitness = jnp.exp(-10 * jnp.mean(norms_normalized[sel]))
 
     phases = compute_holomorphic_form_restricted(
         min_set, patch_indices, psi, restrictions, phase_only=True
     )
 
     n_bins_val = 100
-    special_fitness = compute_special_condition_fitness(phases, n_bins=n_bins_val)
+    special_fitness = compute_special_condition_fitness(phases[sel], n_bins=n_bins_val)
    
     #combined_fitness = special_fitness
     combined_fitness = lagrangian_fitness * special_fitness 

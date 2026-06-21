@@ -179,6 +179,7 @@ def run_fitness_pipeline(
     k: int = 100000,
     n_refine_steps: int = 100,
     metric: str = 'FS',
+    top_lag_frac: float = 0.99,
     compare_with=None,
     out_dir: Optional[str] = 'plots_slag',
     patch_index: Optional[int] = None,
@@ -260,16 +261,21 @@ def run_fitness_pipeline(
     frobenius_norms, norms_for_fitness, phases = _chunked_diagnostics(
         jnp.asarray(min_set_real), coeffs, psi, metric, chunk_size
     )
-    sorted_nf = np.sort(norms_for_fitness)
-    cutoff = int(sorted_nf.shape[0] * 0.99)
-    lagrangian_fitness = float(np.exp(-10.0 * np.mean(sorted_nf[:cutoff])))
+    # Rank by the Lagrangian condition and keep the best top_lag_frac fraction; report
+    # BOTH scalars on that subset (matches GA/GD fitness). The histograms below
+    # still show ALL mined points so both disjoint components stay visible.
+    order = np.argsort(norms_for_fitness)
+    keep = max(1, int(order.shape[0] * top_lag_frac))
+    sel = order[:keep]
+    lagrangian_fitness = float(np.exp(-10.0 * np.mean(norms_for_fitness[sel])))
     # special_fitness uses mod-pi phases (consistent with training);
     # the histograms below use the raw mod-2pi phases.
     phases_mod_pi = phases % np.pi
-    special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases_mod_pi), n_bins=100))
+    special_fitness = float(compute_special_condition_fitness(jnp.asarray(phases_mod_pi[sel]), n_bins=100))
 
     print(f"min_set_distance: Min: {distances.min()}, Max: {distances.max()}, Mean: {distances.mean()}")
-    print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness}")
+    print(f"Lagrangian fitness: {lagrangian_fitness}, special_fitness: {special_fitness} "
+          f"(best {top_lag_frac:.0%} of {order.shape[0]} pts by Lagrangian condition; histograms show all)")
 
     # --- Collect comparison overlays (compare_with first, then extra_comparisons in order) ---
     overlays = []  # list of dicts {fnorms, phases, label, color}
@@ -421,6 +427,13 @@ def main() -> None:
     parser.add_argument("--newton_steps", type=int, default=80,
                         help="Newton refinement steps in filter_and_refine "
                              "(library kwarg: n_refine_steps).")
+    parser.add_argument("--top_lag_frac", type=float, default=0.99,
+                        help="Fraction of mined points (ranked by the Lagrangian "
+                             "condition, best first). The reported Lagrangian AND "
+                             "special fitness scalars are both computed ONLY on these "
+                             "top-Lagrangian points. 1.0 = all points; 0.99 (default) "
+                             "matches the historical trim. Histograms always show all "
+                             "mined points.")
     out_group = parser.add_mutually_exclusive_group()
     out_group.add_argument("--out_dir", type=Path, default=None,
                            help="Full output directory. "
@@ -501,7 +514,7 @@ def main() -> None:
     run_fitness_pipeline(
         points_real, coeffs, jnp.asarray(args.psi),
         k=args.k, n_refine_steps=args.newton_steps,
-        metric=args.metric, compare_with=compare_with,
+        metric=args.metric, top_lag_frac=args.top_lag_frac, compare_with=compare_with,
         out_dir=str(out_dir),
         min_set_override=min_set_override,
         min_set_source=args.min_set,

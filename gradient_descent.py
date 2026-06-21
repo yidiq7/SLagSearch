@@ -74,9 +74,10 @@ from sharding import device_put_sharded, shard_leading_axis, take_replicated
 from slag_condition import (
     compute_holomorphic_form_restricted,
     compute_kahler_form_unrestricted,
-    compute_lagrangian_condition_fitness,
     compute_special_condition_fitness,
     compute_special_condition_fitness_smooth,
+    lagrangian_per_point_norms,
+    top_lag_frac_indices,
     vmap_compute_affine_jacobian,
     vmap_compute_restriction,
 )
@@ -153,8 +154,14 @@ def compute_losses_on_fixed_points(
     psi: jnp.ndarray,
     n_refine_steps: int,
     metric: str,
+    top_lag_frac: float,
 ):
-    """Refine frozen init points under current coeffs, return (lag_loss, spec_loss)."""
+    """Refine frozen init points under current coeffs, return (lag_loss, spec_loss).
+
+    Points are ranked by the per-point Lagrangian condition; the best `top_lag_frac`
+    fraction is kept and BOTH losses are computed on that subset (so a non-sLag
+    disjoint component is excluded from the special loss too).
+    """
     refine_fn = partial(
         refine_point_iterative, coeffs=coeffs, psi=psi, n_steps=n_refine_steps
     )
@@ -176,14 +183,13 @@ def compute_losses_on_fixed_points(
     normalization_factor = jnp.linalg.norm(kahler_form_unrestricted, axis=(1, 2))
     norms_normalized = frobenius_norms / (normalization_factor + 1e-9)
 
-    sorted_norms = jnp.sort(norms_normalized)
-    cutoff_index = int(sorted_norms.shape[0] * 0.99)
-    lagrangian_loss = jnp.mean(sorted_norms[:cutoff_index])
+    sel = top_lag_frac_indices(norms_normalized, top_lag_frac)
+    lagrangian_loss = jnp.mean(norms_normalized[sel])
 
     phases = compute_holomorphic_form_restricted(
         min_set, patch_indices, psi, restrictions, phase_only=True
     )
-    order_parameter = compute_special_condition_fitness_smooth(phases)
+    order_parameter = compute_special_condition_fitness_smooth(phases[sel])
     special_loss = 1.0 - order_parameter
 
     return lagrangian_loss, special_loss
@@ -194,12 +200,15 @@ def compute_ga_fitness(
     coeffs: jnp.ndarray,
     psi: jnp.ndarray,
     metric: str,
+    top_lag_frac: float,
 ):
     """GA-comparable (lag_fit, spec_fit) on the given points. No extra Newton.
 
     Uses the same conventions as compute_combined_fitness in slag_condition.py:
-    lagrangian_fitness = exp(-10 * mean of bottom-99% restricted Frobenius norms),
-    special_fitness    = histogram Shannon-entropy fitness (n_bins=100).
+    rank points by the Lagrangian condition, keep the best `top_lag_frac` fraction, and
+    on that subset compute
+        lagrangian_fitness = exp(-10 * mean of restricted Frobenius norms),
+        special_fitness    = histogram Shannon-entropy fitness (n_bins=100).
     """
     min_set = convert_real_to_complex_batch(min_set_real)
     patch_indices = determine_patches_batch(min_set)
@@ -210,21 +219,21 @@ def compute_ga_fitness(
     kahler_form_unrestricted = compute_kahler_form_unrestricted(
         min_set, patch_indices, metric=metric
     )
-    lag_fit = compute_lagrangian_condition_fitness(
-        kahler_form_unrestricted, restrictions, k=10
-    )
+    norms_normalized = lagrangian_per_point_norms(kahler_form_unrestricted, restrictions)
+    sel = top_lag_frac_indices(norms_normalized, top_lag_frac)
+    lag_fit = jnp.exp(-10 * jnp.mean(norms_normalized[sel]))
 
     phases = compute_holomorphic_form_restricted(
         min_set, patch_indices, psi, restrictions, phase_only=True
     )
-    spec_fit = compute_special_condition_fitness(phases, n_bins=100)
+    spec_fit = compute_special_condition_fitness(phases[sel], n_bins=100)
     return lag_fit, spec_fit
 
 
-def make_total_loss(loss_kind: str, lag_weight: float, spec_weight: float):
+def make_total_loss(loss_kind: str, lag_weight: float, spec_weight: float, top_lag_frac: float):
     def total_loss(coeffs, min_set_real, psi, n_refine_steps, metric):
         lag, spec = compute_losses_on_fixed_points(
-            coeffs, min_set_real, psi, n_refine_steps, metric
+            coeffs, min_set_real, psi, n_refine_steps, metric, top_lag_frac
         )
         if loss_kind == "lag":
             total = lag_weight * lag
@@ -286,13 +295,20 @@ def make_parallel_loss_and_grad(total_loss_fn, num_devices: int):
     return fn
 
 
-def make_parallel_ga_fitness(num_devices: int):
-    """Same shape as compute_ga_fitness but sharded over min_set_real."""
+def make_parallel_ga_fitness(num_devices: int, top_lag_frac: float):
+    """Same shape as compute_ga_fitness but sharded over min_set_real.
+
+    `top_lag_frac` is closed over (static), so callers keep the
+    (min_set_real, coeffs, psi, metric) signature.
+    """
+    def ga_fitness(min_set_real, coeffs, psi, metric):
+        return compute_ga_fitness(min_set_real, coeffs, psi, metric, top_lag_frac)
+
     if num_devices <= 1:
-        return jax.jit(compute_ga_fitness, static_argnames=("metric",))
+        return jax.jit(ga_fitness, static_argnames=("metric",))
 
     def per_device(min_set_shard, coeffs, psi, metric):
-        lag_fit, spec_fit = compute_ga_fitness(min_set_shard, coeffs, psi, metric)
+        lag_fit, spec_fit = ga_fitness(min_set_shard, coeffs, psi, metric)
         return (
             jax.lax.pmean(lag_fit, axis_name="x"),
             jax.lax.pmean(spec_fit, axis_name="x"),
@@ -401,6 +417,7 @@ def _run_all_plots(points_real, coeffs, psi, args, num_devices: int = 1):
         metric=args.metric, compare_with="random",
         out_dir=base,
         num_devices=num_devices,
+        top_lag_frac=args.top_lag_frac,
     )
 
 
@@ -581,6 +598,16 @@ def main():
                         help="Weight on Lagrangian loss (used when --loss is 'lag' or 'both').")
     parser.add_argument("--spec_weight", type=float, default=1.0,
                         help="Weight on special loss (used when --loss is 'spec' or 'both').")
+    parser.add_argument("--top_lag_frac", type=float, default=0.99,
+                        help="Fraction of mined points (ranked by the Lagrangian "
+                             "condition, best first) kept. The special/phase "
+                             "condition is evaluated ONLY on these top-Lagrangian "
+                             "points (as is the Lagrangian condition). 1.0 = all "
+                             "points; 0.99 (default) reproduces the historical "
+                             "worst-1%% trim. Lower it (e.g. 0.5) to test whether "
+                             "only one disjoint piece of the zero set is sLag. "
+                             "Multi-GPU applies it per-shard then averages (biased "
+                             "for small top_lag_frac).")
     parser.add_argument("--max_degree", type=int, default=2,
                         choices=sorted(GENOTYPE_WIDTHS),
                         help="Ansatz max degree: 1 -> (3,25), 2 -> (3,250), "
@@ -627,7 +654,7 @@ def main():
     init_desc = f"init_pkl={args.init_pkl}" if args.init_pkl is not None else f"init={args.init}"
     print(f"=== GD for sLag search (max_degree={args.max_degree}, shape={shape}) ===")
     print(f"job_id={args.job_id} {init_desc} loss={args.loss} "
-          f"(lag_w={args.lag_weight} spec_w={args.spec_weight}) "
+          f"(lag_w={args.lag_weight} spec_w={args.spec_weight} top_lag_frac={args.top_lag_frac}) "
           f"lr={args.lr} steps={args.steps}")
     print(f"mine_interval={args.mine_interval} minset_size={args.minset_size} "
           f"newton_steps={args.newton_steps} inner_newton_steps={args.inner_newton_steps}")
@@ -707,9 +734,9 @@ def main():
         opt_state = optimizer.init(coeffs)
         history = []
 
-    total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight)
+    total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight, args.top_lag_frac)
     loss_value_and_grad = make_parallel_loss_and_grad(total_loss, num_devices)
-    ga_fitness_jit = make_parallel_ga_fitness(num_devices)
+    ga_fitness_jit = make_parallel_ga_fitness(num_devices, args.top_lag_frac)
     mining_fn = make_parallel_mining(num_devices)
 
     # In multi-GPU mode, min_set_real is a (D, k/D, 10) sharded array that we

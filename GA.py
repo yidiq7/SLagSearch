@@ -128,14 +128,15 @@ key = jax.random.PRNGKey(1234)
 # -----------------------------------------------------------------------------
 # 2. CORE EVALUATION FUNCTIONS
 # -----------------------------------------------------------------------------
-@partial(jit, static_argnames=('k', 'n_refine_steps', 'metric'))
+@partial(jit, static_argnames=('k', 'n_refine_steps', 'metric', 'top_lag_frac'))
 def calculate_fitness_for_one_individual(
     coeffs: jnp.ndarray,
     points_real: jnp.ndarray,
     psi: jnp.ndarray,
     k: int,
     n_refine_steps: int,
-    metric: str = 'FS'
+    metric: str = 'FS',
+    top_lag_frac: float = 0.99,
 ) -> jnp.float32:
     """
     Calculate fitness for one individual with automatic patch handling.
@@ -147,6 +148,10 @@ def calculate_fitness_for_one_individual(
         k: Number of points to refine
         n_refine_steps: Newton iterations
         metric: 'FS' or 'k4_fermat'
+        top_lag_frac: Fraction of refined points (ranked by the Lagrangian
+            condition) kept. The special/phase condition is evaluated ONLY on
+            these top-Lagrangian points (as is the Lagrangian). 1.0 = all
+            points; 0.99 (default) reproduces the historical worst-1% trim.
 
     Returns:
         Fitness value (0 if Newton's method fails to converge)
@@ -158,7 +163,7 @@ def calculate_fitness_for_one_individual(
     fitness = jax.lax.cond(
         newton_check_pass,
         lambda points: compute_combined_fitness(
-            min_set_real, coeffs, psi, metric
+            min_set_real, coeffs, psi, metric, top_lag_frac=top_lag_frac
         ),
         lambda points: jnp.float32(0.0),
         min_set_real
@@ -383,6 +388,16 @@ if __name__ == '__main__':
         '--preload_d1', action='store_true',
         help="Preload the initial population with a good approximation from the d=1 case."
     )
+    parser.add_argument(
+        '--top_lag_frac', type=float, default=0.99,
+        help="Fraction of refined points (ranked by the Lagrangian condition, best "
+             "first) kept. The special/phase condition is evaluated ONLY on these "
+             "top-Lagrangian points (as is the Lagrangian condition). 1.0 = all "
+             "points; 0.99 (default) reproduces the historical worst-1%% trim. Lower "
+             "it (e.g. 0.5) to test whether only one disjoint piece of the zero set "
+             "is sLag. Multi-GPU applies it per-shard then averages (biased for small "
+             "top_lag_frac)."
+    )
     args = parser.parse_args()
     print("--- Speciation-based GA with Adaptive Schedule ---")
     print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}")
@@ -399,14 +414,14 @@ if __name__ == '__main__':
 
     vmap_fitness_batch = vmap(
         calculate_fitness_for_one_individual,
-        in_axes=(0, None, None, None, None, None), out_axes=0
+        in_axes=(0, None, None, None, None, None, None), out_axes=0
     )
 
     if num_devices > 1:
         evaluate_fitness = jax.pmap(
             vmap_fitness_batch,
-            in_axes=(0, None, None, None, None, None),
-            static_broadcasted_argnums=(3, 4, 5)
+            in_axes=(0, None, None, None, None, None, None),
+            static_broadcasted_argnums=(3, 4, 5, 6)
         )
     else:
         evaluate_fitness = vmap_fitness_batch
@@ -520,12 +535,12 @@ if __name__ == '__main__':
                 pop_shards = [pop_batch[d * per_device:(d + 1) * per_device] for d in range(num_devices)]
                 pop_sharded = device_put_sharded(pop_shards, jax.local_devices())
                 fitness_reshaped = evaluate_fitness(
-                    pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                    pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC, args.top_lag_frac
                 )
                 fitness_batch = fitness_reshaped.reshape(-1)
             else:
                 fitness_batch = evaluate_fitness(
-                    pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                    pop_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC, args.top_lag_frac
                 )
 
             # Replace any potential NaN/inf values with 0 before storing them.
@@ -745,12 +760,12 @@ if __name__ == '__main__':
             pop_shards = [population_batch[d * per_device:(d + 1) * per_device] for d in range(num_devices)]
             pop_sharded = device_put_sharded(pop_shards, jax.local_devices())
             fitness_reshaped = evaluate_fitness(
-                pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                pop_sharded, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC, args.top_lag_frac
             )
             fitness_batch = fitness_reshaped.reshape(-1)
         else:
             fitness_batch = evaluate_fitness(
-                population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC
+                population_batch, points_real, PSI, MINSET_SIZE, NEWTON_STEPS, METRIC, args.top_lag_frac
             )
         safe_fitness_batch = jnp.nan_to_num(fitness_batch, nan=0.0, posinf=0.0, neginf=0.0)
         final_fitness = final_fitness.at[start_idx:end_idx].set(safe_fitness_batch)
@@ -806,5 +821,5 @@ if __name__ == '__main__':
             f'plots_slag_{args.job_id}',
             f'plots_slag_{args.job_id}_{rank}_id{s.id}'
         )
-        run_fitness_pipeline(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir)
+        run_fitness_pipeline(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir, top_lag_frac=args.top_lag_frac)
         rank += 1
