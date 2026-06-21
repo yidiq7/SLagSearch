@@ -398,6 +398,13 @@ if __name__ == '__main__':
              "is sLag. Multi-GPU applies it per-shard then averages (biased for small "
              "top_lag_frac)."
     )
+    parser.add_argument(
+        '--out_dir', type=str, default='./ga_runs',
+        help="Parent directory for all outputs (mirrors gradient_descent's "
+             "--out_dir). Per-run results go to <out_dir>/<job_id>/rank<r>_id<sid>/ "
+             "and checkpoints to <out_dir>/checkpoints/ (where --load_checkpoint "
+             "also looks). Default ./ga_runs."
+    )
     args = parser.parse_args()
     print("--- Speciation-based GA with Adaptive Schedule ---")
     print(f"Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}")
@@ -441,11 +448,14 @@ if __name__ == '__main__':
     population = None
     species_list = []
     current_speciation_threshold = SPECIATION_THRESHOLD_INIT
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    
+    # Checkpoints live under --out_dir (mirrors gradient_descent); --load_checkpoint
+    # resolves against this same dir. CHECKPOINT_DIR is just the subfolder name.
+    checkpoint_dir = os.path.join(args.out_dir, CHECKPOINT_DIR)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
     checkpoint_to_load = None
     if args.load_checkpoint == 'latest':
-        checkpoint_files = glob.glob(os.path.join(CHECKPOINT_DIR, 'checkpoint_gen_*.pkl'))
+        checkpoint_files = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_gen_*.pkl'))
         if checkpoint_files:
             latest_gen = -1
             for f in checkpoint_files:
@@ -456,7 +466,7 @@ if __name__ == '__main__':
                         latest_gen = gen_num
                         checkpoint_to_load = f
     elif args.load_checkpoint is not None:
-        checkpoint_to_load = os.path.join(CHECKPOINT_DIR, args.load_checkpoint)
+        checkpoint_to_load = os.path.join(checkpoint_dir, args.load_checkpoint)
 
     if checkpoint_to_load and os.path.exists(checkpoint_to_load):
         print(f"\nCheckpoint file found. Resuming run from: {checkpoint_to_load}")
@@ -717,7 +727,7 @@ if __name__ == '__main__':
             last_log_time = current_time # Reset timer for the next interval
         # 6. Checkpointing
         if (gen + 1) % CHECKPOINT_INTERVAL == 0 and (gen + 1) <= end_gen:
-            checkpoint_filename = os.path.join(CHECKPOINT_DIR, f'checkpoint_gen_{gen+1}.pkl')
+            checkpoint_filename = os.path.join(checkpoint_dir, f'checkpoint_gen_{gen+1}.pkl')
             # Prune members from species before saving to reduce file size
             # The representative and stagnation state is the important part
             species_to_save = [Species(s.representative) for s in species_list]
@@ -818,8 +828,9 @@ if __name__ == '__main__':
         print(format_array_with_commas(best_member))
 
         out_dir = os.path.join(
-            f'plots_slag_{args.job_id}',
-            f'plots_slag_{args.job_id}_{rank}_id{s.id}'
+            args.out_dir,
+            args.job_id,
+            f'rank{rank}_id{s.id}'
         )
         run_fitness_pipeline(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir, top_lag_frac=args.top_lag_frac)
         rank += 1
