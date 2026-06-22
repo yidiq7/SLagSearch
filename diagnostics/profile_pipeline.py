@@ -32,7 +32,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import vmap
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 
 def parse_args():
@@ -86,15 +85,6 @@ def time_phase(label, fn, n_iters):
 GENOTYPE_SHAPE = (3, 250)
 
 
-def device_put_sharded(shards, devices):
-    """Mirror of GA.device_put_sharded so the multi-GPU path matches exactly."""
-    mesh = Mesh(np.array(devices), ('x',))
-    sharding = NamedSharding(mesh, P('x'))
-    return jax.tree.map(
-        lambda *xs: jax.device_put(jnp.stack(xs), sharding), *shards
-    )
-
-
 def main():
     args = parse_args()
 
@@ -110,6 +100,7 @@ def main():
     )
     from slag_condition import compute_combined_fitness
     from helper import assert_metric_psi_compatible, canonicalize_coeffs, dwork_points_path, load_points
+    from sharding import device_put_sharded
 
     assert_metric_psi_compatible(args.metric, args.psi)
 
