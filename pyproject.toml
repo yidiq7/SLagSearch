@@ -49,6 +49,11 @@ viz-3d = [
     "plotly>=5.20",
 ]
 
+# Test runner. Install with:   uv sync --extra dev
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.uv]
 # Keep transitive resolution stable across machines.
 managed = true

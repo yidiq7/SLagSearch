@@ -26,3 +26,49 @@ def fs_features(z: np.ndarray) -> np.ndarray:
     off_re = P[:, iu[0], iu[1]].real * np.sqrt(2.0)      # (N,10)
     off_im = P[:, iu[0], iu[1]].imag * np.sqrt(2.0)      # (N,10)
     return np.concatenate([diag, off_re, off_im], axis=1).astype(np.float64)
+
+
+def _get_hdbscan():
+    """Lazy HDBSCAN lookup: sklearn>=1.3 first, then the standalone package."""
+    try:
+        from sklearn.cluster import HDBSCAN
+        return HDBSCAN
+    except ImportError:
+        pass
+    try:
+        from hdbscan import HDBSCAN
+        return HDBSCAN
+    except ImportError as e:
+        raise ImportError(
+            "--target_cluster needs scikit-learn>=1.3 (sklearn.cluster.HDBSCAN) "
+            "or the standalone `hdbscan` package. `uv sync --extra viz-3d`."
+        ) from e
+
+
+def cluster_labels(features, min_cluster_size, cluster_selection_epsilon=0.0):
+    """Integer HDBSCAN labels (noise = -1). Deterministic given the params."""
+    HDBSCAN = _get_hdbscan()
+    clusterer = HDBSCAN(
+        min_cluster_size=int(min_cluster_size),
+        cluster_selection_epsilon=float(cluster_selection_epsilon),
+    )
+    return clusterer.fit_predict(np.asarray(features))
+
+
+def detect_components(features, min_cluster_size, min_cluster_frac,
+                      cluster_selection_epsilon=0.0):
+    """Cluster, drop components smaller than min_cluster_frac*N as noise, relabel
+    survivors 0..n-1 by DESCENDING size. Returns (labels, n, sizes)."""
+    raw = cluster_labels(features, min_cluster_size, cluster_selection_epsilon)
+    n_total = np.asarray(features).shape[0]
+    floor = max(1, int(min_cluster_frac * n_total))
+    keep = [(int(lbl), int((raw == lbl).sum()))
+            for lbl in np.unique(raw) if lbl != -1]
+    keep = [(lbl, sz) for lbl, sz in keep if sz >= floor]
+    keep.sort(key=lambda t: -t[1])                      # descending size
+    labels = np.full(n_total, -1, dtype=int)
+    sizes = []
+    for new_lbl, (old_lbl, sz) in enumerate(keep):
+        labels[raw == old_lbl] = new_lbl
+        sizes.append(sz)
+    return labels, len(keep), sizes
