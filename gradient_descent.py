@@ -381,6 +381,47 @@ def make_parallel_mining(num_devices: int):
     return fn
 
 
+def mine_one_cluster(mining_fn, points_in, coeffs, psi, args, num_devices, anchor, rng):
+    """Mine, then (if --target_cluster set) extract a fixed-size pure-cluster
+    min-set via HDBSCAN on FS features. Returns
+    (min_set_real, distances, new_anchor, info).
+
+    Passthrough when args.target_cluster is None: mines args.minset_size and
+    returns it unchanged, so non-cluster runs are byte-for-byte the old path.
+    """
+    if args.target_cluster is None:
+        min_set_real, distances, _ = mining_fn(
+            points_in, coeffs, psi, args.minset_size, args.newton_steps,
+        )
+        return min_set_real, distances, anchor, None
+
+    k_mine = args.mine_oversample * args.cluster_minset_size
+    min_set_raw, distances, _ = mining_fn(
+        points_in, coeffs, psi, k_mine, args.newton_steps,
+    )
+    host = (np.asarray(unshard_leading_axis(min_set_raw))
+            if num_devices > 1 else np.asarray(min_set_raw))   # (k_mine, 10)
+    z = host[:, :5] + 1j * host[:, 5:]                          # (k_mine, 5) complex
+    feats = cluster_select.fs_features(z)
+    member_mask, new_anchor, info = cluster_select.select_cluster(
+        feats, anchor, args.target_cluster,
+        args.min_cluster_size, args.min_cluster_frac, args.cluster_selection_epsilon,
+    )
+    if anchor is None:
+        print(f"  [cluster] detected {info['n_components']} component(s), "
+              f"sizes {info['sizes']}; following component {info['chosen']} "
+              f"(of {host.shape[0]} mined pts)")
+    else:
+        print(f"  [cluster] {info['n_components']} component(s), sizes "
+              f"{info['sizes']}; tracked -> component {info['chosen']}")
+    member_idx = np.flatnonzero(member_mask)
+    fixed_idx = cluster_select.fill_to_size(member_idx, args.cluster_minset_size, rng)
+    cluster_real = host[fixed_idx]                             # (cluster_minset_size, 10)
+    min_set_real = (shard_leading_axis(jnp.asarray(cluster_real), num_devices)
+                    if num_devices > 1 else jnp.asarray(cluster_real))
+    return min_set_real, distances, new_anchor, info
+
+
 def load_points(psi, path=None):
     """Resolve via dwork_points_path if no explicit path, then load.
 
@@ -752,6 +793,7 @@ def main():
         opt_state = jax.tree.map(jnp.asarray, ckpt["opt_state"])
         history = list(ckpt["history"])
         start_step = int(ckpt["step"])
+        cluster_anchor = ckpt.get("anchor")
         print(f"=== Resumed from {args.resume} at step {start_step} ===")
         if start_step > args.steps or (start_step == args.steps and args.lbfgs_steps == 0):
             raise ValueError(
@@ -766,6 +808,7 @@ def main():
         coeffs = normalize_coeffs(coeffs)
         opt_state = optimizer.init(coeffs)
         history = []
+        cluster_anchor = None
 
     total_loss = make_total_loss(args.loss, args.lag_weight, args.spec_weight, args.top_lag_frac)
     loss_value_and_grad = make_parallel_loss_and_grad(total_loss, num_devices)
@@ -777,9 +820,11 @@ def main():
     # round-trip. In single-GPU mode it's the usual (k, 10) array.
     points_in = points_sharded if num_devices > 1 else points_real
 
+    cluster_rng = np.random.default_rng(args.seed)
+
     # Initial mining + loss eval (also re-runs on resume to repopulate min_set_real).
-    min_set_real, distances, _ = mining_fn(
-        points_in, coeffs, psi, args.minset_size, args.newton_steps,
+    min_set_real, distances, cluster_anchor, _ = mine_one_cluster(
+        mining_fn, points_in, coeffs, psi, args, num_devices, cluster_anchor, cluster_rng,
     )
     mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
     print(f"  [mining] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
@@ -813,8 +858,9 @@ def main():
         # Skip step==0: just mined for the initial eval. Mining schedule
         # then fires at step==mine_interval, 2*mine_interval, etc.
         if step > 0 and step % args.mine_interval == 0:
-            min_set_real, distances, _ = mining_fn(
-                points_in, coeffs, psi, args.minset_size, args.newton_steps,
+            min_set_real, distances, cluster_anchor, _ = mine_one_cluster(
+                mining_fn, points_in, coeffs, psi, args, num_devices,
+                cluster_anchor, cluster_rng,
             )
             mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
             print(f"  [mining @ step {step}] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
