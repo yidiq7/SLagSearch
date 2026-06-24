@@ -906,6 +906,8 @@ def main():
                 "history": history,
                 "step": step + 1,
                 "args": vars(args),
+                "anchor": None if cluster_anchor is None else np.asarray(cluster_anchor),
+                "target_cluster": args.target_cluster,
             }
             tmp = ckpt + ".tmp"
             with open(tmp, "wb") as f:
@@ -927,6 +929,8 @@ def main():
             "step": last_step,
             "args": vars(args),
             "phase": "lbfgs",
+            "anchor": None if cluster_anchor is None else np.asarray(cluster_anchor),
+            "target_cluster": args.target_cluster,
         }
         tmp = lbfgs_ckpt + ".tmp"
         with open(tmp, "wb") as f:
