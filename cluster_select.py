@@ -108,3 +108,16 @@ def select_cluster(features, anchor, target_k, min_cluster_size, min_cluster_fra
     new_anchor = features[member_mask].mean(axis=0)
     info["chosen"] = chosen
     return member_mask, new_anchor, info
+
+
+def fill_to_size(member_idx, size, rng):
+    """Exactly `size` indices: every member once + uniform resample padding.
+    Subsample (no replacement) only when there are more than `size` members."""
+    member_idx = np.asarray(member_idx)
+    m = member_idx.shape[0]
+    if m == 0:
+        raise ValueError("empty component: cannot fill")
+    if m >= size:
+        return rng.choice(member_idx, size=size, replace=False)
+    pad = rng.choice(member_idx, size=size - m, replace=True)
+    return np.concatenate([member_idx, pad])

@@ -83,3 +83,24 @@ def test_select_raises_when_target_k_out_of_range():
     import pytest
     with pytest.raises(ValueError):
         cluster_select.select_cluster(X, None, 5, 30, 0.05)
+
+
+def test_fill_to_size_pads_short():
+    rng = np.random.default_rng(8)
+    idx = np.arange(5)
+    out = cluster_select.fill_to_size(idx, 12, rng)
+    assert out.shape == (12,)
+    assert set(idx.tolist()).issubset(set(out.tolist()))   # every member present
+
+
+def test_fill_to_size_subsamples_large():
+    rng = np.random.default_rng(9)
+    out = cluster_select.fill_to_size(np.arange(100), 20, rng)
+    assert out.shape == (20,)
+    assert len(np.unique(out)) == 20                       # no replacement
+
+
+def test_fill_to_size_exact():
+    rng = np.random.default_rng(10)
+    out = cluster_select.fill_to_size(np.arange(8), 8, rng)
+    assert sorted(out.tolist()) == list(range(8))
