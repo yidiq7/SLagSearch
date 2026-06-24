@@ -42,7 +42,7 @@ assert_metric_psi_compatible(METRIC, PSI)
 POPULATION_SIZE = 800
 GENOTYPE_SHAPE = (3, 25)  # d=1 only: GA searches the d=1 landscape; GD refines higher degrees.
 NUM_GENES = GENOTYPE_SHAPE[0] * GENOTYPE_SHAPE[1]
-NUM_GENERATIONS = 40
+NUM_GENERATIONS = 400
 
 #TRANSITION_GENERATION = 1600
 TRANSITION_GENERATION = 999999
@@ -51,14 +51,14 @@ TRANSITION_GENERATION = 999999
 TARGET_SPECIES_COUNT_MIN = 10
 TARGET_SPECIES_COUNT_MAX = 25
 
-SPECIATION_THRESHOLD_INIT = 1.77
+SPECIATION_THRESHOLD_INIT = 2.5
 SPECIATION_THRESHOLD_STEP = 0.02 # each gen *= (1 +/- step)
 WARMUP_GENERATIONS = 300
 COOLDOWN_GENERATIONS = 20
 SPECIATION_MERGE_RATIO = 0.5  # Merge if distance smaller than threshold * ratio
 
-TERRITORY_BUFFER_EXPLORE = 0.0
-TERRITORY_BUFFER_EXPLOIT = 0.0
+TERRITORY_BUFFER_EXPLORE = 0.5
+TERRITORY_BUFFER_EXPLOIT = 0.5
 
 # Exploration Phase Settings
 TOURNEY_SIZE_EXPLORE = 3
@@ -768,7 +768,7 @@ if __name__ == '__main__':
         best_member = s.members[best_member_idx]
         best_fitness = s.fitness_values[best_member_idx]
 
-        if best_fitness < 0.5 * top_fitness_score:
+        if best_fitness < 0.2 * top_fitness_score:
             print(f"\nStopping plot generation: Species {s.id} fitness ({best_fitness:.5f}) is below half of the top fitness ({top_fitness_score:.5f}).")
             break
 
@@ -782,5 +782,5 @@ if __name__ == '__main__':
             args.job_id,
             f'rank{rank}_id{s.id}'
         )
-        run_fitness_pipeline(points_real, best_member, PSI, k=100000, n_refine_steps=100, metric=METRIC, compare_with="random", out_dir=out_dir, top_lag_frac=args.top_lag_frac)
+        run_fitness_pipeline(points_real, best_member, PSI, k=80000, n_refine_steps=80, metric=METRIC, compare_with="random", out_dir=out_dir, top_lag_frac=args.top_lag_frac)
         rank += 1

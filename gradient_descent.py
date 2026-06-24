@@ -618,7 +618,7 @@ def main():
                              "Overrides --init.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--job_id", type=str, default="0")
-    parser.add_argument("--save_every", type=int, default=50)
+    parser.add_argument("--save_every", type=int, default=100)
     parser.add_argument("--out_dir", type=str, default="./gd_runs")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a full checkpoint pkl to resume from. "
