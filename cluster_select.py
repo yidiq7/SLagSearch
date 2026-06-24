@@ -121,3 +121,15 @@ def fill_to_size(member_idx, size, rng):
         return rng.choice(member_idx, size=size, replace=False)
     pad = rng.choice(member_idx, size=size - m, replace=True)
     return np.concatenate([member_idx, pad])
+
+
+def stability_sweep(features, sizes_to_try, min_cluster_frac,
+                    cluster_selection_epsilon=0.0):
+    """#components for each min_cluster_size in sizes_to_try. A plateau is the
+    robust component count (cross-check against the PH b0)."""
+    out = {}
+    for s in sizes_to_try:
+        _, n, _ = detect_components(features, s, min_cluster_frac,
+                                    cluster_selection_epsilon)
+        out[int(s)] = n
+    return out

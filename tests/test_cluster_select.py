@@ -104,3 +104,11 @@ def test_fill_to_size_exact():
     rng = np.random.default_rng(10)
     out = cluster_select.fill_to_size(np.arange(8), 8, rng)
     assert sorted(out.tolist()) == list(range(8))
+
+
+def test_stability_sweep_plateau():
+    rng = np.random.default_rng(11)
+    X = _two_blobs(rng)
+    sweep = cluster_select.stability_sweep(X, [20, 30, 40, 50], min_cluster_frac=0.05)
+    assert set(sweep) == {20, 30, 40, 50}
+    assert all(v == 2 for v in sweep.values())   # clean blobs -> stable n=2
