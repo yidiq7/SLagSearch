@@ -51,6 +51,7 @@ def cluster_labels(features, min_cluster_size, cluster_selection_epsilon=0.0):
     clusterer = HDBSCAN(
         min_cluster_size=int(min_cluster_size),
         cluster_selection_epsilon=float(cluster_selection_epsilon),
+        allow_single_cluster=True,   # one component -> 1 cluster, not all-noise
     )
     return clusterer.fit_predict(np.asarray(features))
 
