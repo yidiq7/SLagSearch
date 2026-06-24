@@ -23,7 +23,7 @@
 
 # Milestone 1 — `cluster_select.py` + unit tests
 
-Self-contained, pure-numpy. Validation gate at the end: `uv run pytest tests/test_cluster_select.py -v` on the cluster, all green, before starting Milestone 2.
+Self-contained, pure-numpy. Validation gate at the end: `uv run python -m pytest tests/test_cluster_select.py -v` on the cluster, all green, before starting Milestone 2.
 
 ### Task 1: FS-feature embedding
 
@@ -62,7 +62,7 @@ def test_fs_features_projective_invariance():
 
 - [ ] **Step 2: Run test to verify it fails** (on the cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'cluster_select'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -101,7 +101,7 @@ def fs_features(z: np.ndarray) -> np.ndarray:
 
 - [ ] **Step 4: Run test to verify it passes** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -v`
 Expected: PASS (2 passed).
 
 - [ ] **Step 5: Commit**
@@ -180,7 +180,7 @@ def test_detect_thin_neck_splits():
 
 - [ ] **Step 3: Run to verify they fail** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k detect -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k detect -v`
 Expected: FAIL — `AttributeError: module 'cluster_select' has no attribute 'detect_components'`.
 
 - [ ] **Step 4: Implement**
@@ -235,7 +235,7 @@ def detect_components(features, min_cluster_size, min_cluster_frac,
 
 - [ ] **Step 5: Run to verify they pass** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k detect -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k detect -v`
 Expected: PASS (3 passed).
 *If `test_detect_thin_neck_splits` fails:* HDBSCAN's neck behavior depends on params — try `min_cluster_size=20` or a sparser neck (`np.linspace(2,8,4)`). This is the one test whose outcome must be confirmed on real cluster HDBSCAN.
 
@@ -290,7 +290,7 @@ def test_select_raises_when_target_k_out_of_range():
 
 - [ ] **Step 2: Run to verify they fail** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k select -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k select -v`
 Expected: FAIL — `AttributeError: ... 'select_cluster'`.
 
 - [ ] **Step 3: Implement**
@@ -335,7 +335,7 @@ def select_cluster(features, anchor, target_k, min_cluster_size, min_cluster_fra
 
 - [ ] **Step 4: Run to verify they pass** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k select -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k select -v`
 Expected: PASS (3 passed).
 
 - [ ] **Step 5: Commit**
@@ -381,7 +381,7 @@ def test_fill_to_size_exact():
 
 - [ ] **Step 2: Run to verify they fail** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k fill -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k fill -v`
 Expected: FAIL — `AttributeError: ... 'fill_to_size'`.
 
 - [ ] **Step 3: Implement**
@@ -403,7 +403,7 @@ def fill_to_size(member_idx, size, rng):
 
 - [ ] **Step 4: Run to verify they pass** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k fill -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k fill -v`
 Expected: PASS (3 passed).
 
 - [ ] **Step 5: Commit**
@@ -436,7 +436,7 @@ def test_stability_sweep_plateau():
 
 - [ ] **Step 2: Run to verify it fails** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -k stability -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -k stability -v`
 Expected: FAIL — `AttributeError: ... 'stability_sweep'`.
 
 - [ ] **Step 3: Implement**
@@ -457,7 +457,7 @@ def stability_sweep(features, sizes_to_try, min_cluster_frac,
 
 - [ ] **Step 4: Run the FULL module test (Milestone-1 gate)** (cluster)
 
-Run: `uv run pytest tests/test_cluster_select.py -v`
+Run: `uv run python -m pytest tests/test_cluster_select.py -v`
 Expected: PASS (all 12 tests). **Do not start Milestone 2 until this is green.**
 
 - [ ] **Step 5: Commit + push**
