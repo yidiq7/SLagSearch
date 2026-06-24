@@ -70,7 +70,10 @@ from helper import (
     load_points as _load_points,
 )
 from viz.fitness_pipeline import run_fitness_pipeline
-from sharding import device_put_sharded, shard_leading_axis, take_replicated
+from sharding import (
+    device_put_sharded, shard_leading_axis, take_replicated, unshard_leading_axis,
+)
+import cluster_select
 from slag_condition import (
     compute_holomorphic_form_restricted,
     compute_kahler_form_unrestricted,
@@ -644,7 +647,30 @@ def main():
                         help="L-BFGS gradient-norm stopping tolerance.")
     parser.add_argument("--lbfgs_memory_size", type=int, default=10,
                         help="L-BFGS history length (number of (s,y) pairs).")
+    parser.add_argument("--target_cluster", type=int, default=None,
+                        help="Optimize on ONE geometric component of the mined "
+                             "zero set (0-indexed; components ranked by descending "
+                             "size at the first mine, then anchor-tracked). HDBSCAN "
+                             "on FS features; needs scikit-learn>=1.3. Default None "
+                             "= whole manifold (unchanged behavior).")
+    parser.add_argument("--min_cluster_size", type=int, default=200,
+                        help="HDBSCAN min_cluster_size (only with --target_cluster).")
+    parser.add_argument("--cluster_selection_epsilon", type=float, default=0.0,
+                        help="HDBSCAN cluster_selection_epsilon (merge components "
+                             "closer than this; raise to keep a fat neck merged).")
+    parser.add_argument("--min_cluster_frac", type=float, default=0.02,
+                        help="Drop components smaller than this fraction of the "
+                             "mined points as noise.")
+    parser.add_argument("--cluster_minset_size", type=int, default=None,
+                        help="Fixed per-cluster min-set size fed to the loss. "
+                             "Default: --minset_size.")
+    parser.add_argument("--mine_oversample", type=int, default=2,
+                        help="Mine this multiple of --cluster_minset_size so the "
+                             "target component is well-populated before extraction.")
     args = parser.parse_args()
+
+    if args.cluster_minset_size is None:
+        args.cluster_minset_size = args.minset_size
 
     os.makedirs(args.out_dir, exist_ok=True)
     shape = genotype_shape(args.max_degree)
@@ -681,6 +707,16 @@ def main():
                 f"--plot_k {args.plot_k} not divisible by "
                 f"num_devices={num_devices}"
             )
+        if args.target_cluster is not None:
+            if args.cluster_minset_size % num_devices != 0:
+                raise ValueError(
+                    f"--cluster_minset_size {args.cluster_minset_size} not "
+                    f"divisible by num_devices={num_devices}")
+            if (args.mine_oversample * args.cluster_minset_size) % num_devices != 0:
+                raise ValueError(
+                    f"mine_oversample*cluster_minset_size="
+                    f"{args.mine_oversample * args.cluster_minset_size} not "
+                    f"divisible by num_devices={num_devices}")
     else:
         points_sharded = None  # single-device path uses points_real directly
 
