@@ -72,3 +72,39 @@ def detect_components(features, min_cluster_size, min_cluster_frac,
         labels[raw == old_lbl] = new_lbl
         sizes.append(sz)
     return labels, len(keep), sizes
+
+
+def component_centroid(features, labels, label):
+    return np.asarray(features)[labels == label].mean(axis=0)
+
+
+def select_cluster(features, anchor, target_k, min_cluster_size, min_cluster_frac,
+                   cluster_selection_epsilon=0.0):
+    """Pick one component. Bootstrap (anchor is None): component `target_k` by
+    descending-size label. Tracking: component whose centroid is nearest
+    `anchor`. Returns (member_mask, new_anchor, info)."""
+    features = np.asarray(features)
+    labels, n, sizes = detect_components(
+        features, min_cluster_size, min_cluster_frac, cluster_selection_epsilon
+    )
+    info = {"n_components": n, "sizes": sizes}
+    if n == 0:
+        raise ValueError(
+            "HDBSCAN found no component above min_cluster_frac; lower "
+            "--min_cluster_size or --min_cluster_frac."
+        )
+    if anchor is None:
+        if target_k >= n:
+            raise ValueError(
+                f"--target_cluster {target_k} but only {n} component(s) detected."
+            )
+        chosen = int(target_k)
+    else:
+        centroids = np.stack([component_centroid(features, labels, c)
+                              for c in range(n)])
+        chosen = int(np.argmin(np.linalg.norm(centroids - np.asarray(anchor)[None, :],
+                                              axis=1)))
+    member_mask = labels == chosen
+    new_anchor = features[member_mask].mean(axis=0)
+    info["chosen"] = chosen
+    return member_mask, new_anchor, info

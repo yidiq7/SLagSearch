@@ -57,3 +57,29 @@ def test_detect_thin_neck_splits():
         np.vstack([X, neck]), min_cluster_size=30, min_cluster_frac=0.05
     )
     assert n == 2
+
+
+def test_select_bootstrap_picks_target_k():
+    rng = np.random.default_rng(5)
+    X = _two_blobs(rng)
+    m0, _, i0 = cluster_select.select_cluster(X, None, 0, 30, 0.05)
+    m1, _, i1 = cluster_select.select_cluster(X, None, 1, 30, 0.05)
+    assert i0["chosen"] == 0 and i1["chosen"] == 1
+    assert m0.sum() >= m1.sum()           # label 0 = largest
+    assert not np.any(m0 & m1)            # disjoint
+
+
+def test_select_tracks_anchor():
+    rng = np.random.default_rng(6)
+    X = _two_blobs(rng, sep=10.0)
+    anchor = np.array([10.0, 0.0])        # near the [10,0] blob
+    _, new_anchor, _ = cluster_select.select_cluster(X, anchor, 0, 30, 0.05)
+    assert np.linalg.norm(new_anchor - np.array([10.0, 0.0])) < 2.0
+
+
+def test_select_raises_when_target_k_out_of_range():
+    rng = np.random.default_rng(7)
+    X = _two_blobs(rng)
+    import pytest
+    with pytest.raises(ValueError):
+        cluster_select.select_cluster(X, None, 5, 30, 0.05)
