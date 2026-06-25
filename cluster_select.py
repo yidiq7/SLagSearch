@@ -51,8 +51,9 @@ def cluster_labels(features, min_cluster_size, cluster_selection_epsilon=0.0):
     clusterer = HDBSCAN(
         min_cluster_size=int(min_cluster_size),
         cluster_selection_epsilon=float(cluster_selection_epsilon),
-        allow_single_cluster=True,   # one component -> 1 cluster, not all-noise
-    )
+    )  # allow_single_cluster stays False: True biases EOM to the root and
+       # merges real multi-component data into one (see detect_components fallback
+       # for the genuine single-component case).
     return clusterer.fit_predict(np.asarray(features))
 
 
@@ -67,6 +68,12 @@ def detect_components(features, min_cluster_size, min_cluster_frac,
             for lbl in np.unique(raw) if lbl != -1]
     keep = [(lbl, sz) for lbl, sz in keep if sz >= floor]
     keep.sort(key=lambda t: -t[1])                      # descending size
+    if not keep:
+        # HDBSCAN found no multi-cluster structure (with allow_single_cluster
+        # at its default False, a lone blob is labeled all-noise). Treat the
+        # whole set as one component so a single-component manifold reduces to
+        # whole-manifold GD instead of erroring.
+        return np.zeros(n_total, dtype=int), 1, [n_total]
     labels = np.full(n_total, -1, dtype=int)
     sizes = []
     for new_lbl, (old_lbl, sz) in enumerate(keep):
