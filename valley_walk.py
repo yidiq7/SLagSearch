@@ -23,9 +23,8 @@ from gradient_descent import (
     mine_one_cluster,
 )
 from find_smooth_submanifold import normalize_coeffs
-from helper import convert_real_to_complex_batch
+from helper import convert_real_to_complex_batch, assert_metric_psi_compatible
 from cluster_select import fs_features
-from slag_condition import assert_metric_psi_compatible
 from viz.fitness_pipeline import run_fitness_pipeline
 from sharding import shard_leading_axis
 import pointcloud_distance as pcd
