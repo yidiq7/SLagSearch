@@ -80,6 +80,17 @@ def build_args(argv=None):
     return args
 
 
+def load_init_anchor(init_pkl):
+    """Pull a persisted cluster anchor (25-D FS-feature centroid) out of a GD
+    checkpoint dict, if present. Returns None for a bare-array pkl or a checkpoint
+    with no anchor (in which case selection bootstraps by --target_cluster size)."""
+    with open(init_pkl, "rb") as f:
+        raw = pickle.load(f)
+    if isinstance(raw, dict) and raw.get("anchor") is not None:
+        return np.asarray(raw["anchor"])
+    return None
+
+
 def setup(args):
     """Load points, build the (num_devices-aware) JAX building blocks, load C*."""
     assert_metric_psi_compatible(args.metric, args.psi)
@@ -115,7 +126,16 @@ def setup(args):
     }
     shape = genotype_shape(args.max_degree)
     cstar = normalize_coeffs(init_coeffs("scratch", args.init_pkl, shape, jax.random.PRNGKey(0)))
-    return points_real, points_in, psi, num_devices, fns, cstar
+    init_anchor = load_init_anchor(args.init_pkl)
+    if args.target_cluster is not None:
+        if init_anchor is not None:
+            print(f"  [cluster] seeded anchor from {args.init_pkl} "
+                  f"(tracks the trained component; --target_cluster size rank ignored)")
+        else:
+            print(f"  [cluster] WARNING: no 'anchor' in {args.init_pkl}; bootstrapping "
+                  f"--target_cluster {args.target_cluster} by size -- unstable for "
+                  f"near-equal components. Point --init_pkl at a GD checkpoint.")
+    return points_real, points_in, psi, num_devices, fns, cstar, init_anchor
 
 
 def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
@@ -156,20 +176,23 @@ def main():
     args = build_args()
     run_dir = os.path.join(args.out_dir, f"valley_walk_{args.job_id}")
     os.makedirs(run_dir, exist_ok=True)
-    points_real, points_in, psi, num_devices, fns, cstar = setup(args)
+    points_real, points_in, psi, num_devices, fns, cstar, init_anchor = setup(args)
 
     drift_rng = np.random.default_rng(args.seed)
     base_seed = args.seed
 
     # --- calibrate the noise floor on C* (re-mine R times) ---
+    # Seed every re-mine with the checkpoint anchor so calibration tracks the SAME
+    # component each time; a fresh per-mine bootstrap flips between near-equal
+    # components and inflates the floor.
     floor = pcd.calibrate_noise_floor(
-        lambda s: mine_embed(cstar, fns, points_in, psi, args, num_devices, None, s)[0],
+        lambda s: mine_embed(cstar, fns, points_in, psi, args, num_devices, init_anchor, s)[0],
         n_repeats=args.n_repeats_floor, n_pairs=args.n_pairs, rng=drift_rng)
     print(f"[floor] wass={floor['wass_floor']:.4g}  chamfer={floor['chamfer_floor']:.4g}  "
           f"target=stop above {args.target_floor_mult * floor['wass_floor']:.4g}")
 
     embC, (lag0, spec0), ms_cstar, anchor0 = mine_embed(
-        cstar, fns, points_in, psi, args, num_devices, None, base_seed)
+        cstar, fns, points_in, psi, args, num_devices, init_anchor, base_seed)
     print(f"[C*] lag_fit={lag0:.4f} spec_fit={spec0:.4f}")
 
     if args.calibrate_only:
