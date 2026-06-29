@@ -71,7 +71,13 @@ def build_args(argv=None):
     p.add_argument("--out_dir", type=str, default="./valley_walk_runs")
     p.add_argument("--calibrate_only", action="store_true",
                    help="Compute and print the noise floor, then exit (no walk).")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    # Mirror gradient_descent.py: default cluster_minset_size to minset_size when
+    # unset (mine_one_cluster computes mine_oversample * cluster_minset_size, which
+    # would crash on None). With --target_cluster it's the per-cluster min-set size.
+    if args.cluster_minset_size is None:
+        args.cluster_minset_size = args.minset_size
+    return args
 
 
 def setup(args):
@@ -88,6 +94,16 @@ def setup(args):
         points_in = shard_leading_axis(points_real, num_devices)
         if args.minset_size % num_devices != 0:
             raise ValueError(f"--minset_size must be divisible by {num_devices}")
+        if args.target_cluster is not None:
+            if args.cluster_minset_size % num_devices != 0:
+                raise ValueError(
+                    f"--cluster_minset_size {args.cluster_minset_size} not "
+                    f"divisible by num_devices={num_devices}")
+            if (args.mine_oversample * args.cluster_minset_size) % num_devices != 0:
+                raise ValueError(
+                    f"mine_oversample*cluster_minset_size="
+                    f"{args.mine_oversample * args.cluster_minset_size} not "
+                    f"divisible by num_devices={num_devices}")
     else:
         points_in = points_real
 
@@ -104,7 +120,10 @@ def setup(args):
 
 def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
     """Fresh independent mine -> (FS embedding (k,25), (lag_fit, spec_fit),
-    min_set_real, new_anchor)."""
+    gathered (k,10) host min-set, new_anchor). The (k,10) array is the exact set
+    the drift/fitness are computed on (a single component when --target_cluster is
+    set); reused as run_fitness_pipeline's min_set_override so the cstar/final
+    diagnostic folders show the same points the walk used."""
     rng = np.random.default_rng(seed)
     min_set_real, _dist, anchor, _ = mine_one_cluster(
         fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
@@ -112,7 +131,7 @@ def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
     z = np.asarray(convert_real_to_complex_batch(jnp.asarray(msr)))  # (k,5) complex
     emb = fs_features(z)                                             # (k,25)
     lag_fit, spec_fit = fns["ga_fitness"](min_set_real, coeffs, psi, args.metric, args.top_lag_frac)
-    return emb, (float(lag_fit), float(spec_fit)), min_set_real, anchor
+    return emb, (float(lag_fit), float(spec_fit)), msr, anchor
 
 
 def reconverge(coeffs, fns, points_in, psi, args, num_devices, anchor, rng, n_steps):
@@ -149,7 +168,7 @@ def main():
     print(f"[floor] wass={floor['wass_floor']:.4g}  chamfer={floor['chamfer_floor']:.4g}  "
           f"target=stop above {args.target_floor_mult * floor['wass_floor']:.4g}")
 
-    embC, (lag0, spec0), _, anchor0 = mine_embed(
+    embC, (lag0, spec0), ms_cstar, anchor0 = mine_embed(
         cstar, fns, points_in, psi, args, num_devices, None, base_seed)
     print(f"[C*] lag_fit={lag0:.4f} spec_fit={spec0:.4f}")
 
@@ -166,6 +185,7 @@ def main():
     prev_emb = embC
     anchor = anchor0
     final_coeffs = cstar
+    ms_final = ms_cstar
     seed_ctr = base_seed + 1000
     traj = [{"step": 0, "sigma": sigma, "lag_fit": lag0, "spec_fit": spec0,
              "drift_vs_cstar": 0.0, "drift_vs_prev": 0.0, "chamfer_vs_cstar": 0.0,
@@ -179,14 +199,14 @@ def main():
             cand, anc = reconverge(cand, fns, points_in, psi, args, num_devices,
                                    anchor, np.random.default_rng(seed_ctr), args.reconverge_steps)
             seed_ctr += 1
-            emb, (lag, spec), _ms, anc = mine_embed(
+            emb, (lag, spec), msr, anc = mine_embed(
                 cand, fns, points_in, psi, args, num_devices, anc, seed_ctr); seed_ctr += 1
             drift = pcd.pairwise_distance_drift(embC, emb, args.n_pairs, drift_rng)
             d = pcd.decide(drift, lag, spec, lag0, spec0, args.fitness_tol,
                            floor["wass_floor"], args.target_floor_mult)
             if d != "reject" and (best is None or drift > best["drift"]):
                 best = {"cand": cand, "emb": emb, "lag": lag, "spec": spec,
-                        "drift": drift, "anchor": anc}
+                        "drift": drift, "anchor": anc, "ms": msr}
         if best is None:
             sigma *= 0.5
             if sigma < args.sigma_min:
@@ -196,6 +216,7 @@ def main():
             continue
 
         current = best["cand"]; anchor = best["anchor"]; final_coeffs = current
+        ms_final = best["ms"]
         drift_prev = pcd.pairwise_distance_drift(prev_emb, best["emb"], args.n_pairs, drift_rng)
         cham = pcd.fs_chamfer(embC, best["emb"])
         decision = pcd.decide(best["drift"], best["lag"], best["spec"], lag0, spec0,
@@ -240,13 +261,15 @@ def main():
     fig.tight_layout(); fig.savefig(os.path.join(run_dir, "fitness_vs_step.png"), dpi=130)
     plt.close(fig)
 
-    # --- run-folders for C* and the final point (coord_scatter + histograms) ---
-    for coeffs, sub in ((cstar, "cstar"), (final_coeffs, "final")):
+    # --- run-folders for C* and the final point (coord_scatter + histograms),
+    #     using the walk's own mined points so a cluster-restricted run stays on
+    #     that single component instead of re-mining the whole manifold. ---
+    for coeffs, sub, ms in ((cstar, "cstar", ms_cstar), (final_coeffs, "final", ms_final)):
         run_fitness_pipeline(
             points_real, coeffs, psi, k=args.plot_k,
             n_refine_steps=args.plot_newton_steps, metric=args.metric,
             top_lag_frac=args.top_lag_frac, out_dir=os.path.join(run_dir, sub),
-            num_devices=num_devices)
+            num_devices=num_devices, min_set_override=ms)
 
     print(f"[done] trajectory + plots -> {run_dir}")
 
