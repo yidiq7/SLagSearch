@@ -139,37 +139,44 @@ def setup(args):
 
 
 def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
-    """Fresh independent mine -> (FS embedding (k,25), (lag_fit, spec_fit),
-    gathered (k,10) host min-set, new_anchor). The (k,10) array is the exact set
-    the drift/fitness are computed on (a single component when --target_cluster is
-    set); reused as run_fitness_pipeline's min_set_override so the cstar/final
-    diagnostic folders show the same points the walk used."""
+    """Fresh independent mine -> (unique-point FS embedding (m,25), (lag_fit,
+    spec_fit), unique (m,10) host min-set, anchor-unchanged).
+
+    Fitness is on the FULL (padded) cluster min-set, matching GD. The embedding and
+    returned points are DEDUPED: fill_to_size pads a small component up to
+    cluster_minset_size with duplicate rows, which would otherwise inject an
+    RNG-dependent zero-distance spike into the pairwise-distance drift and inflate
+    the noise floor. `anchor` is used for selection and returned unchanged (no
+    per-mine drift onto the wrong component)."""
     rng = np.random.default_rng(seed)
-    min_set_real, _dist, anchor, _ = mine_one_cluster(
+    min_set_real, _dist, _new_anchor, _ = mine_one_cluster(
         fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
-    msr = np.asarray(min_set_real).reshape(-1, np.asarray(min_set_real).shape[-1])
-    z = np.asarray(convert_real_to_complex_batch(jnp.asarray(msr)))  # (k,5) complex
-    emb = fs_features(z)                                             # (k,25)
     lag_fit, spec_fit = fns["ga_fitness"](min_set_real, coeffs, psi, args.metric, args.top_lag_frac)
-    return emb, (float(lag_fit), float(spec_fit)), msr, anchor
+    msr = np.asarray(min_set_real).reshape(-1, np.asarray(min_set_real).shape[-1])
+    msr_u = np.unique(msr, axis=0)                                     # drop fill_to_size padding
+    z = np.asarray(convert_real_to_complex_batch(jnp.asarray(msr_u)))  # (m,5) complex
+    emb = fs_features(z)                                              # (m,25)
+    return emb, (float(lag_fit), float(spec_fit)), msr_u, anchor
 
 
 def reconverge(coeffs, fns, points_in, psi, args, num_devices, anchor, rng, n_steps):
-    """Short Adam reconvergence from a perturbed start (fresh optimizer state)."""
+    """Short Adam reconvergence from a perturbed start (fresh optimizer state).
+    Uses a FIXED cluster anchor for every mine (no per-mine drift), so a large kick
+    can't walk the selection onto the wrong component mid-reconverge."""
     opt = optax.adam(learning_rate=args.lr)
     opt_state = opt.init(coeffs)
-    min_set_real, _d, anchor, _ = mine_one_cluster(
+    min_set_real, _d, _a, _ = mine_one_cluster(
         fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
     for s in range(1, n_steps + 1):
         if s % args.mine_interval == 0:
-            min_set_real, _d, anchor, _ = mine_one_cluster(
+            min_set_real, _d, _a, _ = mine_one_cluster(
                 fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
         (_loss, (_lag, _spec)), grads = fns["loss_value_and_grad"](
             coeffs, min_set_real, psi, args.inner_newton_steps, args.metric)
         grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
         updates, opt_state = opt.update(grads, opt_state, coeffs)
         coeffs = optax.apply_updates(coeffs, updates)
-    return coeffs, anchor
+    return coeffs
 
 
 def main():
@@ -182,16 +189,16 @@ def main():
     base_seed = args.seed
 
     # --- calibrate the noise floor on C* (re-mine R times) ---
-    # Seed every re-mine with the checkpoint anchor so calibration tracks the SAME
-    # component each time; a fresh per-mine bootstrap flips between near-equal
-    # components and inflates the floor.
+    # Seed every re-mine with the (frozen) checkpoint anchor so calibration tracks
+    # the SAME component each time; a fresh per-mine bootstrap flips between
+    # near-equal components and inflates the floor.
     floor = pcd.calibrate_noise_floor(
         lambda s: mine_embed(cstar, fns, points_in, psi, args, num_devices, init_anchor, s)[0],
         n_repeats=args.n_repeats_floor, n_pairs=args.n_pairs, rng=drift_rng)
     print(f"[floor] wass={floor['wass_floor']:.4g}  chamfer={floor['chamfer_floor']:.4g}  "
           f"target=stop above {args.target_floor_mult * floor['wass_floor']:.4g}")
 
-    embC, (lag0, spec0), ms_cstar, anchor0 = mine_embed(
+    embC, (lag0, spec0), ms_cstar, _ = mine_embed(
         cstar, fns, points_in, psi, args, num_devices, init_anchor, base_seed)
     print(f"[C*] lag_fit={lag0:.4f} spec_fit={spec0:.4f}")
 
@@ -206,7 +213,6 @@ def main():
     sigma = args.sigma
     current = cstar
     prev_emb = embC
-    anchor = anchor0
     final_coeffs = cstar
     ms_final = ms_cstar
     seed_ctr = base_seed + 1000
@@ -214,22 +220,25 @@ def main():
              "drift_vs_cstar": 0.0, "drift_vs_prev": 0.0, "chamfer_vs_cstar": 0.0,
              "decision": "start"}]
 
+    # The cluster anchor is FROZEN at C*'s good-component centroid for the whole
+    # walk: we explore near C*, so it stays the closest component, and a big kick
+    # can't drag selection onto the junk component (which caused false rejects).
     for w in range(1, args.max_walk_steps + 1):
         best = None
         for _k in range(args.n_kicks):
             pert = np.random.default_rng(seed_ctr).standard_normal(shape); seed_ctr += 1
             cand = normalize_coeffs(current + jnp.asarray(pert) * sigma)
-            cand, anc = reconverge(cand, fns, points_in, psi, args, num_devices,
-                                   anchor, np.random.default_rng(seed_ctr), args.reconverge_steps)
+            cand = reconverge(cand, fns, points_in, psi, args, num_devices,
+                              init_anchor, np.random.default_rng(seed_ctr), args.reconverge_steps)
             seed_ctr += 1
-            emb, (lag, spec), msr, anc = mine_embed(
-                cand, fns, points_in, psi, args, num_devices, anc, seed_ctr); seed_ctr += 1
+            emb, (lag, spec), msr, _ = mine_embed(
+                cand, fns, points_in, psi, args, num_devices, init_anchor, seed_ctr); seed_ctr += 1
             drift = pcd.pairwise_distance_drift(embC, emb, args.n_pairs, drift_rng)
             d = pcd.decide(drift, lag, spec, lag0, spec0, args.fitness_tol,
                            floor["wass_floor"], args.target_floor_mult)
             if d != "reject" and (best is None or drift > best["drift"]):
                 best = {"cand": cand, "emb": emb, "lag": lag, "spec": spec,
-                        "drift": drift, "anchor": anc, "ms": msr}
+                        "drift": drift, "ms": msr}
         if best is None:
             sigma *= 0.5
             if sigma < args.sigma_min:
@@ -238,8 +247,7 @@ def main():
             print(f"[walk {w}] all kicks rejected; halving sigma -> {sigma:.4g}")
             continue
 
-        current = best["cand"]; anchor = best["anchor"]; final_coeffs = current
-        ms_final = best["ms"]
+        current = best["cand"]; final_coeffs = current; ms_final = best["ms"]
         drift_prev = pcd.pairwise_distance_drift(prev_emb, best["emb"], args.n_pairs, drift_rng)
         cham = pcd.fs_chamfer(embC, best["emb"])
         decision = pcd.decide(best["drift"], best["lag"], best["spec"], lag0, spec0,
@@ -285,8 +293,8 @@ def main():
     plt.close(fig)
 
     # --- run-folders for C* and the final point (coord_scatter + histograms),
-    #     using the walk's own mined points so a cluster-restricted run stays on
-    #     that single component instead of re-mining the whole manifold. ---
+    #     using the walk's own (deduped) cluster points so a cluster-restricted run
+    #     stays on that single component instead of re-mining the whole manifold. ---
     for coeffs, sub, ms in ((cstar, "cstar", ms_cstar), (final_coeffs, "final", ms_final)):
         run_fitness_pipeline(
             points_real, coeffs, psi, k=args.plot_k,
