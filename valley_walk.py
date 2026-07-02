@@ -56,6 +56,11 @@ def build_args(argv=None):
     # --- walk-specific flags ---
     p.add_argument("--init_pkl", type=str, required=True,
                    help="C*: the candidate to perturb (bare (3,w) array or ckpt dict).")
+    p.add_argument("--ref_pkl", type=str, default=None,
+                   help="Optional C* reference: coeffs for the drift/fitness baseline "
+                        "+ cluster anchor. Defaults to --init_pkl. Set it to the "
+                        "original GD checkpoint when --init_pkl is a later walk "
+                        "endpoint (e.g. a sigma=0 polish run).")
     p.add_argument("--sigma", type=float, default=0.02)
     p.add_argument("--sigma_min", type=float, default=0.0025)
     p.add_argument("--reconverge_steps", type=int, default=300)
@@ -125,17 +130,24 @@ def setup(args):
         "mining_fn": make_parallel_mining(num_devices),
     }
     shape = genotype_shape(args.max_degree)
-    cstar = normalize_coeffs(init_coeffs("scratch", args.init_pkl, shape, jax.random.PRNGKey(0)))
-    init_anchor = load_init_anchor(args.init_pkl)
+    # ref = drift/fitness baseline + anchor source; init = where the walk starts.
+    ref_path = args.ref_pkl if args.ref_pkl is not None else args.init_pkl
+    cstar = normalize_coeffs(init_coeffs("scratch", ref_path, shape, jax.random.PRNGKey(0)))
+    if args.ref_pkl is not None:
+        start = normalize_coeffs(init_coeffs("scratch", args.init_pkl, shape, jax.random.PRNGKey(0)))
+        print(f"  [ref] baseline/anchor from {ref_path}; walk starts from {args.init_pkl}")
+    else:
+        start = cstar
+    init_anchor = load_init_anchor(ref_path)
     if args.target_cluster is not None:
         if init_anchor is not None:
-            print(f"  [cluster] seeded anchor from {args.init_pkl} "
+            print(f"  [cluster] seeded anchor from {ref_path} "
                   f"(tracks the trained component; --target_cluster size rank ignored)")
         else:
-            print(f"  [cluster] WARNING: no 'anchor' in {args.init_pkl}; bootstrapping "
+            print(f"  [cluster] WARNING: no 'anchor' in {ref_path}; bootstrapping "
                   f"--target_cluster {args.target_cluster} by size -- unstable for "
-                  f"near-equal components. Point --init_pkl at a GD checkpoint.")
-    return points_real, points_in, psi, num_devices, fns, cstar, init_anchor
+                  f"near-equal components. Point --ref_pkl at a GD checkpoint.")
+    return points_real, points_in, psi, num_devices, fns, cstar, start, init_anchor
 
 
 def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
@@ -183,7 +195,7 @@ def main():
     args = build_args()
     run_dir = os.path.join(args.out_dir, f"valley_walk_{args.job_id}")
     os.makedirs(run_dir, exist_ok=True)
-    points_real, points_in, psi, num_devices, fns, cstar, init_anchor = setup(args)
+    points_real, points_in, psi, num_devices, fns, cstar, start, init_anchor = setup(args)
 
     drift_rng = np.random.default_rng(args.seed)
     base_seed = args.seed
@@ -211,7 +223,7 @@ def main():
 
     shape = cstar.shape
     sigma = args.sigma
-    current = cstar
+    current = start
     prev_emb = embC
     final_coeffs = cstar
     ms_final = ms_cstar
@@ -236,6 +248,7 @@ def main():
             drift = pcd.pairwise_distance_drift(embC, emb, args.n_pairs, drift_rng)
             d = pcd.decide(drift, lag, spec, lag0, spec0, args.fitness_tol,
                            floor["wass_floor"], args.target_floor_mult)
+            print(f"  [kick] drift={drift:.4g} lag={lag:.4f} spec={spec:.4f} -> {d}")
             if d != "reject" and (best is None or drift > best["drift"]):
                 best = {"cand": cand, "emb": emb, "lag": lag, "spec": spec,
                         "drift": drift, "ms": msr}
@@ -248,6 +261,8 @@ def main():
             continue
 
         current = best["cand"]; final_coeffs = current; ms_final = best["ms"]
+        with open(os.path.join(run_dir, f"coeffs_step{w}.pkl"), "wb") as f:
+            pickle.dump(np.asarray(current), f)
         drift_prev = pcd.pairwise_distance_drift(prev_emb, best["emb"], args.n_pairs, drift_rng)
         cham = pcd.fs_chamfer(embC, best["emb"])
         decision = pcd.decide(best["drift"], best["lag"], best["spec"], lag0, spec0,
