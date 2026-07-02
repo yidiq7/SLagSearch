@@ -5,6 +5,8 @@ Fubini-Study projector embedding, picks one component (anchor-tracked across
 re-mines), and returns a fixed-size index set into the mined points. No JAX, no
 matplotlib, so it is cheap to import in the GD training loop.
 """
+import warnings
+
 import numpy as np
 
 
@@ -54,7 +56,13 @@ def cluster_labels(features, min_cluster_size, cluster_selection_epsilon=0.0):
     )  # allow_single_cluster stays False: True biases EOM to the root and
        # merges real multi-component data into one (see detect_components fallback
        # for the genuine single-component case).
-    return clusterer.fit_predict(np.asarray(features))
+    with warnings.catch_warnings():
+        # sklearn's HDBSCAN warns that the `copy` default flips in 1.10; either
+        # value is fine here (features is a fresh throwaway array), so silence
+        # the per-fit spam. Message filter is a no-op for the standalone package.
+        warnings.filterwarnings("ignore", message=r"The default value of `copy`",
+                                category=FutureWarning)
+        return clusterer.fit_predict(np.asarray(features))
 
 
 def detect_components(features, min_cluster_size, min_cluster_frac,
