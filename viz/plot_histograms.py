@@ -141,8 +141,14 @@ def load_run_folder(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _load_coeffs_from_run(path: str | Path) -> np.ndarray:
+    """Load the coeffs.pkl sidecar. Accepts a bare (3, w) ndarray or a
+    checkpoint dict with a 'coeffs' key, matching fitness_pipeline's
+    --coeffs handling."""
     with open(Path(path) / "coeffs.pkl", "rb") as f:
-        return np.asarray(pickle.load(f))
+        obj = pickle.load(f)
+    if isinstance(obj, dict) and "coeffs" in obj:
+        obj = obj["coeffs"]
+    return np.asarray(obj)
 
 
 def _ensure_random_cache(
