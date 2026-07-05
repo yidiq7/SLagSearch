@@ -55,7 +55,9 @@ from slag_condition import (
     vmap_compute_restriction,
 )
 from get_restriction import compute_Omega_restriction
-from helper import canonicalize_coeffs, convert_real_to_complex_batch, determine_patches_batch
+from helper import (canonicalize_coeffs, convert_complex_to_real_batch,
+                    convert_real_to_complex_batch, determine_patch_and_rescale_single,
+                    determine_patches_batch)
 from viz.plot_coord_scatter import render_from_folder
 from viz.plot_histograms import plot_overlay_histograms
 from typing import Optional
@@ -130,7 +132,13 @@ def _per_chunk_diagnostics(
     norms_for_fitness is what the bottom-99% mean is taken over).
     """
     min_set = convert_real_to_complex_batch(min_set_real_chunk)
-    patch_indices = determine_patches_batch(min_set)
+    # Same patch-frame consistency as compute_combined_fitness: derive the
+    # patch and the representative jointly so z[patch] = 1 exactly for the
+    # index used downstream. A fresh argmax breaks on equal-moduli loci (the
+    # tie-flipped coordinate holds e^{i phi} != 1 and every phase below shifts
+    # by 3*phi); see the comment there and diagnostics/test_gauge_invariance.py.
+    min_set, patch_indices = jax.vmap(determine_patch_and_rescale_single)(min_set)
+    min_set_real_chunk = convert_complex_to_real_batch(min_set)
     jacobians = vmap_compute_affine_jacobian(min_set_real_chunk, patch_indices, coeffs, psi)
     restrictions = vmap_compute_restriction(jacobians)
     kahler_unrestricted = compute_kahler_form_unrestricted(min_set, patch_indices, metric=metric)

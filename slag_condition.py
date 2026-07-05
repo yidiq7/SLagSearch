@@ -6,7 +6,8 @@ import math
 from typing import Callable
 from itertools import combinations_with_replacement
 from collections import Counter
-from helper import convert_real_to_complex_batch, determine_patches_batch, delete_index
+from helper import (convert_complex_to_real_batch, convert_real_to_complex_batch,
+                    delete_index, determine_patch_and_rescale_single)
 
 # --- Core Calculation ---
 
@@ -539,7 +540,19 @@ def compute_combined_fitness(
     """
 
     min_set = convert_real_to_complex_batch(min_set_real)
-    patch_indices = determine_patches_batch(min_set) 
+    # Derive the patch and the stored representative *jointly*. A fresh argmax
+    # over moduli (determine_patches_batch) breaks on equal-moduli loci such as
+    # the CDGP T^3 diagonal ansatz: the tie is broken by 1-ulp rounding noise,
+    # so the picked coordinate can hold a value e^{i phi} != 1. Downstream,
+    # compute_affine_jacobian works in the frame of the raw point while
+    # compute_holomorphic_form normalises to z[patch] = 1; the frame mismatch
+    # shifts the Omega|_L phase by exactly 3*phi (the tangent 3x3 det scales by
+    # point[patch]^-3), scattering the phases of a perfectly special locus
+    # (regression test: diagnostics/test_gauge_invariance.py). Rescaling
+    # here makes z[patch] exactly 1 for the index actually used downstream; on
+    # generic (distinct-moduli) points it is a no-op.
+    min_set, patch_indices = jax.vmap(determine_patch_and_rescale_single)(min_set)
+    min_set_real = convert_complex_to_real_batch(min_set)
 
     jacobians = vmap_compute_affine_jacobian(min_set_real, patch_indices, coeffs, psi)
     restrictions = vmap_compute_restriction(jacobians)
