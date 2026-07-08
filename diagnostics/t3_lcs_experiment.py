@@ -24,9 +24,11 @@ numerical error: the algebraic locus is only asymptotically Lagrangian, and
 only for the Fubini-Study form -- the phase (calibration) statistics are the
 metric-independent part. Sampling is uniform in the phase parameters, not in
 the induced volume, so quoted statistics are under that measure. The entropy
-fitness F_spec saturates at 1 - log(2)/log(n_bins) here because the phase
-center pi/2 sits on a bin edge of the [0, pi) histogram; the Kuramoto column
-is the faithful concentration measure. float64 is mandatory (enabled below):
+fitness F_spec bins with a half-bin-shifted anchor (bin centers at
+k*pi/n_bins), so tight peaks at the quintic's natural phases -- including
+the pi/2 here -- score ~1 instead of capping at 1 - log(2)/log(n_bins) on a
+bin edge; the Kuramoto column is the binless concentration measure and is
+what resolves the psi^-5 law. float64 is mandatory (enabled below):
 in float32 the phase spread floors at ~2e-7 rad and the psi^-5 law is
 unmeasurable beyond psi ~ 30.
 

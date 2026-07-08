@@ -475,8 +475,31 @@ def compute_special_condition_fitness(phases: jnp.array, n_bins: int=100) -> jnp
     Returns:
         Scalar in [0, 1]. High fitness == high concentration in [0, pi).
     """
-    # Create a histogram to approximate the distribution
-    counts, _ = jnp.histogram(phases, bins=n_bins, range=(0, jnp.pi))
+    # Half-bin anchor shift, applied to the BINS (phase values are untouched):
+    # edges at (k - 1/2)*pi/n_bins, so bin CENTERS sit at k*pi/n_bins. The
+    # symmetry-generated sLag phases on the quintic (0 and pi/2 from the
+    # anti-holomorphic involutions, multiples of pi/5 from the Z_5 action,
+    # hence multiples of pi/20) are all of the form k*pi/n_bins for the
+    # default n_bins=100, so with a 0-anchored grid a delta peak at any of
+    # them straddles a bin edge and the fitness caps at
+    # 1 - log(2)/log(n_bins) ~ 0.85 regardless of how concentrated it is.
+    # Moving the grid anchor is a free gauge choice on the mod-pi circle (the
+    # entropy is invariant under bin permutation, so no bin is otherwise
+    # special) and parks every natural phase mid-bin; the remaining edge set
+    # (odd multiples of pi/(2*n_bins)) contains no symmetry-generated phase.
+    # The first and last half-bins are the two halves of the single circular
+    # bin centered at 0 == period, so their counts are merged: n_bins bins
+    # total. (diagnostics/test_gauge_invariance.py checks 9-10.)
+    #
+    # `period` is the circumference of the phase circle. Phases arrive here
+    # already reduced mod pi; everything below is written against `period`,
+    # so a future mod-2pi variant only changes this one binding (plus the
+    # upstream reduction).
+    period = jnp.pi
+    half = period / (2 * n_bins)
+    edges = jnp.linspace(-half, period + half, n_bins + 2)
+    counts, _ = jnp.histogram(phases, bins=edges)
+    counts = counts.at[0].add(counts[-1])[:-1]
 
     # Calculate the probability distribution
     probs = counts / jnp.sum(counts)

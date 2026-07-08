@@ -36,6 +36,10 @@ Checks (T^3 and RP^3 at psi = 100, N = 500):
   6. RP^3 omega per-point gauge drift    < 1e-12  [measured ~5e-15]
   7. RP^3 phase spread max               < 1e-12  [measured exactly 0.0]
   8. T^3 mod-2pi phase gauge invariance  < 1e-8   [viz.fitness_pipeline path]
+  9. F_spec at natural phases            > 0.999  [half-bin anchor: tight peaks
+     at 0, pi/2, pi/5, pi/20 must not straddle a bin edge]
+ 10. F_spec five-peak mixture in [0.6, 0.7]       [multi-peak still penalized;
+     five clean bins give 1 - log5/log100 = 0.6505]
 
 Usage:
     python -m diagnostics.test_gauge_invariance
@@ -181,6 +185,27 @@ def main():
         np.exp(1j * (viz_phases(Z) - viz_phases(Z * gauge)))))))
     checks.append(("T^3 mod-2pi phase gauge inv. (viz)",
                    f"{viz_diff:.3e} < 1e-8", viz_diff < 1e-8))
+
+    # --- F_spec anchoring: the quintic's natural sLag phases (0 and pi/2 from
+    # involutions, multiples of pi/5 from the Z_5 action, hence multiples of
+    # pi/20) are all of the form k*pi/100. With a 0-anchored grid a tight peak
+    # there straddles a bin edge and caps at 1 - log2/log100 = 0.8495; the
+    # half-bin anchor shift parks them at bin centers instead.
+    from slag_condition import compute_special_condition_fitness
+
+    jit_ph = np.random.default_rng(1).normal(0.0, 1e-9, 4000)
+    f_min = min(
+        float(compute_special_condition_fitness(
+            jnp.asarray((c + jit_ph) % np.pi)))
+        for c in (0.0, np.pi / 2, np.pi / 5, np.pi / 20))
+    checks.append(("F_spec at natural phases (tight peak)",
+                   f"{f_min:.4f} > 0.999", f_min > 0.999))
+
+    five = np.concatenate([(2 * np.pi * k / 5 + jit_ph[:800]) % np.pi
+                           for k in range(5)])
+    f_five = float(compute_special_condition_fitness(jnp.asarray(five)))
+    checks.append(("F_spec five-peak mixture (penalized)",
+                   f"{f_five:.4f} in [0.6, 0.7]", 0.6 < f_five < 0.7))
 
     ok_all = True
     for name, val, ok in checks:
