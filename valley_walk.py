@@ -1,8 +1,20 @@
 """Valley-walk: probe the sLag moduli space by perturb-and-reconverge.
 
+Division of labor: GA searches, GD refines (whole-manifold, or one component
+via --target_cluster / --tube_ref), valley-walk perturbs a GD result and walks
+the flat set looking for genuinely new/deformed sLags.
+
+Run with --tube_ref (recommended; the frozen-reference tube from GD): membership
+is then independent of density/fitness/phase, so BOTH the reconvergence
+objective and the drift/fitness measurements cover the whole component (core +
+fringe). Without it, the legacy HDBSCAN-core path applies and every metric is
+core-only -- which was shown (2026-07) to track the objective's footprint, not
+the geometry: a core-drift signal can be pure re-allocation of approximation
+accuracy over an unmoved torus. See docs/superpowers/specs/ for the original
+design and the project memory for the reversal.
+
 Reuses gradient_descent.py building blocks in-process (JIT warm, multi-GPU
 inherited); does not modify the GD training loop.
-See docs/superpowers/specs/2026-06-28-valley-walk-design.md.
 """
 import os
 import argparse
@@ -27,6 +39,7 @@ from helper import convert_real_to_complex_batch, assert_metric_psi_compatible
 from cluster_select import fs_features
 from viz.fitness_pipeline import run_fitness_pipeline
 from sharding import shard_leading_axis
+from scipy.spatial import cKDTree
 import pointcloud_distance as pcd
 
 
@@ -51,6 +64,13 @@ def build_args(argv=None):
     p.add_argument("--min_cluster_frac", type=float, default=0.02)
     p.add_argument("--cluster_minset_size", type=int, default=None)
     p.add_argument("--mine_oversample", type=int, default=2)
+    p.add_argument("--tube_ref", type=str, default=None,
+                   help="Frozen-reference tube membership (same as GD's flag): "
+                        "(N, 5) complex pkl sampling the target component. "
+                        "Recommended -- makes objective AND metrics whole-"
+                        "component. Mutually exclusive with --target_cluster.")
+    p.add_argument("--tube_mult", type=float, default=2.0)
+    p.add_argument("--tube_percentile", type=float, default=95.0)
     p.add_argument("--plot_k", type=int, default=80000)
     p.add_argument("--plot_newton_steps", type=int, default=80)
     # --- walk-specific flags ---
@@ -77,6 +97,8 @@ def build_args(argv=None):
     p.add_argument("--calibrate_only", action="store_true",
                    help="Compute and print the noise floor, then exit (no walk).")
     args = p.parse_args(argv)
+    if args.tube_ref is not None and args.target_cluster is not None:
+        p.error("--tube_ref and --target_cluster are mutually exclusive")
     # Mirror gradient_descent.py: default cluster_minset_size to minset_size when
     # unset (mine_one_cluster computes mine_oversample * cluster_minset_size, which
     # would crash on None). With --target_cluster it's the per-cluster min-set size.
@@ -110,7 +132,7 @@ def setup(args):
         points_in = shard_leading_axis(points_real, num_devices)
         if args.minset_size % num_devices != 0:
             raise ValueError(f"--minset_size must be divisible by {num_devices}")
-        if args.target_cluster is not None:
+        if args.target_cluster is not None or args.tube_ref is not None:
             if args.cluster_minset_size % num_devices != 0:
                 raise ValueError(
                     f"--cluster_minset_size {args.cluster_minset_size} not "
@@ -147,22 +169,39 @@ def setup(args):
             print(f"  [cluster] WARNING: no 'anchor' in {ref_path}; bootstrapping "
                   f"--target_cluster {args.target_cluster} by size -- unstable for "
                   f"near-equal components. Point --ref_pkl at a GD checkpoint.")
-    return points_real, points_in, psi, num_devices, fns, cstar, start, init_anchor
+
+    # Frozen-reference tube (mirrors gradient_descent.py): membership for every
+    # mine in the walk, independent of the optimization state.
+    tube = None
+    if args.tube_ref is not None:
+        with open(args.tube_ref, "rb") as f:
+            ref_z = np.asarray(pickle.load(f))
+        ref_feats = fs_features(ref_z)
+        ref_tree = cKDTree(ref_feats)
+        nn = ref_tree.query(ref_feats, k=2)[0][:, 1]
+        radius = float(args.tube_mult * np.percentile(nn, args.tube_percentile))
+        tube = {"tree": ref_tree, "radius": radius, "ref_feats": ref_feats}
+        print(f"  [tube] reference {ref_z.shape} from {args.tube_ref}; "
+              f"radius={radius:.4f} (={args.tube_mult} x NN "
+              f"p{args.tube_percentile:.0f}); metrics are whole-component")
+    return points_real, points_in, psi, num_devices, fns, cstar, start, init_anchor, tube
 
 
-def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
+def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed, tube=None):
     """Fresh independent mine -> (unique-point FS embedding (m,25), (lag_fit,
     spec_fit), unique (m,10) host min-set, anchor-unchanged).
 
-    Fitness is on the FULL (padded) cluster min-set, matching GD. The embedding and
-    returned points are DEDUPED: fill_to_size pads a small component up to
-    cluster_minset_size with duplicate rows, which would otherwise inject an
-    RNG-dependent zero-distance spike into the pairwise-distance drift and inflate
-    the noise floor. `anchor` is used for selection and returned unchanged (no
-    per-mine drift onto the wrong component)."""
+    With `tube` set, the unique members are a WHOLE-component sample (core +
+    fringe; membership is geometric), so the embedding/drift and the fitness are
+    honest full-component metrics. Fitness is on the padded min-set, matching GD.
+    The embedding and returned points are DEDUPED: fill_to_size pads with
+    duplicate rows, which would otherwise inject an RNG-dependent zero-distance
+    spike into the pairwise-distance drift and inflate the noise floor. `anchor`
+    (legacy HDBSCAN path) is used for selection and returned unchanged."""
     rng = np.random.default_rng(seed)
     min_set_real, _dist, _new_anchor, _ = mine_one_cluster(
-        fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
+        fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng,
+        tube=tube)
     lag_fit, spec_fit = fns["ga_fitness"](min_set_real, coeffs, psi, args.metric, args.top_lag_frac)
     msr = np.asarray(min_set_real).reshape(-1, np.asarray(min_set_real).shape[-1])
     msr_u = np.unique(msr, axis=0)                                     # drop fill_to_size padding
@@ -171,18 +210,22 @@ def mine_embed(coeffs, fns, points_in, psi, args, num_devices, anchor, seed):
     return emb, (float(lag_fit), float(spec_fit)), msr_u, anchor
 
 
-def reconverge(coeffs, fns, points_in, psi, args, num_devices, anchor, rng, n_steps):
+def reconverge(coeffs, fns, points_in, psi, args, num_devices, anchor, rng, n_steps,
+               tube=None):
     """Short Adam reconvergence from a perturbed start (fresh optimizer state).
-    Uses a FIXED cluster anchor for every mine (no per-mine drift), so a large kick
-    can't walk the selection onto the wrong component mid-reconverge."""
+    Membership is frozen for every mine (tube, or fixed cluster anchor on the
+    legacy path), so a large kick can't walk the selection onto the wrong
+    component mid-reconverge."""
     opt = optax.adam(learning_rate=args.lr)
     opt_state = opt.init(coeffs)
     min_set_real, _d, _a, _ = mine_one_cluster(
-        fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
+        fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng,
+        tube=tube)
     for s in range(1, n_steps + 1):
         if s % args.mine_interval == 0:
             min_set_real, _d, _a, _ = mine_one_cluster(
-                fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng)
+                fns["mining_fn"], points_in, coeffs, psi, args, num_devices, anchor, rng,
+                tube=tube)
         (_loss, (_lag, _spec)), grads = fns["loss_value_and_grad"](
             coeffs, min_set_real, psi, args.inner_newton_steps, args.metric)
         grads = jnp.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
@@ -195,7 +238,7 @@ def main():
     args = build_args()
     run_dir = os.path.join(args.out_dir, f"valley_walk_{args.job_id}")
     os.makedirs(run_dir, exist_ok=True)
-    points_real, points_in, psi, num_devices, fns, cstar, start, init_anchor = setup(args)
+    points_real, points_in, psi, num_devices, fns, cstar, start, init_anchor, tube = setup(args)
 
     drift_rng = np.random.default_rng(args.seed)
     base_seed = args.seed
@@ -205,13 +248,14 @@ def main():
     # the SAME component each time; a fresh per-mine bootstrap flips between
     # near-equal components and inflates the floor.
     floor = pcd.calibrate_noise_floor(
-        lambda s: mine_embed(cstar, fns, points_in, psi, args, num_devices, init_anchor, s)[0],
+        lambda s: mine_embed(cstar, fns, points_in, psi, args, num_devices,
+                             init_anchor, s, tube=tube)[0],
         n_repeats=args.n_repeats_floor, n_pairs=args.n_pairs, rng=drift_rng)
     print(f"[floor] wass={floor['wass_floor']:.4g}  chamfer={floor['chamfer_floor']:.4g}  "
           f"target=stop above {args.target_floor_mult * floor['wass_floor']:.4g}")
 
     embC, (lag0, spec0), ms_cstar, _ = mine_embed(
-        cstar, fns, points_in, psi, args, num_devices, init_anchor, base_seed)
+        cstar, fns, points_in, psi, args, num_devices, init_anchor, base_seed, tube=tube)
     print(f"[C*] lag_fit={lag0:.4f} spec_fit={spec0:.4f}")
 
     if args.calibrate_only:
@@ -241,10 +285,12 @@ def main():
             pert = np.random.default_rng(seed_ctr).standard_normal(shape); seed_ctr += 1
             cand = normalize_coeffs(current + jnp.asarray(pert) * sigma)
             cand = reconverge(cand, fns, points_in, psi, args, num_devices,
-                              init_anchor, np.random.default_rng(seed_ctr), args.reconverge_steps)
+                              init_anchor, np.random.default_rng(seed_ctr),
+                              args.reconverge_steps, tube=tube)
             seed_ctr += 1
             emb, (lag, spec), msr, _ = mine_embed(
-                cand, fns, points_in, psi, args, num_devices, init_anchor, seed_ctr); seed_ctr += 1
+                cand, fns, points_in, psi, args, num_devices, init_anchor, seed_ctr,
+                tube=tube); seed_ctr += 1
             drift = pcd.pairwise_distance_drift(embC, emb, args.n_pairs, drift_rng)
             d = pcd.decide(drift, lag, spec, lag0, spec0, args.fitness_tol,
                            floor["wass_floor"], args.target_floor_mult)
