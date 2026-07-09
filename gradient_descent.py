@@ -74,6 +74,8 @@ from sharding import (
     device_put_sharded, shard_leading_axis, take_replicated, unshard_leading_axis,
 )
 import cluster_select
+import pointcloud_distance as pcd
+from scipy.spatial import cKDTree
 from slag_condition import (
     compute_holomorphic_form_restricted,
     compute_kahler_form_unrestricted,
@@ -381,15 +383,22 @@ def make_parallel_mining(num_devices: int):
     return fn
 
 
-def mine_one_cluster(mining_fn, points_in, coeffs, psi, args, num_devices, anchor, rng):
-    """Mine, then (if --target_cluster set) extract a fixed-size pure-cluster
-    min-set via HDBSCAN on FS features. Returns
+def mine_one_cluster(mining_fn, points_in, coeffs, psi, args, num_devices, anchor, rng,
+                     tube=None):
+    """Mine, then extract a fixed-size single-component min-set. Returns
     (min_set_real, distances, new_anchor, info).
 
-    Passthrough when args.target_cluster is None: mines args.minset_size and
-    returns it unchanged, so non-cluster runs are byte-for-byte the old path.
+    Membership modes:
+      - tube set (single-component GD): keep mined points within tube["radius"]
+        of the frozen reference cloud in FS-feature space. Membership is
+        independent of density/fitness/phase, so the objective covers the whole
+        component -- no core-only feedback loop (points the optimizer neglects
+        stay in the loss instead of being dropped as HDBSCAN noise).
+      - args.target_cluster set: HDBSCAN + anchor tracking (legacy path).
+      - neither: passthrough -- mines args.minset_size and returns it unchanged,
+        so non-cluster runs are byte-for-byte the old path.
     """
-    if args.target_cluster is None:
+    if args.target_cluster is None and tube is None:
         min_set_real, distances, _ = mining_fn(
             points_in, coeffs, psi, args.minset_size, args.newton_steps,
         )
@@ -403,6 +412,34 @@ def mine_one_cluster(mining_fn, points_in, coeffs, psi, args, num_devices, ancho
             if num_devices > 1 else np.asarray(min_set_raw))   # (k_mine, 10)
     z = host[:, :5] + 1j * host[:, 5:]                          # (k_mine, 5) complex
     feats = cluster_select.fs_features(z)
+    if tube is not None:
+        d_ref, _ = tube["tree"].query(feats, k=1)
+        member_mask = d_ref < tube["radius"]
+        n_mem = int(member_mask.sum())
+        if n_mem == 0:
+            raise RuntimeError(
+                "tube membership kept 0 mined points: the mined zero set no "
+                "longer intersects the reference tube (component moved or "
+                "coeffs degenerated). Refresh --tube_ref or raise --tube_mult.")
+        # W1 drift of the members vs the reference: the "is the torus moving"
+        # monitor. Small n_pairs keeps it cheap at every mine.
+        drift = pcd.pairwise_distance_drift(
+            tube["ref_feats"], feats[member_mask], n_pairs=50_000,
+            rng=np.random.default_rng(0))
+        print(f"  [tube] kept {n_mem}/{host.shape[0]} mined pts "
+              f"(pad -> {args.cluster_minset_size}); W1 vs ref {drift:.2e}")
+        if n_mem < args.cluster_minset_size // 5:
+            print("  [tube] WARN: <20% unique members -- heavy padding; "
+                  "consider raising --mine_oversample")
+        new_anchor = anchor
+        info = {"n_members": n_mem, "drift_vs_ref": float(drift)}
+        member_idx = np.flatnonzero(member_mask)
+        fixed_idx = cluster_select.fill_to_size(member_idx, args.cluster_minset_size, rng)
+        cluster_real = host[fixed_idx]
+        min_set_real = (shard_leading_axis(jnp.asarray(cluster_real), num_devices)
+                        if num_devices > 1 else jnp.asarray(cluster_real))
+        return min_set_real, distances, new_anchor, info
+
     member_mask, new_anchor, info = cluster_select.select_cluster(
         feats, anchor, args.target_cluster,
         args.min_cluster_size, args.min_cluster_frac, args.cluster_selection_epsilon,
@@ -708,8 +745,25 @@ def main():
     parser.add_argument("--mine_oversample", type=int, default=2,
                         help="Mine this multiple of --cluster_minset_size so the "
                              "target component is well-populated before extraction.")
+    parser.add_argument("--tube_ref", type=str, default=None,
+                        help="Single-component GD: path to an (N, 5) complex pkl "
+                             "sampling the target component (e.g. a cluster_split "
+                             "output). Each mine keeps only points within a kNN "
+                             "tube of this frozen reference in FS-feature space -- "
+                             "membership is independent of density/fitness/phase, "
+                             "so the objective covers the WHOLE component instead "
+                             "of the HDBSCAN core. Mutually exclusive with "
+                             "--target_cluster.")
+    parser.add_argument("--tube_mult", type=float, default=2.0,
+                        help="Tube radius = tube_mult x the reference cloud's "
+                             "NN-distance percentile (--tube_percentile).")
+    parser.add_argument("--tube_percentile", type=float, default=95.0,
+                        help="Percentile of the reference cloud's internal "
+                             "NN distances used as the radius scale.")
     args = parser.parse_args()
 
+    if args.tube_ref is not None and args.target_cluster is not None:
+        parser.error("--tube_ref and --target_cluster are mutually exclusive")
     if args.cluster_minset_size is None:
         args.cluster_minset_size = args.minset_size
 
@@ -748,7 +802,7 @@ def main():
                 f"--plot_k {args.plot_k} not divisible by "
                 f"num_devices={num_devices}"
             )
-        if args.target_cluster is not None:
+        if args.target_cluster is not None or args.tube_ref is not None:
             if args.cluster_minset_size % num_devices != 0:
                 raise ValueError(
                     f"--cluster_minset_size {args.cluster_minset_size} not "
@@ -822,9 +876,27 @@ def main():
 
     cluster_rng = np.random.default_rng(args.seed)
 
+    # Single-component GD: build the frozen-reference tube once. The reference
+    # cloud defines component membership for every mine; it is deliberately
+    # NOT updated during training (frozen => membership independent of the
+    # optimization state). Refresh manually by re-pointing --tube_ref.
+    tube = None
+    if args.tube_ref is not None:
+        with open(args.tube_ref, "rb") as f:
+            ref_z = np.asarray(pickle.load(f))
+        ref_feats = cluster_select.fs_features(ref_z)
+        ref_tree = cKDTree(ref_feats)
+        nn = ref_tree.query(ref_feats, k=2)[0][:, 1]
+        radius = float(args.tube_mult * np.percentile(nn, args.tube_percentile))
+        tube = {"tree": ref_tree, "radius": radius, "ref_feats": ref_feats}
+        print(f"[tube] single-component GD: reference {ref_z.shape} from "
+              f"{args.tube_ref}; radius={radius:.4f} "
+              f"(={args.tube_mult} x NN p{args.tube_percentile:.0f})")
+
     # Initial mining + loss eval (also re-runs on resume to repopulate min_set_real).
     min_set_real, distances, cluster_anchor, _ = mine_one_cluster(
         mining_fn, points_in, coeffs, psi, args, num_devices, cluster_anchor, cluster_rng,
+        tube=tube,
     )
     mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
     print(f"  [mining] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
@@ -860,7 +932,7 @@ def main():
         if step > 0 and step % args.mine_interval == 0:
             min_set_real, distances, cluster_anchor, _ = mine_one_cluster(
                 mining_fn, points_in, coeffs, psi, args, num_devices,
-                cluster_anchor, cluster_rng,
+                cluster_anchor, cluster_rng, tube=tube,
             )
             mean_d, max_d = float(jnp.mean(distances)), float(jnp.max(distances))
             print(f"  [mining @ step {step}] mean_dist {mean_d:.2e}  max_dist {max_d:.2e}")
