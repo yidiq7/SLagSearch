@@ -52,7 +52,8 @@ def build_args(argv=None):
     p.add_argument("--loss", type=str, default="both")
     p.add_argument("--lag_weight", type=float, default=1.0)
     p.add_argument("--spec_weight", type=float, default=1.0)
-    p.add_argument("--top_lag_frac", type=float, default=0.99)
+    p.add_argument("--top_lag_frac", type=float, default=1.0)  # walk = component runs;
+    #   deliberately diverges from GD's 0.99 whole-manifold default
     p.add_argument("--minset_size", type=int, default=10000)
     p.add_argument("--newton_steps", type=int, default=40)
     p.add_argument("--inner_newton_steps", type=int, default=10)
@@ -171,7 +172,12 @@ def setup(args):
                   f"near-equal components. Point --ref_pkl at a GD checkpoint.")
 
     # Frozen-reference tube (mirrors gradient_descent.py): membership for every
-    # mine in the walk, independent of the optimization state.
+    # mine in the walk, independent of the optimization state. Trust range:
+    # valid while the component stays within the tube radius of the reference
+    # (fine for the local 8x-floor probe regime; the kept-count and W1-vs-ref
+    # logs are the tripwires). A long-range walk would need membership
+    # refreshed from accepted steps while drift stays measured against the
+    # ORIGINAL reference -- refresh membership, never the baseline.
     tube = None
     if args.tube_ref is not None:
         with open(args.tube_ref, "rb") as f:
@@ -297,7 +303,7 @@ def main():
             print(f"  [kick] drift={drift:.4g} lag={lag:.4f} spec={spec:.4f} -> {d}")
             if d != "reject" and (best is None or drift > best["drift"]):
                 best = {"cand": cand, "emb": emb, "lag": lag, "spec": spec,
-                        "drift": drift, "ms": msr}
+                        "drift": drift, "ms": msr, "decision": d}
         if best is None:
             sigma *= 0.5
             if sigma < args.sigma_min:
@@ -311,8 +317,7 @@ def main():
             pickle.dump(np.asarray(current), f)
         drift_prev = pcd.pairwise_distance_drift(prev_emb, best["emb"], args.n_pairs, drift_rng)
         cham = pcd.fs_chamfer(embC, best["emb"])
-        decision = pcd.decide(best["drift"], best["lag"], best["spec"], lag0, spec0,
-                              args.fitness_tol, floor["wass_floor"], args.target_floor_mult)
+        decision = best["decision"]
         traj.append({"step": w, "sigma": float(sigma), "lag_fit": best["lag"],
                      "spec_fit": best["spec"], "drift_vs_cstar": best["drift"],
                      "drift_vs_prev": drift_prev, "chamfer_vs_cstar": cham,
